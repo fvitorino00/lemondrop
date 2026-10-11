@@ -1,0 +1,172 @@
+# lemondrop — inference services
+#
+# ── Architecture ──────────────────────────────────────────────────────────────
+# This file defines the TWO stateless inference workers that make up lemondrop's
+# two-stage retrieval funnel:
+#
+#   embedder  — stage 1. Turns text into a 384-dim vector (bge-small-en-v1.5,
+#               CLS pooling). Query and passage are both embedded here.
+#   reranker  — stage 2. Scores (query, passage) pairs and orders the stage-1
+#               candidate list (bge-reranker-base, rank pooling).
+#
+# Both run the same published image, ghcr.io/ggml-org/llama.cpp:server. There is
+# no Dockerfile and no `build:` section because the operator verified this image
+# runs correctly, CPU-only, on this machine. We consume it as published.
+#
+# ── Why there is NO `api` service and NO `ports:` anywhere ────────────────────
+# The API is a later milestone. It is deliberately absent here: this commit adds
+# the inference substrate only, so the two workers can be brought up, health-
+# checked and benchmarked on their own before any application code exists.
+#
+# Neither worker publishes a host port. That is a design decision, not an
+# oversight:
+#   * These are internal workers. They exist to be called by the API over the
+#     compose network, not by anything on the host.
+#   * A published port is a public door. Every door is attack surface, and this
+#     milestone's goal is for the API to be the ONLY thing a host client (or
+#     the internet, once published) can reach. The API's own host port is
+#     ${API_HOST_PORT}, and it will be the sole publisher.
+#   * Containers reach each other by SERVICE NAME over compose's default
+#     network, via Docker's embedded DNS. The API will call them at
+#     `http://embedder:8080` and `http://reranker:8080`. No published port is
+#     needed for that to work, and none is used.
+#
+# For the same reason there is no `container_name:` (compose generates names,
+# which keeps scaling and parallel project copies conflict-free) and no
+# `depends_on:` between these two services (they are independent — neither
+# calls the other, so ordering them would encode a lie about the architecture).
+# Only the future `api` will declare a dependency on both.
+#
+# ── Configuration ─────────────────────────────────────────────────────────────
+# Every ${VAR} below is interpolated by Compose from the `.env` file sitting
+# beside this compose file, which you create with:  cp .env.example .env
+# If `.env` is absent Compose substitutes an empty string and warns, so run
+# that copy before the first `docker compose up`.
+
+services:
+
+  # ── embedder ───────────────────────────────────────────────────────────────
+  # Stage 1 of the funnel. Loads bge-small-en-v1.5 as Q8_0 and serves embeddings
+  # on demand. `--pooling cls` is REQUIRED for this model family and yields
+  # exactly EMBEDDING_DIM=384 dimensions; the vector store index is sized to
+  # match. `--alias` is the name the API will request models by, so it is taken
+  # from .env rather than hardcoded here.
+  embedder:
+    image: ghcr.io/ggml-org/llama.cpp:server
+
+    # Exec-form argv. The image's ENTRYPOINT is the llama.cpp server binary, so
+    # these are server flags, not a command to run inside.
+    #   --hf-repo     pull the GGUF from HuggingFace on first boot into /models
+    #   --embedding   run as an embedding server
+    #   --pooling cls CLS pooling -> 384-dim vectors (bge-small-en-v1.5)
+    #   --alias       model name the API addresses it by
+    #   --port        port inside the container's own network namespace
+    command:
+      - "--hf-repo"
+      - "ggml-org/bge-small-en-v1.5-Q8_0-GGUF"
+      - "--embedding"
+      - "--pooling"
+      - "cls"
+      - "--alias"
+      - "${EMBEDDER_MODEL_ALIAS}"
+      - "--port"
+      - "${EMBEDDER_INTERNAL_PORT}"
+
+    # Persist downloaded weights on the NATIVE ext4 filesystem at the project
+    # root (/home/zaratustra0/Projects/lemondrop), NOT under /mnt/c. WSL mounts
+    # /mnt/c as slow 9p; loading a model from there costs minutes per start.
+    # Bind-mounting keeps weights out of a docker volume so they survive
+    # `docker compose down -v` and are inspectable with ordinary tools.
+    volumes:
+      - ./models:/models
+
+    # Survive host reboots and crashes, but respect an explicit `stop`.
+    restart: unless-stopped
+
+    # The upstream image ALREADY ships a HEALTHCHECK against port 8080. We
+    # restate it explicitly rather than inherit it silently, for one reason:
+    # this URL is hardcoded to 8080 on purpose. The image's built-in probe is
+    #   HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8080/health" ]
+    # so if this probe used ${EMBEDDER_INTERNAL_PORT} and someone ever changed
+    # that variable, the image's inherited probe would break while ours silently
+    # drifted from reality. Keeping 8080 literal keeps both probes agreeing, and
+    # keeps 8080 a documented constraint of the upstream image.
+    #
+    # This is safe for BOTH services: each container has its own network
+    # namespace, so `localhost:8080` inside the reranker is a different socket
+    # from `localhost:8080` inside the embedder. Nothing collides; the DNS name
+    # (embedder vs reranker) is what distinguishes them from the API's side.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      # Poll every 10s once the container is considered up.
+      interval: 10s
+      # A probe that has not answered in 5s is a failed probe.
+      timeout: 5s
+      # Tolerate 5 consecutive failures before marking the container unhealthy.
+      retries: 5
+      # Generous grace period. The FIRST run reads a GGUF off disk and loads it
+      # into memory on CPU, which is slow and happens BEFORE /health answers.
+      # During start_period a failing probe does NOT count against retries, so
+      # this absorbs a slow cold start instead of restarting a booting model.
+      start_period: 120s
+
+    # Bound the on-disk log footprint. Without this, a long-lived inference
+    # service's json-file logs grow without limit and fill the host disk.
+    logging:
+      driver: json-file
+      options:
+        # Rotate at 10MB per file...
+        max-size: "10m"
+        # ...keeping at most 3 files (~30MB) per service.
+        max-file: "3"
+
+  # ── reranker ───────────────────────────────────────────────────────────────
+  # Stage 2 of the funnel. Loads bge-reranker-base as Q8_0 and scores candidate
+  # pairs. `--pooling rank` is REQUIRED here (not cls): a reranker emits one
+  # relevance score per input pair rather than a vector, and the llama.cpp server
+  # expresses that as rank pooling over the --embedding code path.
+  reranker:
+    image: ghcr.io/ggml-org/llama.cpp:server
+
+    # Same exec-form argv. Differences from the embedder, all load-bearing:
+    #   --reranking    scoring mode; without it the server answers embeddings
+    #   --embedding    still required — it is the code path rank pooling rides on
+    #   --pooling rank one score per pair, not a vector
+    command:
+      - "--hf-repo"
+      - "magicunicorn/bge-reranker-base-Q8_0-GGUF"
+      - "--reranking"
+      - "--embedding"
+      - "--pooling"
+      - "rank"
+      - "--alias"
+      - "${RERANKER_MODEL_ALIAS}"
+      - "--port"
+      - "${RERANKER_INTERNAL_PORT}"
+
+    # Same bind mount, same native-ext4 rationale: this model is the larger of
+    # the two and is the one whose slow re-read would hurt most.
+    volumes:
+      - ./models:/models
+
+    restart: unless-stopped
+
+    # Literal 8080, and for the same upstream-image reason as the embedder:
+    # the published image hardcodes its own healthcheck to port 8080. Because
+    # each container has an independent network namespace, this reranker
+    # occupying 8080 alongside the embedder's 8080 is not a conflict. It is
+    # also why RERANKER_INTERNAL_PORT must stay 8080 in .env.example.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Same cold-start allowance as the embedder; this model is bigger.
+      start_period: 120s
+
+    # Same log bounding, same reason.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
