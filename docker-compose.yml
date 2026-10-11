@@ -37,6 +37,19 @@
 # calls the other, so ordering them would encode a lie about the architecture).
 # Only the future `api` will declare a dependency on both.
 #
+# ── Models are loaded BY PATH, not by repo name ───────────────────────────────
+# Both workers are started with `-m /models/<file>.gguf` rather than by naming a
+# HuggingFace repo. The reason: naming a repo resolves the weights through the
+# container's own cache at /root/.cache/huggingface/, which is NOT the bind
+# mount — so ./models:/models was not serving the model, and persistence across
+# a container rebuild was not actually guaranteed. Loading by path makes /models
+# the single source of truth for the weights and makes scripts/fetch-models.sh
+# the single provisioning path.
+# Consequence: scripts/fetch-models.sh MUST be run before the first
+# `docker compose up`. A model missing from /models now fails loudly at startup
+# instead of being silently re-downloaded into a throwaway cache.
+#
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 # Every ${VAR} below is interpolated by Compose from the `.env` file sitting
 # beside this compose file, which you create with:  cp .env.example .env
@@ -56,14 +69,14 @@ services:
 
     # Exec-form argv. The image's ENTRYPOINT is the llama.cpp server binary, so
     # these are server flags, not a command to run inside.
-    #   --hf-repo     pull the GGUF from HuggingFace on first boot into /models
+    #   -m            load the GGUF from the bind-mounted /models path
     #   --embedding   run as an embedding server
     #   --pooling cls CLS pooling -> 384-dim vectors (bge-small-en-v1.5)
     #   --alias       model name the API addresses it by
     #   --port        port inside the container's own network namespace
     command:
-      - "--hf-repo"
-      - "ggml-org/bge-small-en-v1.5-Q8_0-GGUF"
+      - "-m"
+      - "/models/bge-small-en-v1.5-q8_0.gguf"
       - "--embedding"
       - "--pooling"
       - "cls"
@@ -129,12 +142,13 @@ services:
     image: ghcr.io/ggml-org/llama.cpp:server
 
     # Same exec-form argv. Differences from the embedder, all load-bearing:
+    #   -m             load the GGUF from the bind-mounted /models path
     #   --reranking    scoring mode; without it the server answers embeddings
     #   --embedding    still required — it is the code path rank pooling rides on
     #   --pooling rank one score per pair, not a vector
     command:
-      - "--hf-repo"
-      - "magicunicorn/bge-reranker-base-Q8_0-GGUF"
+      - "-m"
+      - "/models/bge-reranker-base-q8_0.gguf"
       - "--reranking"
       - "--embedding"
       - "--pooling"
