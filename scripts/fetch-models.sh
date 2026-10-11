@@ -110,7 +110,7 @@ fetch() {
   fi
 
   mv "${part}" "${dest}"
-  echo "==> OK    ${file} (${du -h "${dest}" | cut -f1})"
+  echo "==> OK    ${file} ($(du -h "${dest}" | cut -f1))"
 }
 
 echo "lemondrop — fetching model weights"
