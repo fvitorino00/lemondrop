@@ -3,8 +3,15 @@
 # fetch-models.sh — download the two GGUF weights lemondrop needs.
 #
 # ── WHY this script exists ────────────────────────────────────────────────────
-# The llama.cpp image is started with `--hf-repo <repo>`, which makes it pull
-# the GGUF from HuggingFace on first boot and cache it under /models. That is
+# Both containers are started with `-m /models/<file>.gguf`, so they read the
+# weights straight out of the bind-mounted /models directory by path. They used
+# to be started with `--hf-repo <repo-name>`, which resolves weights through the
+# container's own cache at /root/.cache/huggingface/ — not the bind mount — so
+# ./models:/models was not actually serving the model, persistence across a
+# rebuild was not guaranteed, and the weights existed twice on disk. Loading by
+# path makes /models the single source of truth for the weights, which makes
+# this script the only way weights reach disk: it has to run before the first
+# `docker compose up`. Letting the image pull its own weights on first boot is
 # convenient for a throwaway demo and wrong for this project, for two reasons:
 #
 #   1. PERSISTENCE. Docker's writable container layer is not a storage
@@ -18,9 +25,11 @@
 #      ~278MB. Re-fetching them on every cold start is minutes of waiting and
 #      bandwidth for bytes we already have.
 #
-# So: run this ONCE, then `docker compose up`. The models are then already in
-# ./models, the image finds them in its cache, and startup is a memory load
-# rather than a network fetch.
+# So: run this ONCE, before the first `docker compose up`. The weights are then
+# present in ./models, the bind mount exposes them to both containers at /models,
+# and startup is a memory load from disk rather than a network fetch. Because
+# the containers load by path, a model missing from /models now fails loudly at
+# startup instead of being silently re-downloaded into a throwaway cache.
 #
 # IDEMPOTENT BY DESIGN. Re-running is safe and cheap: a file that is already
 # present and non-empty is skipped. Nothing under models/ is committed — .gitignore
