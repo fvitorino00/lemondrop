@@ -25,7 +25,7 @@ CPU only: a FastAPI `api` (the only service with a host-published port), a llama
 | 6 | Persistent model volumes | Models are bind-mounted from `./models` and loaded by explicit path (`-m /models/<file>.gguf`). After switching from `--hf-repo` to `-m`, `/root/.cache/huggingface` no longer exists inside the reranker container, confirming weights are served from the bind mount rather than a per-container cache. Models survive `docker compose down` | `docker compose exec reranker ls -la /root/.cache/` (expect no huggingface directory); `docker compose down && docker compose up -d` |
 | 7 | Container restart policies | `docker compose restart` was run and all three containers returned to `(healthy)` | `docker compose restart && docker compose ps` |
 | 8 | Useful logs | Verified by use, not by presence: `docker compose logs` output is what identified that `--hf-repo` was resolving weights into the container's own cache rather than the bind mount | `docker compose logs --tail=50` |
-| 9 | Git branches and meaningful commits | `main` remains at the scaffold baseline with no milestone commits; all inference-service work is isolated on `feat/inference-services` | `git log --oneline main..feat/inference-services` |
+| 9 | Git branches and meaningful commits | Milestone 1 is merged into `main`; the separate, unverified Milestone 2 work is held on `feat/aws-infrastructure` and is deliberately not merged | `git log --oneline main..feat/aws-infrastructure` |
 
 ## Acceptance criteria
 
@@ -84,7 +84,7 @@ All three would have degraded the system silently rather than failing loudly.
    llama.cpp server image ships its own `HEALTHCHECK` against port 8080. A worker on
    any other port fails its own healthcheck, so `depends_on: condition:
    service_healthy` never fires and the api waits forever on a dependency that is
-   running and working. Fixed by pinning both workers to 8080 (commit `1a8f0b0`).
+   running and working. Fixed by pinning both workers to 8080 (commit `b806627`).
    Lesson: an inherited healthcheck is a constraint on your port choice, and it is
    invisible until the container refuses to start.
 
@@ -93,7 +93,7 @@ All three would have degraded the system silently rather than failing loudly.
    failed with "bad substitution". Combined with `set -euo pipefail`, the script aborted
    after the first model, leaving the second unfetched — a failure that looks like a
    successful run if you only check the exit code of the surrounding step. Fixed in
-   commit `1cf69c2`.
+   commit `4a176c5`.
    Lesson: `set -e` converts a cosmetic typo into a silent partial result. Check what
    the script did, not only whether it returned.
 

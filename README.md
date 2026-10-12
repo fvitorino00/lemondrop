@@ -447,7 +447,7 @@ that `EMBEDDER_INTERNAL_PORT` and `RERANKER_INTERNAL_PORT` are still `8080`.
 
 **3. `bad substitution` from `fetch-models.sh`**
 
-A real bug, since fixed in commit `1cf69c2`. In bash, `${var}` expands a
+A real bug, since fixed in commit `4a176c5`. In bash, `${var}` expands a
 variable and `$(cmd)` runs a command. Writing `${du -h ... | cut -f1}`
 expands as neither and fails. Command substitution is `$(...)`, not `${...}`.
 
