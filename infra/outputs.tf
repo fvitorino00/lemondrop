@@ -211,7 +211,7 @@ output "rds_endpoint" {
 }
 
 output "rds_address" {
-  description = "Hostname of the RDS instance, or null when var.enable_managed_database is false. This is the same value published to SSM at /db/host/."
+  description = "Hostname of the RDS instance, or null when var.enable_managed_database is false. This is the same value published to one of the SSM parameters listed in db_ssm_parameter_names (the db/host leaf)."
   value       = one(aws_db_instance.db[*].address)
 }
 

@@ -540,23 +540,50 @@ variable "db_final_snapshot_identifier" {
 }
 
 variable "db_backup_retention_period" {
-  description = "Days of automated backups to retain. Set to 0 to DISABLE automated backups entirely."
+  description = "Days of automated backups to retain. Defaults to 0 because this account is on the AWS Free Plan, which permits no automated backups at all. 1-35 requires a Paid plan."
   type        = number
-  default     = 7
+  default     = 0
 
-  # Small but NON-ZERO. Seven days of automated backups on a development
-  # database costs a few dollars a month and is the only thing standing between
-  # a bad migration and an afternoon retyping fixture data.
+  # ZERO, AND NOT BY ACCIDENT — BECAUSE OF THE ACCOUNT'S PLAN, NOT BECAUSE
+  # ZERO IS A GOOD DEFAULT.
+  #
+  # ⚠️  THE FREE PLAN PERMITS 0 AND NOTHING ELSE. ⚠️
+  # This account is on the AWS Free Plan, whose maximum backup retention period
+  # is 0. Applying with any value above that fails with:
+  #     FreeTierRestrictionError: The specified backup retention period exceeds
+  #     the maximum available to free tier customers.
+  # That is exactly how the first apply of this stack failed. The account plan
+  # is a property of the ACCOUNT, not of this config, so it cannot be worked
+  # around in Terraform — the only way to raise this number is to upgrade the
+  # account, at which point 1-35 become legal.
+  #
+  # WHAT A NON-ZERO VALUE WOULD BUY, and why that argument is correct in
+  # general and wrong here. Seven days of automated backups on a development
+  # database is a few dollars a month, and it is genuinely the only thing
+  # standing between a bad migration and an afternoon retyping fixture data.
+  # On a Paid plan, 7 would be a defensible default and this comment would be
+  # arguing for it. It is not one here: on the Free Plan the choice is not
+  # "retention or no retention", it is "apply or no apply".
   #
   # ⚠️  0 IS NOT "KEEP NONE", IT IS "KEEP NONE, AUTOMATICALLY" ⚠️
   # Setting this to 0 disables automated backups completely. It does not keep
-  # zero backups and delete them; it stops taking them. On a db.t3.micro that
-  # is a few dollars a month saved and an entire recovery story removed, which
-  # is almost never the ratio anyone intended when they typed `0`.
+  # zero backups and delete them; it stops taking them. On this stack that is
+  # currently defensible, because nothing queries the database yet (see
+  # database.tf) and there is no data to lose — the database is provisioned to
+  # satisfy an acceptance criterion, and its contents are re-creatable from a
+  # migration. THE MOMENT THE API HOLDS SOMETHING THAT CANNOT BE RE-CREATED,
+  # upgrade the account plan and raise this, and treat the upgrade as the
+  # prerequisite rather than as an optional improvement.
 
+  # 0-35 is the RDS-wide legal range. Note this validation CANNOT enforce the
+  # Free Plan's stricter maximum of 0, because that limit is not knowable from
+  # inside the config — a value of 7 passes this check and still fails at apply
+  # on a Free plan. The range check catches typos and out-of-range values at
+  # plan time; the account-plan check can only fail at apply, which is why the
+  # default is 0 and the reason is documented above.
   validation {
     condition     = var.db_backup_retention_period >= 0 && var.db_backup_retention_period <= 35
-    error_message = "db_backup_retention_period must be between 0 and 35 days. RDS maximum retention is 35 days."
+    error_message = "db_backup_retention_period must be between 0 and 35 days. RDS maximum retention is 35 days. Note that on the AWS Free Plan the maximum is 0 — a value above 0 will pass this check and then fail at apply with FreeTierRestrictionError."
   }
 }
 

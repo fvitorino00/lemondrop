@@ -419,22 +419,52 @@ resource "aws_iam_instance_profile" "ec2" {
 # read into the process that needs it, at the moment it needs it, and is not
 # written anywhere.
 
-# ⚠️  EVERY name BELOW MUST END WITH "/" — this is an API CONTRACT, NOT STYLE.
+# ⚠️  NAMING RULE — AN API CONTRACT, NOT STYLE. READ BEFORE EDITING. ⚠️
 #
-# A Parameter Store name is a FULLY QUALIFIED PATH: it must begin AND end with
-# a forward slash. AWS rejected all three of these with:
+# A Parameter Store name is a FULLY QUALIFIED PATH, and the path form is:
+#
+#     /<root>/<hierarchy>/<leaf>      →  /lemondrop/dev/db/host   ✅
+#
+# It must BEGIN with a forward slash. It must NOT END with one. It must not
+# contain an empty path segment (a double slash).
+#
+# ⚠️  THIS RULE HAS ALREADY BEEN MIS-APPLIED ONCE IN EACH DIRECTION. ⚠️
+#
+# Apply #1: the names were written without a leading slash and AWS returned
 #     ValidationException: Parameter name must be a fully qualified name.
-# so the trailing slash is load-bearing. It is written out literally on each
-# resource rather than assembled in a local, because a local would be one more
-# place for the slash to be lost — and nothing in Terraform validates this at
-# plan time, so a regression here only surfaces at apply.
+# The reading applied to that was that the names needed TRAILING slashes, so
+# they were changed to "…/db/host/". That reading was wrong, and it produced a
+# second apply failure:
+#     ValidationException: Parameter name must not end with slash.
+#
+# Both errors are real; the rule they describe is the one above. "Fully
+# qualified" means the path is rooted — it is the LEADING slash that expresses
+# that, not the trailing one. Do not "simplify" these names by dropping the
+# leading slash, and do not re-add a trailing slash to satisfy a different
+# error message. If a future apply rejects these names, read WHICH of the three
+# rules is actually being violated before changing the string.
+#
+# It is written out on each resource rather than assembled in a local because a
+# local is one more place for a slash to be lost — and nothing in Terraform
+# validates this at plan time, so a regression here surfaces only at apply.
+#
+# The names are interpolated from var.project_name and var.environment rather
+# than written as literals, so the "dev" in "lemondrop/dev/db" is the variable
+# default and follows the environment name if it changes.
 #
 # The read policy above uses aws_ssm_parameter.app_core[*].arn, which AWS
 # derives from these names, so it follows the change automatically.
+#
+# Nothing in user_data reads these three by name — compute.tf explicitly
+# forbids hardcoding a DATABASE_URL and tells the future application to fetch
+# at runtime through the instance role. So there is no second copy of these
+# paths to keep in sync, and no boot script to break if they change. The
+# db_ssm_parameter_names output in outputs.tf derives from the resources
+# rather than repeating them, which is the same property.
 resource "aws_ssm_parameter" "app_core" {
   count = var.enable_managed_database ? 1 : 0
 
-  name  = "${var.project_name}/${var.environment}/db/host/"
+  name  = "/${var.project_name}/${var.environment}/db/host"
   type  = "String"
   value = aws_db_instance.db[0].address
 
@@ -448,7 +478,7 @@ resource "aws_ssm_parameter" "app_core" {
 resource "aws_ssm_parameter" "app_db_port" {
   count = var.enable_managed_database ? 1 : 0
 
-  name  = "${var.project_name}/${var.environment}/db/port/"
+  name  = "/${var.project_name}/${var.environment}/db/port"
   type  = "String"
   value = tostring(local.db_port)
 
@@ -462,7 +492,7 @@ resource "aws_ssm_parameter" "app_db_port" {
 resource "aws_ssm_parameter" "app_db_secret_arn" {
   count = var.enable_managed_database ? 1 : 0
 
-  name  = "${var.project_name}/${var.environment}/db/secret-arn/"
+  name  = "/${var.project_name}/${var.environment}/db/secret-arn"
   type  = "String"
   value = aws_db_instance.db[0].master_user_secret[0].secret_arn
 

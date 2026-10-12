@@ -204,9 +204,21 @@ resource "aws_db_instance" "db" {
   # occurring" only in the paid-for version of itself; in the Single-AZ
   # version the connection simply fails, for as long as the zone is down.
   #
-  # What you still get, and it is not nothing: automated backups, point-in-time
-  # recovery within the retention window, and RDS instance-level replacement
-  # on host failure. What you do NOT get: automatic failover to the second AZ.
+  # What you still get, and it is not nothing: RDS instance-level replacement
+  # on host failure, and automated backups with point-in-time recovery within
+  # the retention window. What you do NOT get: automatic failover to the
+  # second AZ.
+  #
+  # ⚠️  ON THIS ACCOUNT, RETENTION IS 0, SO THE BACKUP HALF OF THAT IS ALSO
+  # ⚠️  NOT IN EFFECT.  ⚠️
+  # db_backup_retention_period defaults to 0 because the Free Plan permits no
+  # automated backups, which makes this line a statement about what the
+  # Single-AZ trade costs ONCE THE ACCOUNT IS UPGRADED, not a claim about what
+  # is running today. Today this instance has neither failover nor automated
+  # backups, and the compensation for that is the same as it was before: on a
+  # stack where nothing queries the database yet, there is no data to lose.
+  # Upgrade the plan and set the retention before the api holds anything
+  # irreplaceable. See var.db_backup_retention_period.
   #
   # The cost of Multi-AZ is roughly the price of a second instance, every hour,
   # forever. For a development database that is a bad ratio. Flip
@@ -240,8 +252,11 @@ resource "aws_db_instance" "db" {
   final_snapshot_identifier = var.db_skip_final_snapshot ? null : coalesce(var.db_final_snapshot_identifier, "${local.name_prefix}-final")
 
   # ── Backups ────────────────────────────────────────────────────────────────
-  # Non-zero. Setting this to 0 DISABLES automated backups entirely — it is not
-  # "retain none", it is "take none". See var.db_backup_retention_period.
+  # Retention is var.db_backup_retention_period, which defaults to 0 — so on
+  # this account automated backups are OFF. That is a plan constraint, not a
+  # preference: the Free Plan caps retention at 0, and any higher value fails
+  # the apply with FreeTierRestrictionError. See var.db_backup_retention_period
+  # for what a non-zero value would buy once the account is on a Paid plan.
   backup_retention_period = var.db_backup_retention_period
   backup_window           = "03:00-04:00" # UTC. Quiet hours in Ireland.
 
