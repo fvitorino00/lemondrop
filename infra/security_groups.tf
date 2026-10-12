@@ -243,13 +243,61 @@ resource "aws_vpc_security_group_ingress_rule" "ec2_from_alb" {
 # unaddressable question is "which container started this connection", and
 # that connection is not useful to an attacker without a foothold on the
 # instance already.
+#
+# ── WHY THIS RULE OMITS from_port AND to_port ─────────────────────────────
+#
+# `ip_protocol = "-1"` means ALL PROTOCOLS. The AWS contract for that value is
+# that the port arguments must be OMITTED ENTIRELY:
+#
+#   * ip_protocol = "-1"  with NO from_port / to_port  →  all protocols, all
+#     ports. This is what "unrestricted egress" actually means, and it is what
+#     this rule intends.
+#   * ip_protocol = "-1"  WITH from_port / to_port     →  contradictory
+#     request: "all protocols AND this specific port range". AWS rejects it.
+#
+# AWS states this itself, verbatim:
+#
+#   "You may not specify all protocols and specific ports. Please specify each
+#    protocol and port range combination individually, or all protocols and no
+#    port range."
+#
+# Adding `from_port = 0` / `to_port = 0` here therefore made the request
+# self-contradictory and AWS refused it:
+#
+#   Error: updating VPC Security Group Rule (sgr-...)
+#   operation error EC2: ModifySecurityGroupRules, ... StatusCode: 400,
+#   api error InvalidParameterValue: You may not specify all protocols and
+#   specific ports.
+#
+# ── THE TWO CHECKS THAT DID NOT CATCH IT, AND WHY ─────────────────────────
+#
+# This rule had been CREATED successfully before it failed. That is not
+# evidence of correctness: AWS accepted the create and rejected the update.
+# Creation permissiveness is not a contract, and a resource that exists and is
+# currently right in the console is not a resource that is correctly declared.
+#
+# `terraform validate` cannot catch this either. The constraint is enforced
+# AWS-SIDE, inside EC2's ModifySecurityGroupRules, not by the provider's
+# schema validator — which only rejects port arguments whose value is non-zero,
+# so a `0`/`0` pair sails through it. Schema validation passing means the HCL
+# is well-formed; it says nothing about whether the API call is satisfiable.
+#
+# An earlier audit of this exact resource cleared it on the strength of that
+# provider-side check. That reasoning was wrong in kind, not in detail: it
+# consulted the wrong validator for the wrong side of the boundary. The rule to
+# carry forward is that for AWS API constraints, the API contract is the
+# authority — not the provider schema, not a green validate, and not the fact
+# that a previous apply happened to succeed.
+#
+# The other four rule resources in this file are constrained by the same
+# contract and were audited against it: each names a specific protocol
+# (`ip_protocol = "tcp"`) with an explicit, coherent from_port/to_port pair, so
+# none of them pairs "-1" with a port range.
 resource "aws_vpc_security_group_egress_rule" "ec2_egress_all" {
   security_group_id = aws_security_group.app_ec2.id
   description       = "UNRESTRICTED EGRESS - required for image, package and model pulls. Known gap; see the MITIGATION note above."
 
   ip_protocol       = "-1"
-  from_port         = 0
-  to_port           = 0
   cidr_ipv4         = "0.0.0.0/0"
 }
 
