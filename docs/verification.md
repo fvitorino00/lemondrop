@@ -25,14 +25,7 @@ CPU only: a FastAPI `api` (the only service with a host-published port), a llama
 | 6 | Persistent model volumes | Models are bind-mounted from `./models` and loaded by explicit path (`-m /models/<file>.gguf`). After switching from `--hf-repo` to `-m`, `/root/.cache/huggingface` no longer exists inside the reranker container, confirming weights are served from the bind mount rather than a per-container cache. Models survive `docker compose down` | `docker compose exec reranker ls -la /root/.cache/` (expect no huggingface directory); `docker compose down && docker compose up -d` |
 | 7 | Container restart policies | `docker compose restart` was run and all three containers returned to `(healthy)` | `docker compose restart && docker compose ps` |
 | 8 | Useful logs | Verified by use, not by presence: `docker compose logs` output is what identified that `--hf-repo` was resolving weights into the container's own cache rather than the bind mount | `docker compose logs --tail=50` |
-| 9 | Git branches and meaningful commits | 18 commits on `feat/inference-services`, with `main` held at the scaffold baseline as the stable line | `git rev-list --count feat/inference-services` |
-
-Note on requirement 9: the commit count above is as observed when the milestone was
-signed off. A later read of the same repository returned 17 for
-`git rev-list --count feat/inference-services` (15 commits ahead of `main`). The
-discrepancy is a counting-method difference, not a lost commit, but it is recorded
-here rather than smoothed over: if you re-check this row and get a different number,
-the row is the stale part.
+| 9 | Git branches and meaningful commits | `main` remains at the scaffold baseline with no milestone commits; all inference-service work is isolated on `feat/inference-services` | `git log --oneline main..feat/inference-services` |
 
 ## Acceptance criteria
 
