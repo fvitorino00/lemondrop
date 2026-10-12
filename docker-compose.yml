@@ -1,41 +1,55 @@
-# lemondrop — inference services
+# lemondrop — document-search retrieval stack
 #
 # ── Architecture ──────────────────────────────────────────────────────────────
-# This file defines the TWO stateless inference workers that make up lemondrop's
-# two-stage retrieval funnel:
+# Three services make up the retrieval stack: two stateless inference workers
+# and the orchestrator that fronts them.
 #
 #   embedder  — stage 1. Turns text into a 384-dim vector (bge-small-en-v1.5,
 #               CLS pooling). Query and passage are both embedded here.
 #   reranker  — stage 2. Scores (query, passage) pairs and orders the stage-1
 #               candidate list (bge-reranker-base, rank pooling).
+#   api       — the orchestrator. Stands in front of both workers and is the
+#               single door to the outside world.
 #
-# Both run the same published image, ghcr.io/ggml-org/llama.cpp:server. There is
-# no Dockerfile and no `build:` section because the operator verified this image
-# runs correctly, CPU-only, on this machine. We consume it as published.
+# The two workers share the same published image,
+# ghcr.io/ggml-org/llama.cpp:server. Neither has a Dockerfile and neither
+# has a `build:` section, because the operator verified that image runs
+# correctly and CPU-only on this machine. It is a third-party artifact,
+# so it is consumed as published. `api` is different in kind: it is our
+# own application code, not a published upstream image, so it is built
+# from ./api rather than pulled.
 #
-# ── Why there is NO `api` service and NO `ports:` anywhere ────────────────────
-# The API is a later milestone. It is deliberately absent here: this commit adds
-# the inference substrate only, so the two workers can be brought up, health-
-# checked and benchmarked on their own before any application code exists.
-#
-# Neither worker publishes a host port. That is a design decision, not an
-# oversight:
-#   * These are internal workers. They exist to be called by the API over the
+# ── One published port, on `api` ──────────────────────────────────────────────
+# This file contains exactly ONE `ports:` key, and it is on `api`. The workers
+# do not publish one, which is a design decision rather than an oversight:
+#   * The workers are internal. They exist to be called by the API over the
 #     compose network, not by anything on the host.
-#   * A published port is a public door. Every door is attack surface, and this
-#     milestone's goal is for the API to be the ONLY thing a host client (or
-#     the internet, once published) can reach. The API's own host port is
-#     ${API_HOST_PORT}, and it will be the sole publisher.
+#   * A published port is a public door. Every door is attack surface, and the
+#     whole point of the api is to be the ONLY thing a host client (or the
+#     internet, once published) can reach. Its host port is ${API_HOST_PORT},
+#     and it is the sole publisher.
 #   * Containers reach each other by SERVICE NAME over compose's default
-#     network, via Docker's embedded DNS. The API will call them at
+#     network, via Docker's embedded DNS. The API calls
 #     `http://embedder:8080` and `http://reranker:8080`. No published port is
-#     needed for that to work, and none is used.
+#     needed for that, and none is used. Both workers listen on 8080 inside
+#     their own network namespaces, so the two are different sockets and nothing
+#     collides; the DNS name — not the port number — is what tells them apart
+#     from the API's side.
 #
-# For the same reason there is no `container_name:` (compose generates names,
-# which keeps scaling and parallel project copies conflict-free) and no
-# `depends_on:` between these two services (they are independent — neither
-# calls the other, so ordering them would encode a lie about the architecture).
-# Only the future `api` will declare a dependency on both.
+# ── depends_on and container naming ───────────────────────────────────────────
+# `api` declares `depends_on` on both workers with `condition: service_healthy`.
+# The reason is not tidiness: llama.cpp answers /health with 503 while it is
+# still reading the GGUF off disk and loading it into memory, which on this
+# CPU-only machine takes tens of seconds. Plain `depends_on` waits only for a
+# container to be STARTED, which is not the same as ready — the API would come
+# up against two unready dependencies. `service_healthy` makes compose wait for
+# both healthchecks to actually pass, so the API starts only once the funnel
+# beneath it can serve.
+#
+# There is no `depends_on` between embedder and reranker: they are independent,
+# neither calls the other, so ordering them would encode a lie about the
+# architecture. And there is no `container_name:` anywhere — compose generates
+# names, which keeps scaling and parallel project copies conflict-free.
 #
 # ── Models are loaded BY PATH, not by repo name ───────────────────────────────
 # Both workers are started with `-m /models/<file>.gguf` rather than by naming a
