@@ -31,3 +31,36 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+# ── Terraform ────────────────────────────────────────────────────────────────
+# `.terraform/` is the local plugin/cache directory. On this repo it holds the
+# compiled hashicorp/aws provider binary at roughly 600MB. It is rebuilt by
+# every `terraform init` and is never committed — no value to a future clone,
+# enormous permanent cost in git history if it lands.
+.terraform/
+
+# Terraform state. Ignored even though `infra/bootstrap`'s state currently holds
+# nothing sensitive beyond the bucket name, for three reasons: state is machine
+# state rather than source code and is not meaningfully reviewable in a diff;
+# it is environment-specific and must never be carried between environments;
+# and the main stack at `infra/` will reference the RDS endpoint and the secret
+# ARN. That no plaintext password is expected in that state is a direct payoff
+# of `manage_master_user_password`, but one database's absence of plaintext is
+# not a reason to start tracking state.
+*.tfstate
+# State backups Terraform writes alongside the live file, e.g.
+# terraform.tfstate.backup — these are full copies of the same content.
+*.tfstate.*
+
+# Terraform crash logs. These can contain the values of variables as they were
+# at the time of the crash, so they are treated as possible secret spill.
+crash.log
+crash.*.log
+
+# `.terraform.lock.hcl` is DELIBERATELY not ignored — this asymmetry looks like
+# an oversight and is not. The lock file pins provider versions and
+# checksums, so a future `terraform init` cannot silently resolve a different
+# AWS provider than the one that last ran. Ignoring it would let plan/apply
+# behaviour change underneath the operator with no diff anywhere to show for it.
+# The copy under `infra/bootstrap/` is committed alongside this rule for the
+# same reason.
