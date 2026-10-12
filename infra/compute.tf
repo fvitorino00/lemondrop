@@ -251,13 +251,37 @@ resource "aws_instance" "app" {
     #
     # lemondrop application host — boot script (cloud-init user_data).
     #
+    # ── WHY THIS SCRIPT IS SHAPED THE WAY IT IS ─────────────────────────────────
+    #
+    # The previous version of this script died at its FIRST `dnf install` and
+    # told nobody why. Amazon Linux 2023 ships `curl-minimal`, which already
+    # provides /usr/bin/curl; asking dnf to install full `curl` next to it is a
+    # package conflict, dnf refused, `set -e` aborted the script, and every
+    # later step — docker, compose, the models, the stack — never ran. The
+    # target group was registered, the port was published, and nothing was
+    # listening, which is exactly what an ALB reports as 502.
+    #
+    # That failure was invisible because of a verification gap worth naming: an
+    # earlier pass checked this script with `bash -n`. That proves SYNTAX and
+    # nothing else. The package database that rejected the install lives on
+    # AWS's side, so no amount of reading, linting or shell-parsing can reach
+    # it — only running the instance can. "It parses" is not "it runs".
+    #
+    # Two things therefore changed. First, do not assume a package layout the
+    # host may not have: use what AL2023 already ships, and install from where
+    # AL2023 actually publishes things. Second, make the script name its own
+    # failure. The ERR trap below costs four lines and turns "the log stops for
+    # no reason" into "line N exited 1: <the exact command>". The log from the
+    # failed boot was 305 bytes and identified nothing.
+    #
     # IDEMPOTENT BY DESIGN — with a stated boundary on what that means.
     # Every step below either checks before it acts or is natively idempotent
-    # (dnf, git pull, the model fetcher's skip-if-present, compose up), so a
-    # re-run over a HEALTHY prior run converges on the same state rather than
-    # duplicating work or failing on things that already exist. That matters
-    # for two reasons: user_data_replace_on_change re-runs this on every script
-    # change, and an operator debugging a boot will re-run it by hand.
+    # (dnf, amazon-linux-extras behind a `command -v` guard, git pull, the
+    # model fetcher's skip-if-present, compose up), so a re-run over a HEALTHY
+    # prior run converges on the same state rather than duplicating work or
+    # failing on things that already exist. That matters for two reasons:
+    # user_data_replace_on_change re-runs this on every script change, and an
+    # operator debugging a boot will re-run it by hand.
     #
     # The boundary, stated so this claim is not read as stronger than it is:
     # idempotent means "safe to repeat", NOT "repairs whatever it finds". A
@@ -281,15 +305,54 @@ resource "aws_instance" "app" {
     #
     # NO SECRETS IN THIS FILE. See the comment on user_data above.
 
-    set -euo pipefail
+    # -E (errtrace) is NOT optional decoration here. Without it the ERR trap is
+    # NOT inherited by shell functions, so a failure inside log/die/on_err would
+    # go untrapped. `-Eeuo pipefail` is the combination that makes the trap below
+    # actually fire everywhere a command can fail.
+    set -Eeuo pipefail
 
     LOG_FILE="/var/log/lemondrop-boot.log"
     APP_DIR="/opt/lemondrop"
     APP_URL="${var.app_source_url}"
     APP_PORT="${local.app_port}"
     COMPOSE_PLUGIN_RELEASE="v2.29.1"
+    PLUGIN_DIR="/usr/libexec/docker/cli-plugins"
+    BOOT_STATUS="did not finish"
 
-    log() { printf '%s [%s]\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$LOG_FILE"; }
+    # tee is allowed to fail here WITHOUT taking the script down with it. A log
+    # write that fails (read-only fs, full disk, bad perms) must not become the
+    # reason the boot dies with no explanation — that is the exact failure shape
+    # this script exists to eliminate, and a logger that can kill its own caller
+    # is one more way to produce it.
+    log() { printf '%s [%s]\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$LOG_FILE" || true; }
+
+    # Named, logged, then exited: a deliberate abort with a stated reason. Used
+    # for conditions a human must resolve (missing curl, docker that will not
+    # start) so that "the operator chose to stop" never looks like "something
+    # crashed".
+    die() {
+      BOOT_STATUS="FAILED — $1"
+      log "FATAL: $1"
+      exit 1
+    }
+
+    # The single highest-value line in this script. Any uncaught non-zero exit
+    # prints the LINE NUMBER, the COMMAND, and the EXIT CODE, then the EXIT
+    # trap below prints the terminal marker. Without it a failed boot is a log
+    # that stops for no visible reason — which is precisely how the previous
+    # version of this script spent an evening.
+    on_err() {
+      BOOT_STATUS="FAILED at line $2 (exit $1)"
+      log "FATAL: boot died at line $2, exit status $1"
+      log "       command: $3"
+      log "       the command's own output is immediately above this line"
+    }
+    trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
+    # Always fires, on success and on failure, so the last line of the log is
+    # always a verdict rather than a truncation.
+    finish() { log "=== lemondrop boot: $BOOT_STATUS ==="; }
+    trap finish EXIT
 
     log "=== lemondrop boot: START ==="
     log "app dir      : $APP_DIR"
@@ -299,15 +362,82 @@ resource "aws_instance" "app" {
     # ── 1. Packages ──────────────────────────────────────────────────────────
     # docker: the runtime for all three services.
     # git   : the application source is cloned, not baked into the AMI.
-    # curl  : scripts/fetch-models.sh downloads the GGUF weights with it.
-    # None of these are present on a stock AL2023 AMI.
-    log "step 1/6: installing packages (docker, git, curl)"
-    dnf install -y docker git curl
+    # curl  : NOT INSTALLED, and that is the correction. AL2023 ships
+    #         curl-minimal, which provides /usr/bin/curl and handles the HTTPS
+    #         this script needs. Requesting full `curl` alongside it is the
+    #         conflict that killed the previous boot. Installing nothing is
+    #         strictly more robust than installing something, so the script
+    #         uses what is there and VERIFIES it below.
+    #
+    # The trust store is not in doubt either, and the evidence is on the record:
+    # the failed boot's dnf got far enough to resolve dependencies, which means
+    # it had already downloaded repository metadata over HTTPS, which means the
+    # system CA bundle on this AMI is present and working. ca-certificates is
+    # listed below as a belt-and-braces no-op — on a stock AMI it is already
+    # installed and dnf reports "Nothing to do" — and it cannot conflict with
+    # anything, because it IS the preinstalled trust store package.
+    log "step 1/6: installing packages (docker, git) and verifying curl"
+    dnf install -y git ca-certificates
+
+    # ── docker comes from amazon-linux-extras, NOT from a bare dnf install ────
+    # AL2023 publishes the Docker Engine as an EXTRAS TOPIC, and the extras
+    # repository is not enabled by default. `dnf install docker` is therefore a
+    # "No match for argument: docker" failure on a stock AL2023 image — the same
+    # shape of failure as the curl line, one step later, waiting for anyone to
+    # remove the first one. This is how AL2023 ships docker.
+    #
+    # Two guards make this robust to the packaging detail above being different
+    # from what is documented: the `command -v` test means a re-run never calls
+    # the installer at all, and the `||` falls back to dnf so that an image
+    # which DOES carry docker in its base repo still ends up with docker rather
+    # than with a failed boot.
+    if ! command -v docker >/dev/null 2>&1; then
+      log "  installing docker from amazon-linux-extras"
+      amazon-linux-extras install -y docker || dnf install -y docker
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+      die "docker is still absent after amazon-linux-extras and dnf both ran"
+    fi
+
+    # A clear, readable error if curl really is missing — rather than the dnf
+    # conflict dump that this guard exists to make unnecessary.
+    if ! command -v curl >/dev/null 2>&1; then
+      log "       AL2023 normally provides curl via the curl-minimal package, so"
+      log "       reaching this means the image is not a stock AL2023 AMI."
+      log "       If you fix it, install curl-minimal — NOT full curl, which"
+      log "       conflicts with curl-minimal and is what broke the last boot."
+      die "no curl on this host"
+    fi
+    log "  curl: $(curl --version 2>/dev/null | head -n 1 || true)"
 
     systemctl enable --now docker
-    if ! systemctl is-active --quiet docker; then
-      log "FATAL: the docker service did not start. Cannot continue."
-      exit 1
+
+    # ── Wait for the daemon, do not merely check that it was asked to start ──
+    # `systemctl enable --now` QUEUES the start job; it does not wait for
+    # dockerd to finish initialising. `systemctl is-active` called immediately
+    # afterwards legitimately returns non-zero while the unit is still
+    # `activating`, which on a cold t3.micro takes real seconds. The previous
+    # version treated that transient state as fatal and exited 1 with "the
+    # docker service did not start" — a message that is both wrong and
+    # unactionable, on a host where dockerd was about to come up fine.
+    #
+    # So this polls until the daemon is genuinely answering, and asks `docker
+    # info` as well as systemd: a unit can be `active` a moment before the
+    # socket is usable, and `docker info` is the check that actually proves the
+    # next step can talk to it.
+    log "  waiting for the docker daemon to answer (up to 60s)"
+    docker_ready=0
+    for ((i = 1; i <= 30; i++)); do
+      if systemctl is-active --quiet docker && docker info >/dev/null 2>&1; then
+        docker_ready=1
+        break
+      fi
+      sleep 2
+    done
+    if [ "$docker_ready" -ne 1 ]; then
+      log "       systemctl status docker"
+      log "       journalctl -u docker --no-pager --lines=50"
+      die "docker is installed but the daemon never became ready"
     fi
     log "  docker: $(docker --version)"
 
@@ -328,10 +458,23 @@ resource "aws_instance" "app" {
       log "step 2/6: compose plugin present ($(docker compose version --short))"
     else
       log "step 2/6: installing docker compose plugin $COMPOSE_PLUGIN_RELEASE"
-      install -d -m 0755 /usr/libexec/docker/cli-plugins
-      curl -fsSL -o /usr/libexec/docker/cli-plugins/docker-compose \
-        "https://github.com/docker/compose/releases/download/$COMPOSE_PLUGIN_RELEASE/docker-compose-linux-x86_64"
-      chmod 0755 /usr/libexec/docker/cli-plugins/docker-compose
+      # /usr/libexec/docker/cli-plugins is one of the docker CLI's default
+      # plugin search paths on Linux, which is why the plugin is installed there
+      # rather than into a path only this script knows about.
+      install -d -m 0755 "$PLUGIN_DIR"
+      # Downloaded to a .part file and moved into place only on success. The old
+      # version wrote directly to the final path: an interrupted transfer left a
+      # truncated file sitting at the name docker looks for, and every LATER run
+      # would then find a plugin that existed, was executable, and was garbage.
+      # That is the same "plausible-looking file poisons the next run" failure
+      # fetch-models.sh already guards against for the GGUFs.
+      if ! curl -fsSL -o "$PLUGIN_DIR/docker-compose.part" \
+        "https://github.com/docker/compose/releases/download/$COMPOSE_PLUGIN_RELEASE/docker-compose-linux-x86_64"; then
+        rm -f "$PLUGIN_DIR/docker-compose.part"
+        die "could not download the docker compose plugin $COMPOSE_PLUGIN_RELEASE"
+      fi
+      chmod 0755 "$PLUGIN_DIR/docker-compose.part"
+      mv "$PLUGIN_DIR/docker-compose.part" "$PLUGIN_DIR/docker-compose"
       log "  compose: $(docker compose version --short)"
     fi
 
@@ -416,7 +559,22 @@ resource "aws_instance" "app" {
     log "step 4/6: generating .env from .env.example"
     cp "$APP_DIR/.env.example" "$APP_DIR/.env"
     sed -i "s|^API_HOST_PORT=.*|API_HOST_PORT=$APP_PORT|" "$APP_DIR/.env"
-    log "  $(grep '^API_HOST_PORT=' "$APP_DIR/.env")"
+    # The line below VERIFIES the substitution happened. It is not decoration.
+    # sed only rewrites a line that already matches ^API_HOST_PORT=, so if
+    # .env.example ever loses that key the sed silently does nothing, Compose
+    # interpolates an empty host port, and the result is a stack that is
+    # healthy and unreachable — the exact failure the block comment above warns
+    # about, arrived at by the quietest possible route. Assert it instead.
+    #
+    # Note this used to be `log "  $(grep ...)"`, where a grep that matched
+    # nothing returned 1 and was swallowed: command substitution in an argument
+    # position does not trip `set -e`, so it printed an empty line and the boot
+    # carried on. That is why it is an explicit test now.
+    if ! grep -q "^API_HOST_PORT=$APP_PORT$" "$APP_DIR/.env"; then
+      log "       .env contains: $(grep '^API_HOST_PORT=' "$APP_DIR/.env" || true)"
+      die ".env does not set API_HOST_PORT=$APP_PORT; check .env.example for that key"
+    fi
+    log "  $(grep '^API_HOST_PORT=' "$APP_DIR/.env" || true)"
 
     # NOTE, for whoever adds database support to the api: do NOT add a
     # DATABASE_URL line here. There is no password to put in one, and the
@@ -437,17 +595,44 @@ resource "aws_instance" "app" {
     # whose models are not on disk. So let it fail LOUDLY here, where the cause
     # is visible, rather than quietly later.
     log "step 5/6: fetching model weights (~340MB from HuggingFace)"
+    # Note on pipefail: because this pipeline's status is the WORST of its two
+    # commands, a failed download aborts the boot here and nowhere else. That
+    # is the intent stated above. What was missing before was any record of
+    # WHICH line did it — that is what the ERR trap at the top now supplies.
     bash "$APP_DIR/scripts/fetch-models.sh" 2>&1 | tee -a "$LOG_FILE"
     log "  models directory: $(du -sh "$APP_DIR/models" | cut -f1)"
 
+    # ── Resource headroom, recorded BEFORE the stack starts ───────────────────
+    # This is two lines of `free -m` and `df -h`, and it is here because an OOM
+    # kill and a full root volume are both SILENT from the outside: the container
+    # dies, the ALB sees nothing on 8000, and the boot log reads like a clean run
+    # that simply never became healthy. Writing the numbers down first means the
+    # next person can compare them against what the host looked like at the
+    # moment of failure instead of guessing after the fact.
+    #
+    # t3.micro is ~913Mi total with no swap, and the two GGUFs alone are ~410MB
+    # resident once both workers have loaded them. That is tight. It is not a
+    # change to the instance type — that is the operator's call — but if this
+    # boot is killed here, the memory line above is the first evidence.
+    log "  memory before start:"
+    free -m | tee -a "$LOG_FILE"
+    log "  disk before start:"
+    df -h / | tee -a "$LOG_FILE"
+
     # ── 6. Start the stack ───────────────────────────────────────────────────
     # The api builds locally from ./api (it has a `build:` section, no published
-    # image); the two workers pull the published llama.cpp image. `pull` is
-    # best-effort, so a transient registry failure does not abort a boot that
-    # could still succeed from a locally cached image.
+    # image); the two workers pull the published llama.cpp image.
+    #
+    # The pull is NAMED per service on purpose. A bare `docker compose pull`
+    # pulls every service, including the api — whose image `lemondrop-api` is
+    # built here and exists in no registry, so that command could only ever fail
+    # and could only ever trip its own "WARNING: pull failed" line. Pulling the
+    # two services that genuinely have published images makes the warning mean
+    # something when it appears.
     log "step 6/6: starting compose services"
     cd "$APP_DIR"
-    docker compose pull 2>&1 | tee -a "$LOG_FILE" || log "WARNING: 'docker compose pull' failed; continuing with local build/cache"
+    docker compose pull embedder reranker 2>&1 | tee -a "$LOG_FILE" \
+      || log "WARNING: 'docker compose pull' failed; continuing with local build/cache"
     docker compose up -d --remove-orphans 2>&1 | tee -a "$LOG_FILE"
     docker compose ps 2>&1 | tee -a "$LOG_FILE"
 
@@ -464,9 +649,11 @@ resource "aws_instance" "app" {
     # needs. A loud warning beats a failure code that says nothing about which
     # of six steps went wrong.
     log "verifying /health (up to 300s)"
-    for i in $(seq 1 60); do
+    # A C-style loop rather than `seq 1 60`: it drops a dependency on coreutils'
+    # seq for no gain, and `$((i * 5))` keeps the elapsed-seconds figure.
+    for ((i = 1; i <= 60; i++)); do
       if curl -fsS -o /dev/null "http://127.0.0.1:$APP_PORT/health"; then
-        log "=== lemondrop boot: SUCCESS — api healthy after $((i * 5))s ==="
+        BOOT_STATUS="SUCCESS — api healthy after $((i * 5))s"
         exit 0
       fi
       sleep 5
@@ -478,7 +665,11 @@ resource "aws_instance" "app" {
     log "  docker compose logs --tail=100 api embedder reranker"
     log "  free -m    # an OOM kill while loading the reranker is the first suspect"
     log "  df -h /    # a full root volume fails in ways that mimic every other fault"
-    log "=== lemondrop boot: FINISHED WITH WARNINGS ==="
+    log "Compare both against the 'before start' readings logged in step 6."
+    # The EXIT trap prints the terminal marker, so this line sets the verdict
+    # rather than printing it, and the last line of the log is always the same
+    # shape no matter which path the boot took.
+    BOOT_STATUS="FINISHED WITH WARNINGS — api never answered /health"
     exit 0
   EOF
 
