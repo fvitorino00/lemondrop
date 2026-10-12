@@ -1,0 +1,30 @@
+# lemondrop API — Python dependencies
+#
+# Exact pins, no ranges. A range (`>=`) means the image you build today and the
+# image you build next month can differ, and a container image is not a place to
+# discover a breaking change in production. Pin exactly; upgrade deliberately.
+#
+# Every dependency below — and every transitive dependency they pull — ships a
+# prebuilt wheel for CPython 3.12 on linux/amd64. That is why api/Dockerfile
+# installs no compiler toolchain. If a future addition ever needs to compile
+# from source, that is the moment to revisit that decision, not before.
+
+# The web framework. Routing, JSON encoding and the generated OpenAPI docs all
+# come from here. (Its dependency injection goes unused — no Depends anywhere —
+# but it ships in the one framework either way.)
+fastapi==0.143.0
+
+# The ASGI server that actually runs the app (see CMD in the Dockerfile).
+# The [standard] extra pulls uvloop (faster event loop), httptools, watchfiles
+# and websockets. It is worth it here: this service is I/O-bound on downstream
+# HTTP calls, so the faster event loop is doing real work, not decoration.
+uvicorn[standard]==0.54.0
+
+# The async HTTP client, used in two places. httpx.AsyncClient is the class in
+# both: /health constructs one and passes it to _probe, which uses asyncio.gather
+# to check the embedder and reranker concurrently instead of blocking the event
+# loop on one after the other; /embed and /rerank reach the workers through the
+# shared _post_upstream helper, and sharing it is what gives the two inference
+# routes identical timeout policy and identical 502/504 failure semantics rather
+# than letting them drift apart.
+httpx==0.28.1

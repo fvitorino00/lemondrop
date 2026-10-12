@@ -1,0 +1,8 @@
+# LemonDrop — development/test dependencies
+# Separate from runtime dependencies used inside Docker.
+
+# Test runner
+pytest==9.1.1
+
+# HTTP client for integration tests
+requests==2.34.2

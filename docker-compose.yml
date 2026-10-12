@@ -1,0 +1,286 @@
+# lemondrop — document-search retrieval stack
+#
+# ── Architecture ──────────────────────────────────────────────────────────────
+# Three services make up the retrieval stack: two stateless inference workers
+# and the orchestrator that fronts them.
+#
+#   embedder  — stage 1. Turns text into a 384-dim vector (bge-small-en-v1.5,
+#               CLS pooling). Query and passage are both embedded here.
+#   reranker  — stage 2. Scores (query, passage) pairs and orders the stage-1
+#               candidate list (bge-reranker-base, rank pooling).
+#   api       — the orchestrator. Stands in front of both workers and is the
+#               single door to the outside world.
+#
+# The two workers share the same published image,
+# ghcr.io/ggml-org/llama.cpp:server. Neither has a Dockerfile and neither
+# has a `build:` section, because the operator verified that image runs
+# correctly and CPU-only on this machine. It is a third-party artifact,
+# so it is consumed as published. `api` is different in kind: it is our
+# own application code, not a published upstream image, so it is built
+# from ./api rather than pulled.
+#
+# ── One published port, on `api` ──────────────────────────────────────────────
+# This file contains exactly ONE `ports:` key, and it is on `api`. The workers
+# do not publish one, which is a design decision rather than an oversight:
+#   * The workers are internal. They exist to be called by the API over the
+#     compose network, not by anything on the host.
+#   * A published port is a public door. Every door is attack surface, and the
+#     whole point of the api is to be the ONLY thing a host client (or the
+#     internet, once published) can reach. Its host port is ${API_HOST_PORT},
+#     and it is the sole publisher.
+#   * Containers reach each other by SERVICE NAME over compose's default
+#     network, via Docker's embedded DNS. The API calls
+#     `http://embedder:8080` and `http://reranker:8080`. No published port is
+#     needed for that, and none is used. Both workers listen on 8080 inside
+#     their own network namespaces, so the two are different sockets and nothing
+#     collides; the DNS name — not the port number — is what tells them apart
+#     from the API's side.
+#
+# ── depends_on and container naming ───────────────────────────────────────────
+# `api` declares `depends_on` on both workers with `condition: service_healthy`.
+# The reason is not tidiness: llama.cpp answers /health with 503 while it is
+# still reading the GGUF off disk and loading it into memory, which on this
+# CPU-only machine takes tens of seconds. Plain `depends_on` waits only for a
+# container to be STARTED, which is not the same as ready — the API would come
+# up against two unready dependencies. `service_healthy` makes compose wait for
+# both healthchecks to actually pass, so the API starts only once the funnel
+# beneath it can serve.
+#
+# There is no `depends_on` between embedder and reranker: they are independent,
+# neither calls the other, so ordering them would encode a lie about the
+# architecture. And there is no `container_name:` anywhere — compose generates
+# names, which keeps scaling and parallel project copies conflict-free.
+#
+# ── Models are loaded BY PATH, not by repo name ───────────────────────────────
+# Both workers are started with `-m /models/<file>.gguf` rather than by naming a
+# HuggingFace repo. The reason: naming a repo resolves the weights through the
+# container's own cache at /root/.cache/huggingface/, which is NOT the bind
+# mount — so ./models:/models was not serving the model, and persistence across
+# a container rebuild was not actually guaranteed. Loading by path makes /models
+# the single source of truth for the weights and makes scripts/fetch-models.sh
+# the single provisioning path.
+# Consequence: scripts/fetch-models.sh MUST be run before the first
+# `docker compose up`. A model missing from /models now fails loudly at startup
+# instead of being silently re-downloaded into a throwaway cache.
+#
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+# Every ${VAR} below is interpolated by Compose from the `.env` file sitting
+# beside this compose file, which you create with:  cp .env.example .env
+# If `.env` is absent Compose substitutes an empty string and warns, so run
+# that copy before the first `docker compose up`.
+
+services:
+
+  # ── embedder ───────────────────────────────────────────────────────────────
+  # Stage 1 of the funnel. Loads bge-small-en-v1.5 as Q8_0 and serves embeddings
+  # on demand. `--pooling cls` is REQUIRED for this model family and yields
+  # exactly EMBEDDING_DIM=384 dimensions; the vector store index is sized to
+  # match. `--alias` is the name the API will request models by, so it is taken
+  # from .env rather than hardcoded here.
+  embedder:
+    image: ghcr.io/ggml-org/llama.cpp:server
+
+    # Exec-form argv. The image's ENTRYPOINT is the llama.cpp server binary, so
+    # these are server flags, not a command to run inside.
+    #   -m            load the GGUF from the bind-mounted /models path
+    #   --embedding   run as an embedding server
+    #   --pooling cls CLS pooling -> 384-dim vectors (bge-small-en-v1.5)
+    #   --alias       model name the API addresses it by
+    #   --port        port inside the container's own network namespace
+    command:
+      - "-m"
+      - "/models/bge-small-en-v1.5-q8_0.gguf"
+      - "--embedding"
+      - "--pooling"
+      - "cls"
+      - "--alias"
+      - "${EMBEDDER_MODEL_ALIAS}"
+      - "--port"
+      - "${EMBEDDER_INTERNAL_PORT}"
+
+    # Persist downloaded weights on the NATIVE ext4 filesystem at the project
+    # root (/home/zaratustra0/Projects/lemondrop), NOT under /mnt/c. WSL mounts
+    # /mnt/c as slow 9p; loading a model from there costs minutes per start.
+    # Bind-mounting keeps weights out of a docker volume so they survive
+    # `docker compose down -v` and are inspectable with ordinary tools.
+    volumes:
+      - ./models:/models
+
+    # Survive host reboots and crashes, but respect an explicit `stop`.
+    restart: unless-stopped
+
+    # The upstream image ALREADY ships a HEALTHCHECK against port 8080. We
+    # restate it explicitly rather than inherit it silently, for one reason:
+    # this URL is hardcoded to 8080 on purpose. The image's built-in probe is
+    #   HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8080/health" ]
+    # so if this probe used ${EMBEDDER_INTERNAL_PORT} and someone ever changed
+    # that variable, the image's inherited probe would break while ours silently
+    # drifted from reality. Keeping 8080 literal keeps both probes agreeing, and
+    # keeps 8080 a documented constraint of the upstream image.
+    #
+    # This is safe for BOTH services: each container has its own network
+    # namespace, so `localhost:8080` inside the reranker is a different socket
+    # from `localhost:8080` inside the embedder. Nothing collides; the DNS name
+    # (embedder vs reranker) is what distinguishes them from the API's side.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      # Poll every 10s once the container is considered up.
+      interval: 10s
+      # A probe that has not answered in 5s is a failed probe.
+      timeout: 5s
+      # Tolerate 5 consecutive failures before marking the container unhealthy.
+      retries: 5
+      # Generous grace period. The FIRST run reads a GGUF off disk and loads it
+      # into memory on CPU, which is slow and happens BEFORE /health answers.
+      # During start_period a failing probe does NOT count against retries, so
+      # this absorbs a slow cold start instead of restarting a booting model.
+      start_period: 120s
+
+    # Bound the on-disk log footprint. Without this, a long-lived inference
+    # service's json-file logs grow without limit and fill the host disk.
+    logging:
+      driver: json-file
+      options:
+        # Rotate at 10MB per file...
+        max-size: "10m"
+        # ...keeping at most 3 files (~30MB) per service.
+        max-file: "3"
+
+  # ── reranker ───────────────────────────────────────────────────────────────
+  # Stage 2 of the funnel. Loads bge-reranker-base as Q8_0 and scores candidate
+  # pairs. `--pooling rank` is REQUIRED here (not cls): a reranker emits one
+  # relevance score per input pair rather than a vector, and the llama.cpp server
+  # expresses that as rank pooling over the --embedding code path.
+  reranker:
+    image: ghcr.io/ggml-org/llama.cpp:server
+
+    # Same exec-form argv. Differences from the embedder, all load-bearing:
+    #   -m             load the GGUF from the bind-mounted /models path
+    #   --reranking    scoring mode; without it the server answers embeddings
+    #   --embedding    still required — it is the code path rank pooling rides on
+    #   --pooling rank one score per pair, not a vector
+    command:
+      - "-m"
+      - "/models/bge-reranker-base-q8_0.gguf"
+      - "--reranking"
+      - "--embedding"
+      - "--pooling"
+      - "rank"
+      - "--alias"
+      - "${RERANKER_MODEL_ALIAS}"
+      - "--port"
+      - "${RERANKER_INTERNAL_PORT}"
+
+    # Same bind mount, same native-ext4 rationale: this model is the larger of
+    # the two and is the one whose slow re-read would hurt most.
+    volumes:
+      - ./models:/models
+
+    restart: unless-stopped
+
+    # Literal 8080, and for the same upstream-image reason as the embedder:
+    # the published image hardcodes its own healthcheck to port 8080. Because
+    # each container has an independent network namespace, this reranker
+    # occupying 8080 alongside the embedder's 8080 is not a conflict. It is
+    # also why RERANKER_INTERNAL_PORT must stay 8080 in .env.example.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Same cold-start allowance as the embedder; this model is bigger.
+      start_period: 120s
+
+    # Same log bounding, same reason.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── api ────────────────────────────────────────────────────────────────────
+  # WHY THIS IS THE ONLY SERVICE WITH A PUBLISHED PORT
+  # The embedder and the reranker are internal workers. They do one thing each,
+  # they hold no state, and nothing on this host has any business calling them
+  # directly. Publishing them would put two more doors on the machine for no
+  # benefit — every published port is attack surface, and a published llama.cpp
+  # server is a published GPU/CPU inference endpoint.
+  #
+  # So the topology is: exactly one door (this service), and the workers are
+  # reachable only from inside the compose network, by SERVICE NAME. The API
+  # calls `http://embedder:8080` and `http://reranker:8080`; Docker's embedded
+  # DNS resolves those names on the default network. No publishing is involved
+  # on that path, and none is needed — which is why the two services above have
+  # no `ports:` key and must not grow one.
+  #
+  # WHY depends_on USES condition: service_healthy
+  # Plain `depends_on` only waits for a container to be STARTED. Started is not
+  # ready. llama.cpp answers /health with 503 while it is still reading the GGUF
+  # off disk and loading the model into memory — on this CPU-only machine that
+  # takes tens of seconds. With plain depends_on the API would come up first,
+  # see two unready dependencies, and (correctly) report degraded until the
+  # models finished loading. `condition: service_healthy` makes compose wait for
+  # both workers' healthchecks to actually pass, so the API is only started once
+  # the funnel beneath it can genuinely serve. This is the one place where
+  # depends_on encodes a real fact about the system rather than a convention.
+  #
+  # The API is stateless in this phase: no volumes, no database. There is nothing
+  # for it to persist, so there is nothing to mount.
+  api:
+    # Built from ./api rather than pulled. This is application code, not a
+    # published upstream image — and unlike llama.cpp:server it is not a
+    # third-party artifact we consume as-is.
+    build: ./api
+    # Name the built image so it is identifiable in `docker images` and
+    # referenceable by name rather than only by this project.
+    image: lemondrop-api
+
+    # The only `ports:` key in this file. Host side from .env so the door can be
+    # moved without editing this file; container side from .env to match the port
+    # uvicorn binds (API_INTERNAL_PORT must stay 8000 — see api/Dockerfile).
+    ports:
+      - "${API_HOST_PORT}:${API_INTERNAL_PORT}"
+
+    depends_on:
+      embedder:
+        condition: service_healthy
+      reranker:
+        condition: service_healthy
+
+    # Same restart policy as the workers, for the same reason: come back after a
+    # host reboot, but respect an explicit `stop`.
+    restart: unless-stopped
+
+    # Our own healthcheck, and it MUST use the variable. The llama.cpp image
+    # ships a probe hardcoded to 8080 (which is why both workers are pinned to
+    # 8080), but this image ships no probe at all, so there is nothing inherited
+    # to stay in sync with — the probe written here is the only one, and it has
+    # to be correct on its own. Hence ${API_INTERNAL_PORT} rather than a literal.
+    #
+    # The probe is the interpreter already in the image (python:3.12-slim ships
+    # no curl), so no package is added to the image purely to be able to health
+    # check it. urlopen raises on any non-2xx, so an exception is a non-zero
+    # exit and a 503 from our own endpoint — which is exactly what "a dependency
+    # is down" looks like — correctly reads as unhealthy here.
+    #
+    # The in-call timeout (4s) is deliberately below the healthcheck timeout (5s):
+    # it lets the probe fail and exit on its own terms instead of being killed
+    # mid-flight by the scheduler.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:${API_INTERNAL_PORT}/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Short, unlike the workers' 120s. The API has no model to load: it is
+      # serving Python the moment the process starts, and its dependencies are
+      # already guaranteed loaded by depends_on above.
+      start_period: 30s
+
+    # Same log bounding as the workers, same reason: a long-lived service must
+    # not grow its on-disk logs without limit.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
