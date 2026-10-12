@@ -256,7 +256,7 @@ resource "aws_instance" "app" {
     # lemondrop application host — boot script (cloud-init user_data).
     # Design rationale, failure history and known limits: docs/boot-script.md.
     # They live there because EC2 rejects user_data over 16,384 bytes and this
-    # script was measured at 24,994. Measure any addition against that ceiling.
+    # script was measured at 15,068. Measure any addition against that ceiling.
     #
     # IDEMPOTENT means "safe to repeat", NOT "repairs what it finds". Every step
     # checks before it acts or is natively idempotent, so a re-run over a healthy

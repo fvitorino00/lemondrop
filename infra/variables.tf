@@ -183,7 +183,8 @@ variable "enable_nat_gateway" {
   # ── WHAT false DOES ─────────────────────────────────────────────────────
   # The private subnets get a default route to the INTERNET GATEWAY instead of
   # to the NAT gateway. Consequence, stated plainly:
-  #   * Image pulls, package installs, and model downloads STILL WORK. Turning
+  #   * Image pulls, package installs, and model downloads STILL WORK — provided
+  #     the instance has a public IP (`app_associate_public_ip = true`). Turning
   #     the NAT gateway off does not remove the private subnets' outbound path;
   #     it changes where that path leads. EC2 keeps booting, keeps pulling its
   #     base image, and keeps fetching weights without a NAT gateway in the way.

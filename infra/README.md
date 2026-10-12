@@ -207,9 +207,14 @@ Stated plainly rather than left to be discovered:
 
 ## Verification status
 
-**No Terraform command has been run.** Terraform is not installed on the authoring machine and there are no AWS credentials there. `init`, `validate`, `fmt`, `plan`, and `apply` have all not been executed.
+**The infrastructure is deployed and verified.** The stack described in this README was provisioned with Terraform and the running system was exercised against its acceptance criteria. The evidence — the exact commands run and their observed output — is recorded in `docs/verification-milestone-2.md`. Read that for what was verified versus what is only supported by evidence.
 
-What was done instead, by hand:
+Two things are **not** verified and are not claimed:
+
+1. A full destroy/apply cycle has not been run. Reproducibility is supported by five successful applies that persisted state and produced only intended changes, but the destroy half of the loop is unexercised.
+2. The application does not yet use PostgreSQL. The `psql` probe proves the network path from EC2 to RDS, not application integration. That is Milestone 3.
+
+Before the first apply, the following was checked by hand:
 
 1. Every `var.*` reference in `*.tf` was grepped and confirmed to be declared in `variables.tf` — and every variable in `variables.tf` confirmed to be used.
 2. Every `aws_vpc.`, `aws_subnet.`, `aws_security_group.`, `aws_nat_gateway.`, `aws_internet_gateway.`, `aws_route_table.`, `aws_eip.`, `aws_route.`, `aws_route_table_association.` reference was cross-checked against the resource blocks actually written — no dangling references.

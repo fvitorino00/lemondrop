@@ -323,7 +323,10 @@ resource "aws_route" "private_default_via_nat" {
 # A private subnet is private because of its ROUTE, not because of its name or
 # its CIDR. Pointing 0.0.0.0/0 at the IGW makes every instance in this subnet
 # able to send traffic to the internet directly, with the instance's own public
-# address as the source. Concretely, when this path is active:
+# address as the source — WHICH REQUIRES THE INSTANCE TO HOLD A PUBLIC IP. With
+# `app_associate_public_ip = false` (the default) this route provides no path out
+# at all; see `app_associate_public_ip` in variables.tf. Concretely, when this
+# path is active:
 #
 #   * EC2 in the private subnet can pull images, install packages, and download
 #     models WITHOUT a NAT gateway. That is the upside you are paying for.
