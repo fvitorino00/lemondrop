@@ -219,7 +219,7 @@ resource "aws_lb" "main" {
 resource "aws_lb_target_group" "app" {
   count = var.enable_load_balancer ? 1 : 0
 
-  name = "${local.name_prefix}-app-tg"
+  name   = "${local.name_prefix}-app-tg"
   vpc_id = aws_vpc.main.id
 
   # The ONE door. Port 8000 on the api and nothing else.

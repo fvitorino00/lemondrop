@@ -113,10 +113,10 @@ resource "aws_db_instance" "db" {
   # ── Storage ────────────────────────────────────────────────────────────────
   # gp3 over gp2: same durability class, up to 3x the throughput, and it is
   # the current generation. 20 GiB is the PostgreSQL engine's floor.
-  allocated_storage   = var.db_allocated_storage
-  storage_type        = "gp3"
-  storage_encrypted   = true
-  kms_key_id          = null # AWS-managed key. Not "more secure" — the
+  allocated_storage = var.db_allocated_storage
+  storage_type      = "gp3"
+  storage_encrypted = true
+  kms_key_id        = null # AWS-managed key. Not "more secure" — the
   # choice here is that rotating this key is an operator decision with a data
   # migration attached, and the default key already encrypts at rest.
 
@@ -247,8 +247,8 @@ resource "aws_db_instance" "db" {
   #       because it is not a resource in this config.
   #     → skip_final_snapshot = true skips it and discards the data. Free, and
   #       why it is not the default.
-  deletion_protection      = var.db_deletion_protection
-  skip_final_snapshot      = var.db_skip_final_snapshot
+  deletion_protection       = var.db_deletion_protection
+  skip_final_snapshot       = var.db_skip_final_snapshot
   final_snapshot_identifier = var.db_skip_final_snapshot ? null : coalesce(var.db_final_snapshot_identifier, "${local.name_prefix}-final")
 
   # ── Backups ────────────────────────────────────────────────────────────────

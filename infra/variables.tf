@@ -349,7 +349,7 @@ variable "create_ssh_key" {
   # asked for. Note this only creates the KEY PAIR. It opens nothing — port 22
   # is not in any security group in security_groups.tf, so a key pair on its
   # own grants no access. Turning this on does not make the instance reachable;
-#   it makes it *reachable-if-someone-also-opens-22*, which is a deliberate,
+  #   it makes it *reachable-if-someone-also-opens-22*, which is a deliberate,
   #   reviewable second step.
 }
 

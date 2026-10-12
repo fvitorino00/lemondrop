@@ -151,18 +151,18 @@ resource "aws_vpc_security_group_ingress_rule" "alb_from_operator" {
   security_group_id = aws_security_group.alb.id
   description       = "Port 80 from the operator home IP only"
 
-  ip_protocol       = "tcp"
-  from_port         = local.lb_port
-  to_port           = local.lb_port
-  cidr_ipv4         = var.allowed_api_cidr
+  ip_protocol = "tcp"
+  from_port   = local.lb_port
+  to_port     = local.lb_port
+  cidr_ipv4   = var.allowed_api_cidr
 }
 
 # ── Egress: to the EC2 security group on the app port ONLY ───────────────
 # The load balancer forwards to the instance and to nothing else. It cannot
 # reach the database, and it cannot reach the internet.
 resource "aws_vpc_security_group_egress_rule" "alb_to_ec2" {
-  security_group_id            = aws_security_group.alb.id
-  description                  = "Forward traffic to the app port on EC2, and nowhere else"
+  security_group_id = aws_security_group.alb.id
+  description       = "Forward traffic to the app port on EC2, and nowhere else"
 
   ip_protocol                  = "tcp"
   from_port                    = local.app_port
@@ -190,8 +190,8 @@ resource "aws_security_group" "app_ec2" {
 # layer: the load balancer is the only host in the account permitted to open
 # this port.
 resource "aws_vpc_security_group_ingress_rule" "ec2_from_alb" {
-  security_group_id            = aws_security_group.app_ec2.id
-  description                  = "App port from the load balancer only"
+  security_group_id = aws_security_group.app_ec2.id
+  description       = "App port from the load balancer only"
 
   ip_protocol                  = "tcp"
   from_port                    = local.app_port
@@ -302,8 +302,8 @@ resource "aws_vpc_security_group_egress_rule" "ec2_egress_all" {
   security_group_id = aws_security_group.app_ec2.id
   description       = "UNRESTRICTED EGRESS - required for image, package and model pulls. Known gap; see the MITIGATION note above."
 
-  ip_protocol       = "-1"
-  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol = "-1"
+  cidr_ipv4   = "0.0.0.0/0"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -353,8 +353,8 @@ resource "aws_security_group" "db" {
 # got the database reachable from the internet by any other route, this rule
 # would still refuse the connection.
 resource "aws_vpc_security_group_ingress_rule" "db_from_ec2" {
-  security_group_id            = aws_security_group.db.id
-  description                  = "PostgreSQL from the application host only - the sole inbound path to the database"
+  security_group_id = aws_security_group.db.id
+  description       = "PostgreSQL from the application host only - the sole inbound path to the database"
 
   ip_protocol                  = "tcp"
   from_port                    = local.db_port

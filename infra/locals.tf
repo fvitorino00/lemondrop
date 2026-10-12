@@ -42,9 +42,9 @@ locals {
 
 locals {
   common_tags = {
-    Project   = var.project_name
+    Project     = var.project_name
     Environment = var.environment
-    ManagedBy = "terraform"
-    Repo      = "https://github.com/fvitorino00/lemondrop"
+    ManagedBy   = "terraform"
+    Repo        = "https://github.com/fvitorino00/lemondrop"
   }
 }

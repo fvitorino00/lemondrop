@@ -39,7 +39,7 @@
 
 terraform {
   backend "s3" {
-    bucket = "lemondrop-tfstate-filipe"       # ← from: terraform output state_bucket_name
+    bucket = "lemondrop-tfstate-filipe"        # ← from: terraform output state_bucket_name
     key    = "lemondrop/dev/terraform.tfstate" # ← from: terraform output state_key_prefix
     region = "eu-west-1"                       # ← from: terraform output state_bucket_region
 
@@ -88,7 +88,7 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
+      source = "hashicorp/aws"
       # Provider 5.x is where all S3 bucket settings moved out of the
       # aws_s3_bucket resource into their own resources (versioning, encryption,
       # public access block). bootstrap/main.tf is written in that style.

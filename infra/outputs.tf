@@ -161,7 +161,7 @@ output "state_bucket_name_expected" {
 output "alb_dns_name" {
   description = "Public DNS name of the Application Load Balancer, or null when var.enable_load_balancer is false. This is the URL the milestone's acceptance criteria are checked against."
   # null when enable_load_balancer = false — see the note above.
-  value       = one(aws_lb.main[*].dns_name)
+  value = one(aws_lb.main[*].dns_name)
 }
 
 output "alb_dns_zone_id" {
@@ -185,7 +185,7 @@ output "ec2_public_ip" {
   # NOT null: aws_instance.public_ip is a string attribute that AWS reports as
   # "" when there is no public address, so this output is an empty string rather
   # than a null. Read it with a length() check, not a null check.
-  value       = aws_instance.app.public_ip
+  value = aws_instance.app.public_ip
 }
 
 output "ec2_private_ip" {
@@ -198,7 +198,7 @@ output "ec2_public_dns" {
   # NOT null. aws_instance.public_dns is a string attribute that AWS reports as
   # "" when the instance has no public address, so this output is an empty
   # string rather than a null — do not test it with a null check.
-  value       = aws_instance.app.public_dns
+  value = aws_instance.app.public_dns
 }
 
 output "ec2_ssh_key_name" {
