@@ -112,7 +112,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 resource "aws_security_group" "alb" {
   name        = "${local.name_prefix}-sg-alb"
-  description = "Application Load Balancer — the only internet-facing security group"
+  description = "Application Load Balancer - the only internet-facing security group"
   vpc_id      = aws_vpc.main.id
 
   tags = merge(local.common_tags, {
@@ -144,7 +144,7 @@ resource "aws_security_group" "alb" {
 # must be treated as hostile.
 resource "aws_vpc_security_group_ingress_rule" "alb_from_operator" {
   security_group_id = aws_security_group.alb.id
-  description       = "Port 80 from the operator's home IP only"
+  description       = "Port 80 from the operator home IP only"
 
   ip_protocol       = "tcp"
   from_port         = local.lb_port
@@ -245,7 +245,7 @@ resource "aws_vpc_security_group_ingress_rule" "ec2_from_alb" {
 # instance already.
 resource "aws_vpc_security_group_egress_rule" "ec2_egress_all" {
   security_group_id = aws_security_group.app_ec2.id
-  description       = "UNRESTRICTED EGRESS — required for image, package and model pulls. Known gap; see the MITIGATION note above."
+  description       = "UNRESTRICTED EGRESS - required for image, package and model pulls. Known gap; see the MITIGATION note above."
 
   ip_protocol       = "-1"
   from_port         = 0
@@ -258,7 +258,7 @@ resource "aws_vpc_security_group_egress_rule" "ec2_egress_all" {
 # ═══════════════════════════════════════════════════════════════════════════
 resource "aws_security_group" "db" {
   name        = "${local.name_prefix}-sg-db"
-  description = "RDS PostgreSQL — reachable only from the EC2 application host"
+  description = "RDS PostgreSQL - reachable only from the EC2 application host"
   vpc_id      = aws_vpc.main.id
 
   tags = merge(local.common_tags, {
@@ -301,7 +301,7 @@ resource "aws_security_group" "db" {
 # would still refuse the connection.
 resource "aws_vpc_security_group_ingress_rule" "db_from_ec2" {
   security_group_id            = aws_security_group.db.id
-  description                  = "PostgreSQL from the application host only — the sole inbound path to the database"
+  description                  = "PostgreSQL from the application host only - the sole inbound path to the database"
 
   ip_protocol                  = "tcp"
   from_port                    = local.db_port

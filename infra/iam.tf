@@ -97,12 +97,37 @@ resource "aws_iam_role" "ec2" {
 # matters, is a permissions boundary, which is out of scope for one dev host.
 
 # ── AWS-managed EC2 role ───────────────────────────────────────────────────
-# AWS's own base policy for EC2 instances: CloudWatch agent and SSM agent
-# communication. Not optional if you want CloudWatch metrics or Session
-# Manager.
+# CORRECTION (the ARN below used to be `service-role/AmazonEC2InstanceRole`,
+# which was fabricated — no such managed policy has ever existed, and AWS
+# rejected it with NoSuchEntity: "Policy ... does not exist or is not
+# attachable". The name now attached is the real AWS-managed service role
+# policy for EC2 instances running under Systems Manager.
+#
+# WHAT IT GRANTS, per the AWS managed policy reference (v8): the SSM agent's
+# core actions (DescribeAssociation, GetDocument, GetManifest, GetParameters,
+# UpdateInstanceInformation, ...), the ssmmessages control/data channels, the
+# ec2messages channel, AND — beyond Session Manager — cloudwatch:PutMetricData,
+# ec2:DescribeInstanceStatus, logs:*, s3:* and ds:*, all on Resource "*".
+# Those extras are why it is kept rather than dropped: CloudWatch metrics and
+# logs writing are the reason the old comment said "not optional if you want
+# CloudWatch metrics", and that reason is still true of THIS policy.
+#
+# ⚠️  THIS POLICY IS DEPRECATED BY AWS. The reference page reads "This policy
+# will soon be deprecated. Please use AmazonSSMManagedInstanceCore", and AWS
+# states it is no longer available for attachment to NEW resources and cannot
+# be re-attached once detached. It is still attachable today, but this is the
+# last shape of this stack that can rely on it.
+#
+# REDUNDANCY, stated plainly rather than acted on: `session_manager` below
+# attaches AmazonSSMManagedInstanceCore, and AmazonEC2RoleforSSM is a strict
+# SUPERSET of it on the SSM/ssmmessages/ec2messages surface. The two therefore
+# duplicate every permission that actually matters for this stack; the only
+# non-duplicated grants are the CloudWatch, Logs, S3, Directory Service and
+# ec2:DescribeInstanceStatus actions above. Removing THIS attachment loses
+# nothing except those extras. Nothing is removed here — see the report.
 resource "aws_iam_role_policy_attachment" "ec2_instance_core" {
   role       = aws_iam_role.ec2.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2InstanceRole"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -420,10 +445,22 @@ resource "aws_iam_instance_profile" "ec2" {
 # read into the process that needs it, at the moment it needs it, and is not
 # written anywhere.
 
+# ⚠️  EVERY name BELOW MUST END WITH "/" — this is an API CONTRACT, NOT STYLE.
+#
+# A Parameter Store name is a FULLY QUALIFIED PATH: it must begin AND end with
+# a forward slash. AWS rejected all three of these with:
+#     ValidationException: Parameter name must be a fully qualified name.
+# so the trailing slash is load-bearing. It is written out literally on each
+# resource rather than assembled in a local, because a local would be one more
+# place for the slash to be lost — and nothing in Terraform validates this at
+# plan time, so a regression here only surfaces at apply.
+#
+# The read policy above uses aws_ssm_parameter.app_core[*].arn, which AWS
+# derives from these names, so it follows the change automatically.
 resource "aws_ssm_parameter" "app_core" {
   count = var.enable_managed_database ? 1 : 0
 
-  name  = "${var.project_name}/${var.environment}/db/host"
+  name  = "${var.project_name}/${var.environment}/db/host/"
   type  = "String"
   value = aws_db_instance.db[0].address
 
@@ -437,7 +474,7 @@ resource "aws_ssm_parameter" "app_core" {
 resource "aws_ssm_parameter" "app_db_port" {
   count = var.enable_managed_database ? 1 : 0
 
-  name  = "${var.project_name}/${var.environment}/db/port"
+  name  = "${var.project_name}/${var.environment}/db/port/"
   type  = "String"
   value = tostring(local.db_port)
 
@@ -451,7 +488,7 @@ resource "aws_ssm_parameter" "app_db_port" {
 resource "aws_ssm_parameter" "app_db_secret_arn" {
   count = var.enable_managed_database ? 1 : 0
 
-  name  = "${var.project_name}/${var.environment}/db/secret-arn"
+  name  = "${var.project_name}/${var.environment}/db/secret-arn/"
   type  = "String"
   value = aws_db_instance.db[0].master_user_secret[0].secret_arn
 
