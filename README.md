@@ -83,7 +83,9 @@ would start the API against two unready dependencies.
   `docker-compose`. The stack was built and verified against v5.5.1.
 - A checkout of this repository on the WSL filesystem, on native ext4. Model
   weights are loaded from disk on every cold start, and loading from `/mnt/c`
-  (9p) is slow enough to matter.
+  (9p) is slow enough to matter. Read the path off your shell prompt: one
+  beginning `/mnt/` is the 9p-mounted Windows drive, one under `/home/` is
+  native ext4.
 
 ## Quick start
 
@@ -323,10 +325,14 @@ All values come from `.env`, created by copying `.env.example`.
 | `RERANKER_INTERNAL_PORT` | `8080` | compose | Same constraint as the embedder. |
 | `EMBEDDER_MODEL_ALIAS` | `bge-small-en-v1.5` | compose, `api` | The name the worker registers the model under (`--alias`), and the name the API requests it by. |
 | `RERANKER_MODEL_ALIAS` | `bge-reranker-base` | compose, `api` | Same, for the reranker. |
-| `EMBEDDING_DIM` | `384` | nothing yet | Dimensionality of the embedder's output. Declared for sizing the future vector store index; no code reads it yet. |
-| `QUERY_PREFIX` | `Represent this sentence for searching relevant passages: ` | nothing yet | Declared for the future `/search` route. No code reads it yet, and `/embed` deliberately does not apply it. |
-| `RETRIEVAL_CANDIDATES` | `50` | nothing yet | Stage-1 funnel size. Not consumed yet. |
-| `RERANK_TOP_K` | `5` | nothing yet | Stage-2 result count. Not consumed yet. |
+| `EMBEDDING_DIM` | `384` | nothing yet | **Currently unused by the code.** Declared for sizing the future vector store index; reserved for a `/search` route that does not exist yet. |
+| `QUERY_PREFIX` | `Represent this sentence for searching relevant passages: ` | nothing yet | **Currently unused by the code.** Reserved for the future `/search` route, which does not exist yet; `/embed` deliberately does not apply it. |
+| `RETRIEVAL_CANDIDATES` | `50` | nothing yet | **Currently unused by the code.** Stage-1 funnel size, reserved for the future `/search` route. |
+| `RERANK_TOP_K` | `5` | nothing yet | **Currently unused by the code.** Stage-2 result count, reserved for the future `/search` route. |
+
+The four variables marked "unused" above are declared but no code reads them.
+They are placeholders for a `/search` route that does not exist in this
+milestone. Changing them has no effect on the running system today.
 
 Three more variables are read by the code but are **not** in `.env.example`,
 because the compose-network defaults are already correct and no override is
@@ -417,7 +423,14 @@ every service, or one service followed live:
 ```
 docker compose logs --tail=50
 docker compose logs -f embedder
+docker compose logs --since 5m
+docker compose logs -f reranker
 ```
+
+`--since 5m` is the one to reach for when a container is exiting and restarting
+repeatedly: the restart cycle is the signal, and the full log buries it.
+Substitute `-f reranker` for `-f embedder` when the failure is on the reranker,
+which is what this item is about.
 
 A container sitting in `health: starting` for a long time is usually still
 loading its model off disk; that progress appears in that worker's own logs, not
