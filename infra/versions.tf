@@ -47,16 +47,18 @@ terraform {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# REMOTE STATE BACKEND — EDIT THESE LITERALS BEFORE `terraform init`
+# REMOTE STATE BACKEND — S3 STATE BUCKET FROM `infra/bootstrap`
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# ⚠️  OPERATOR ACTION REQUIRED  ⚠️
+# The three values below are the outputs of the applied `infra/bootstrap` stack:
 #
-# The three values below MUST match the outputs of `infra/bootstrap`:
+#   bucket → `terraform output state_bucket_name`  → lemondrop-tfstate-filipe
+#   region → `terraform output state_bucket_region` → eu-west-1
+#   key    → `terraform output state_key_prefix`    → lemondrop/dev/terraform.tfstate
 #
-#   bucket → `terraform output state_bucket_name`  (run in infra/bootstrap)
-#   region → `terraform output state_bucket_region`
-#   key    → `terraform output state_key_prefix`
+# They are already filled in — bootstrap has been applied and this backend is
+# wired to the real bucket. Re-run `terraform output` in `infra/bootstrap` after
+# any change to that stack, and update these literals by hand to match.
 #
 # These are LITERAL STRINGS and they have to be literal. A backend block is
 # evaluated before variables, data sources, locals, and even the provider are
@@ -69,9 +71,11 @@ terraform {
 # them.
 #
 # The bucket must already exist or `init` fails. See infra/bootstrap/README.md.
+# The values below were transcribed character-for-character; a typo here is only
+# detectable by running `terraform init`.
 
 backend "s3" {
-  bucket = "lemondrop-tfstate-CHANGE-ME" # ← from: terraform output state_bucket_name
+  bucket = "lemondrop-tfstate-filipe"  # ← from: terraform output state_bucket_name
   key    = "lemondrop/dev/terraform.tfstate" # ← from: terraform output state_key_prefix
   region = "eu-west-1"          # ← from: terraform output state_bucket_region
 
