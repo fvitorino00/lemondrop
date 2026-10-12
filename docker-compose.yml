@@ -184,3 +184,89 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ── api ────────────────────────────────────────────────────────────────────
+  # WHY THIS IS THE ONLY SERVICE WITH A PUBLISHED PORT
+  # The embedder and the reranker are internal workers. They do one thing each,
+  # they hold no state, and nothing on this host has any business calling them
+  # directly. Publishing them would put two more doors on the machine for no
+  # benefit — every published port is attack surface, and a published llama.cpp
+  # server is a published GPU/CPU inference endpoint.
+  #
+  # So the topology is: exactly one door (this service), and the workers are
+  # reachable only from inside the compose network, by SERVICE NAME. The API
+  # calls `http://embedder:8080` and `http://reranker:8080`; Docker's embedded
+  # DNS resolves those names on the default network. No publishing is involved
+  # on that path, and none is needed — which is why the two services above have
+  # no `ports:` key and must not grow one.
+  #
+  # WHY depends_on USES condition: service_healthy
+  # Plain `depends_on` only waits for a container to be STARTED. Started is not
+  # ready. llama.cpp answers /health with 503 while it is still reading the GGUF
+  # off disk and loading the model into memory — on this CPU-only machine that
+  # takes tens of seconds. With plain depends_on the API would come up first,
+  # see two unready dependencies, and (correctly) report degraded until the
+  # models finished loading. `condition: service_healthy` makes compose wait for
+  # both workers' healthchecks to actually pass, so the API is only started once
+  # the funnel beneath it can genuinely serve. This is the one place where
+  # depends_on encodes a real fact about the system rather than a convention.
+  #
+  # The API is stateless in this phase: no volumes, no database. There is nothing
+  # for it to persist, so there is nothing to mount.
+  api:
+    # Built from ./api rather than pulled. This is application code, not a
+    # published upstream image — and unlike llama.cpp:server it is not a
+    # third-party artifact we consume as-is.
+    build: ./api
+    # Name the built image so it is identifiable in `docker images` and
+    # referenceable by name rather than only by this project.
+    image: lemondrop-api
+
+    # The only `ports:` key in this file. Host side from .env so the door can be
+    # moved without editing this file; container side from .env to match the port
+    # uvicorn binds (API_INTERNAL_PORT must stay 8000 — see api/Dockerfile).
+    ports:
+      - "${API_HOST_PORT}:${API_INTERNAL_PORT}"
+
+    depends_on:
+      embedder:
+        condition: service_healthy
+      reranker:
+        condition: service_healthy
+
+    # Same restart policy as the workers, for the same reason: come back after a
+    # host reboot, but respect an explicit `stop`.
+    restart: unless-stopped
+
+    # Our own healthcheck, and it MUST use the variable. The llama.cpp image
+    # ships a probe hardcoded to 8080 (which is why both workers are pinned to
+    # 8080), but this image ships no probe at all, so there is nothing inherited
+    # to stay in sync with — the probe written here is the only one, and it has
+    # to be correct on its own. Hence ${API_INTERNAL_PORT} rather than a literal.
+    #
+    # The probe is the interpreter already in the image (python:3.12-slim ships
+    # no curl), so no package is added to the image purely to be able to health
+    # check it. urlopen raises on any non-2xx, so an exception is a non-zero
+    # exit and a 503 from our own endpoint — which is exactly what "a dependency
+    # is down" looks like — correctly reads as unhealthy here.
+    #
+    # The in-call timeout (4s) is deliberately below the healthcheck timeout (5s):
+    # it lets the probe fail and exit on its own terms instead of being killed
+    # mid-flight by the scheduler.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:${API_INTERNAL_PORT}/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Short, unlike the workers' 120s. The API has no model to load: it is
+      # serving Python the moment the process starts, and its dependencies are
+      # already guaranteed loaded by depends_on above.
+      start_period: 30s
+
+    # Same log bounding as the workers, same reason: a long-lived service must
+    # not grow its on-disk logs without limit.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
