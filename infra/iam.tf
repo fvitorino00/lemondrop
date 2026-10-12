@@ -96,40 +96,6 @@ resource "aws_iam_role" "ec2" {
 # property to be aware of, not one to be paralysed about — the fix, if it ever
 # matters, is a permissions boundary, which is out of scope for one dev host.
 
-# ── AWS-managed EC2 role ───────────────────────────────────────────────────
-# CORRECTION (the ARN below used to be `service-role/AmazonEC2InstanceRole`,
-# which was fabricated — no such managed policy has ever existed, and AWS
-# rejected it with NoSuchEntity: "Policy ... does not exist or is not
-# attachable". The name now attached is the real AWS-managed service role
-# policy for EC2 instances running under Systems Manager.
-#
-# WHAT IT GRANTS, per the AWS managed policy reference (v8): the SSM agent's
-# core actions (DescribeAssociation, GetDocument, GetManifest, GetParameters,
-# UpdateInstanceInformation, ...), the ssmmessages control/data channels, the
-# ec2messages channel, AND — beyond Session Manager — cloudwatch:PutMetricData,
-# ec2:DescribeInstanceStatus, logs:*, s3:* and ds:*, all on Resource "*".
-# Those extras are why it is kept rather than dropped: CloudWatch metrics and
-# logs writing are the reason the old comment said "not optional if you want
-# CloudWatch metrics", and that reason is still true of THIS policy.
-#
-# ⚠️  THIS POLICY IS DEPRECATED BY AWS. The reference page reads "This policy
-# will soon be deprecated. Please use AmazonSSMManagedInstanceCore", and AWS
-# states it is no longer available for attachment to NEW resources and cannot
-# be re-attached once detached. It is still attachable today, but this is the
-# last shape of this stack that can rely on it.
-#
-# REDUNDANCY, stated plainly rather than acted on: `session_manager` below
-# attaches AmazonSSMManagedInstanceCore, and AmazonEC2RoleforSSM is a strict
-# SUPERSET of it on the SSM/ssmmessages/ec2messages surface. The two therefore
-# duplicate every permission that actually matters for this stack; the only
-# non-duplicated grants are the CloudWatch, Logs, S3, Directory Service and
-# ec2:DescribeInstanceStatus actions above. Removing THIS attachment loses
-# nothing except those extras. Nothing is removed here — see the report.
-resource "aws_iam_role_policy_attachment" "ec2_instance_core" {
-  role       = aws_iam_role.ec2.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM"
-}
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Session Manager — THE CHOSEN ACCESS PATH
 # ═══════════════════════════════════════════════════════════════════════════
@@ -198,25 +164,33 @@ resource "aws_iam_role_policy_attachment" "session_manager" {
 #   * It is ~30 lines of policy that says nothing a reviewer cannot get from
 #     one line naming the managed policy.
 #
-# The one thing the managed policy genuinely does NOT grant is noted below,
-# under ssm_parameter_read — and that gap is real, so it gets its own policy.
+# CORRECTION TO AN EARLIER COMMENT IN THIS FILE: it claimed that
+# AmazonSSMManagedInstanceCore does NOT grant `ssm:GetParameters`, and used
+# that supposed gap to justify the policy below. That was wrong — the
+# published v2 policy grants BOTH `ssm:GetParameter` and `ssm:GetParameters`
+# (on Resource "*"), along with the rest of the agent's core actions. The
+# access was never missing; only the SCOPE was too broad.
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SSM PARAMETER READ — a genuine gap in the managed policy, closed narrowly
+# SSM PARAMETER READ — narrows a managed grant this stack over-had
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# ⚠️  AmazonSSMManagedInstanceCore DOES NOT GRANT `ssm:GetParameters` ⚠️
+# WHY THIS EXISTS, accurately stated: AmazonSSMManagedInstanceCore already
+# grants `ssm:GetParameter` and `ssm:GetParameters` — but on "Resource": "*",
+# meaning this role can read EVERY parameter in the account, not just its own.
+# This stack does not need that. This policy re-grants the same two actions
+# scoped to exactly the three parameters created at the bottom of this file.
 #
-# This surprises people, including people who have attached it and then
-# wondered why `aws ssm get-parameters` returned AccessDenied from the
-# instance. That policy covers the agent's control channel — registering the
-# instance, running documents, reporting associations. Reading YOUR OWN
-# parameters is a different permission and is not in it.
+# ⚠️  IT DOES NOT OVERRIDE THE MANAGED POLICY. ⚠️
 #
-# So this policy exists, scoped to exactly the three parameters created at the
-# bottom of this file, and to nothing else in the account. Note that
-# `ssm:DescribeParameters` is deliberately NOT included: it cannot be
-# resource-scoped (AWS requires "Resource": "*" for it), and it is a
+# IAM attachments to a role are ADDITIVE and there is no "deny" here. The
+# managed policy remains attached above, so the wildcard grant it carries is
+# still in force. Treat this policy as the shape the stack WOULD have if only
+# the managed one existed, and as documentation of intent — not as an
+# effective restriction on the current role.
+#
+# Note that `ssm:DescribeParameters` is deliberately NOT included: it cannot
+# be resource-scoped (AWS requires "Resource": "*" for it), and it is a
 # metadata-only listing call that this stack has no use for. Nothing in this
 # file grants a wildcard against SSM.
 data "aws_iam_policy_document" "ssm_parameter_read" {
