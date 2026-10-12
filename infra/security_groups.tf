@@ -47,8 +47,9 @@
 #
 # There is no security group for them. There is no ingress rule with port 8080
 # in it. There is no subnet of their own. There is no load balancer target
-# group, no listener rule, nothing. Search this directory for "8080" and you
-# will find this paragraph and nothing else. That is the design.
+# group, no listener rule, nothing. Grepping this directory for "8080" returns
+# COMMENTS ONLY — no security group rule, resource attribute, or target group
+# references port 8080 anywhere in infra/. That is the design.
 #
 # WHY THAT IS THE CORRECT WAY TO ENFORCE "NO DIRECT INTERNET ACCESS TO THE
 # INFERENCE SERVICES"
@@ -142,6 +143,10 @@ resource "aws_security_group" "alb" {
 # host (/32), so the plaintext is exposed to interception only along the path
 # between that host and AWS — but that path crosses the public internet and
 # must be treated as hostile.
+#
+# The "/32" here is ENFORCED, not merely assumed: the validation block on
+# var.allowed_api_cidr in variables.tf rejects any prefix length other than 32,
+# so this rule cannot be widened to a range without failing at `plan`.
 resource "aws_vpc_security_group_ingress_rule" "alb_from_operator" {
   security_group_id = aws_security_group.alb.id
   description       = "Port 80 from the operator home IP only"

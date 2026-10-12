@@ -55,11 +55,15 @@
 #     never shows up anywhere you would think to look.
 #
 # The SSM public parameter resolves to the CURRENT AMI in the CURRENT region at
-# plan time. It follows AWS's security updates, it is regional (so changing
-# aws_region cannot produce an AMI that does not exist there), and it costs
-# nothing. The trade is stated honestly: you give up byte-for-byte
-# reproducibility of the host, because "today's latest AL2023" is a moving
-# target.
+# plan time. It follows AWS's security updates, it is regional (so an AMI lookup
+# can never return an image that does not exist in the region the provider is
+# actually configured for), and it costs nothing. The trade is stated honestly:
+# you give up byte-for-byte reproducibility of the host, because "today's latest
+# AL2023" is a moving target.
+#
+# Note that "the region" here means the region the PROVIDER resolved, which
+# comes from AWS_REGION or the AWS CLI config — NOT from var.aws_region, which
+# configures nothing. See the aws_region variable in variables.tf.
 #
 # For a development host that boots its own container images and downloads its
 # own models, "current and patched" beats "identical to March". A production

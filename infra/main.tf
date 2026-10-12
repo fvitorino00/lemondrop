@@ -23,10 +23,12 @@
 
 # ── Availability zones ───────────────────────────────────────────────────
 # DERIVED, NOT HARDCODED. Hardcoding "eu-west-1a" / "eu-west-1b" would break
-# the moment the operator changes `aws_region` to a region with a different set
-# of zones, and would break in any region where those specific zone letters are
-# not offered to the account. This lookup returns only the zones actually
-# AVAILABLE to this account, which is a subset AWS decides per account.
+# the moment the operator deploys to a region with a different set of zones, and
+# would break in any region where those specific zone letters are not offered to
+# the account. This lookup returns only the zones actually AVAILABLE to this
+# account, which is a subset AWS decides per account. (The region comes from the
+# provider's environment — see the aws_region variable in variables.tf — not
+# from any literal in this file.)
 data "aws_availability_zones" "available" {
   state = "available"
 }

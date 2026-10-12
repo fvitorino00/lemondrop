@@ -113,7 +113,7 @@ These three booleans in [`variables.tf`](variables.tf) are the cost-control mech
 
 | Variable | Default | Cost when true | Turning it off removes |
 |---|---|---|---|
-| `enable_nat_gateway` | `true` | ~$32/mo + $/GB | Private-subnet egress entirely. No image pulls, no package installs, **no model downloads**. The api cannot serve `/embed` or `/rerank` without its weights. |
+| `enable_nat_gateway` | `true` | ~$32/mo + $/GB | The NAT gateway charge and its per-GB processing. It does **not** remove the private subnets' outbound path — see below. |
 | `enable_managed_database` | `true` | ~$15–25/mo | The RDS acceptance criterion. The api has no datastore. |
 | `enable_load_balancer` | `true` | ~$16–20/mo + LCU | The ALB acceptance criterion. No public entry point to the api at all. |
 
@@ -132,6 +132,8 @@ When NAT is disabled, the private subnets' default route (`0.0.0.0/0`) points at
 
 This is a deliberate cost trade, marked as such in `main.tf` next to the route that creates it. It is not an oversight. If the milestone's security story requires real egress isolation for the tier holding EC2 and RDS, leave this `true` and accept the $32/month.
 
+**This was measured on a deployed instance, not inferred from the diagram.** With NAT disabled, an EC2 instance booted successfully, pulled a 263MB container image, and downloaded 340MB of model weights over this route. An earlier revision of this README's cost table claimed the opposite — that disabling NAT stops image pulls and model downloads. That claim was backwards, and the deployed stack disproved it.
+
 ---
 
 ## Why does `allowed_api_cidr` have no default?
@@ -146,7 +148,7 @@ That would still plan, still apply, and still pass a naive "is the ALB reachable
 
 A **missing required variable** fails at the earliest possible moment — `plan`, before a single resource is created — with a message naming the variable. That is the correct failure mode for a security control: loud, early, impossible to miss. Comfortable defaults are for correctness settings, not safety settings.
 
-There is also a `validation` block on it that rejects `0.0.0.0/0` outright, so the value cannot be set to the dangerous thing even deliberately.
+There is also a `validation` block on it that **requires a single-host CIDR (`/32`)**. It is not enough to set `0.0.0.0/0` and be caught by a string comparison — a value like `0.0.0.0/1` or any `/16` is just as dangerous and would not be caught. The block parses the value and requires prefix length `32`, so anything broader than one host fails at `plan` with an explicit message. The deployed value is `213.22.54.159/32` and satisfies it.
 
 ---
 
@@ -154,7 +156,7 @@ There is also a `validation` block on it that rejects `0.0.0.0/0` outright, so t
 
 The `embedder` and `reranker` do not appear anywhere in this stack. No security group, no ingress rule for port 8080, no subnet, no target group.
 
-Search `infra/` for `8080` and you will find the comment explaining this and nothing else.
+Grep `infra/` for `8080` and you get **comments only** — no security group rule, resource attribute, or target group anywhere in `infra/` references port 8080. The hits are prose explaining the absence, across `compute.tf`, `load_balancer.tf`, `security_groups.tf`, and this file. That is the design.
 
 The milestone requires that they cannot be reached directly from the internet. That can be satisfied two ways:
 

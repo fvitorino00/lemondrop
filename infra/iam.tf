@@ -209,10 +209,20 @@ data "aws_iam_policy_document" "ssm_parameter_read" {
       "ssm:GetParameter",
     ]
 
-    # Splat, not an index: yields the full list when they exist and an empty
-    # list when they do not, with no chance of an out-of-range error. Under
-    # this count guard the list always has three entries.
-    resources = aws_ssm_parameter.app_core[*].arn
+    # concat over three splats, mirroring outputs.tf's `db_ssm_parameter_names`.
+    # An earlier revision splatted app_core alone — ONE resource, count = 1 —
+    # so this policy granted access to a single ARN while its own comment
+    # claimed "three entries". app_db_port and app_db_secret_arn are separate
+    # resources further down this file and were simply missing.
+    #
+    # Splats, not indexes: each yields the full list when the parameter exists
+    # and an empty list when it does not, with no chance of an out-of-range
+    # error. Under this count guard all three exist, so the list has three ARNs.
+    resources = concat(
+      aws_ssm_parameter.app_core[*].arn,
+      aws_ssm_parameter.app_db_port[*].arn,
+      aws_ssm_parameter.app_db_secret_arn[*].arn,
+    )
   }
 }
 
@@ -220,7 +230,7 @@ resource "aws_iam_policy" "ssm_parameter_read" {
   count = var.enable_managed_database ? 1 : 0
 
   name        = "${local.name_prefix}-ec2-ssm-parameter-read"
-  description = "Read-only access to this stack's own SSM parameters (db host, port, secret ARN)."
+  description = "Read-only access to this stack's own three SSM parameters: db host (app_core), port (app_db_port), secret ARN (app_db_secret_arn). NOT an effective restriction today — the attached AmazonSSMManagedInstanceCore policy already grants wildcard ssm:GetParameter*, and IAM attachments are additive."
   policy      = data.aws_iam_policy_document.ssm_parameter_read[0].json
 
   tags = merge(local.common_tags, {
@@ -393,9 +403,16 @@ resource "aws_iam_instance_profile" "ec2" {
 #
 # The wrong answer is to pass them into the host at launch. The right answer is
 # to publish them where the host can look them up with its own permissions:
-# discovery, not configuration. The host's IAM role is scoped to read exactly
-# these three parameters and nothing else, so "what can this instance read out
-# of the account" is a short, checkable list.
+# discovery, not configuration. The host's IAM role carries a policy scoped to
+# exactly these three parameters and nothing else, so "what this stack's own
+# policy can read out of the account" is a short, checkable list.
+#
+# ⚠️  THAT LIST DESCRIBES THIS POLICY, NOT THE ROLE'S EFFECTIVE POWERS. ⚠️
+# The role is also attached AmazonSSMManagedInstanceCore, which grants
+# ssm:GetParameter* on "Resource": "*", and IAM attachments are additive with
+# no deny. So the role can in fact read every parameter in the account. This
+# policy narrows what would be granted absent the managed one; it does not
+# narrow what is actually granted today.
 #
 # ⚠️  THERE IS AND WILL NEVER BE A FOURTH PARAMETER FOR THE PASSWORD ⚠️
 # ⚠️  RDS-managed master passwords live in SECRETS MANAGER and only there. ⚠️

@@ -3,16 +3,39 @@
 # ═══════════════════════════════════════════════════════════════════════════
 
 variable "aws_region" {
-  description = "AWS region for all resources in this stack."
+  description = "DOCUMENTATION ONLY — this variable does not configure the AWS provider. The region that resources are actually created in comes from the AWS_REGION environment variable or the operator's AWS CLI/config profile. See the comment below."
   type        = string
   default     = "eu-west-1"
 
+  # ⚠️  THIS VARIABLE DOES NOT CONTROL WHERE ANY RESOURCE IS CREATED. ⚠️
+  #
+  # There is no `provider "aws" { region = ... }` block anywhere in infra/.
+  # The provider therefore resolves its region from the environment
+  # (AWS_REGION / AWS_DEFAULT_REGION) or from the operator's AWS CLI config
+  # profile — never from this variable. This variable is referenced exactly once
+  # in the whole stack: outputs.tf, where it is echoed as the `region` output.
+  #
+  # It is kept because it documents the intended region and because the output
+  # echo is useful as a marker, but changing it alone will NOT move any resource.
+  # A provider block was deliberately NOT added to wire it up: that would change
+  # how region resolves for a stack that has already been deployed, which is an
+  # infrastructure change nobody asked for at this stage.
+  #
   # Ireland (eu-west-1) is the closest AWS region to Portugal, which minimises
-  # latency for the operator and for the application's users. The operator may
-  # change it freely — nothing in this config hardcodes an availability zone
-  # letter, so changing the region does not break the subnet mapping. It does
-  # require updating the backend block in versions.tf (backend blocks cannot use
-  # variables), since state must live in the same region as the bucket.
+  # latency for the operator and for the application's users. Per operator
+  # report the deployed stack lives in eu-west-1 and AWS_REGION=eu-west-1 was
+  # exported — so the environment and this variable currently agree. Nothing in
+  # this config hardcodes an availability zone letter, so a genuine region
+  # change does not break the subnet mapping. It does require updating the
+  # backend block in versions.tf (backend blocks cannot use variables), since
+  # state must live in the same region as the bucket.
+  #
+  # OPERATIONAL CONSEQUENCE: if the environment's region and this variable ever
+  # disagree, the `region` output will report the variable's value while the
+  # resources sit in the environment's region. The outputs would then disagree
+  # with reality, and this variable WOULD NOT REVEAL IT — the disagreement is
+  # invisible from inside this config. To check the real region, inspect the
+  # provider's environment, not this variable.
 }
 
 variable "project_name" {
@@ -90,8 +113,26 @@ variable "allowed_api_cidr" {
   type        = string
 
   validation {
-    condition     = var.allowed_api_cidr != "0.0.0.0/0"
-    error_message = "allowed_api_cidr must not be 0.0.0.0/0. This stack is designed to be reachable only from the operator's own IP."
+    # This REQUIRES a single-host (/32) CIDR. An earlier revision compared
+    # strings (`!= "0.0.0.0/0"`), which rejected exactly one value out of the
+    # whole dangerous family: 0.0.0.0/1, 0.0.0.0/2, or any /16 sailed straight
+    # through and would have landed on the internet-facing ALB ingress rule.
+    # The comments above have always described a single host; this block is what
+    # makes that description true.
+    #
+    # `cidrhost` proves the string is a well-formed CIDR. `try(...)` yields 0 for
+    # anything it cannot read as a prefix length (missing "/", a non-numeric
+    # suffix), so a malformed value is rejected with THIS error message rather
+    # than crashing on an out-of-range list index. Note that `cidrhost` returns
+    # a bare address with no prefix suffix — `cidrhost(x/32, 0)` is "1.2.3.4",
+    # not "1.2.3.4/32" — so it cannot be compared for equality against the input
+    # string; requiring a /32 is what actually distinguishes one host from a
+    # range.
+    condition = (
+      can(cidrhost(var.allowed_api_cidr, 0)) &&
+      try(tonumber(split("/", var.allowed_api_cidr)[1]), 0) == 32
+    )
+    error_message = "allowed_api_cidr must be a single host in CIDR notation, for example 203.0.113.10/32. A wider range such as 0.0.0.0/1 or a /16 would expose the load balancer far more broadly than intended, which is why this variable has no default."
   }
 }
 
@@ -107,9 +148,9 @@ variable "allowed_api_cidr" {
 #   │ toggle                  │ cost              │ what false disables      │
 #   ├─────────────────────────┼───────────────────┼──────────────────────────┤
 #   │ enable_nat_gateway      │ ~$32/mo + $/GB    │ private-subnet egress:    │
-#   │                         │ (most expensive   │ no image pulls, no model  │
-#   │                         │ line item)        │ downloads, no apt from    │
-#   │                         │                   │ the private subnets       │
+#   │                         │ (most expensive   │ NOT blocked: subnets go   │
+#   │                         │ line item)        │ straight to the IGW and   │
+#   │                         │                   │ egress UNFILTERED         │
 #   ├─────────────────────────┼───────────────────┼──────────────────────────┤
 #   │ enable_managed_database │ not in Free Tier; │ RDS acceptance criterion; │
 #   │                         │ bills continuously│ API has no datastore      │
@@ -142,13 +183,27 @@ variable "enable_nat_gateway" {
   # ── WHAT false DOES ─────────────────────────────────────────────────────
   # The private subnets get a default route to the INTERNET GATEWAY instead of
   # to the NAT gateway. Consequence, stated plainly:
-  #   * The private subnets can no longer reach the internet for image pulls,
-  #     package installs, or model downloads. EC2 boot will fail to pull a base
-  #     image unless you switch it to a public subnet.
+  #   * Image pulls, package installs, and model downloads STILL WORK. Turning
+  #     the NAT gateway off does not remove the private subnets' outbound path;
+  #     it changes where that path leads. EC2 keeps booting, keeps pulling its
+  #     base image, and keeps fetching weights without a NAT gateway in the way.
   #   * The "private" subnets are no longer egress-isolated. They route directly
-  #     to the IGW and traffic leaves with the instance's own public address.
-  #     This is a deliberate cost trade, and main.tf carries a loud comment
-  #     where it happens. It is not an oversight.
+  #     to the IGW and traffic leaves with the instance's own public address,
+  #     unfiltered and unmetered-by-NAT. This is a deliberate cost trade, and
+  #     main.tf carries a loud comment where it happens. It is not an oversight.
+  #
+  # WHAT YOU ACTUALLY SAVE: the ~$32/month gateway charge plus per-GB NAT data
+  # processing. WHAT YOU ACTUALLY GIVE UP: the network layer that made these
+  # subnets private in the first place. The two are not the same thing, and
+  # conflating them is how a security control ends up documented backwards.
+  #
+  # EMPIRICAL EVIDENCE, NOT INFERENCE: this was observed on a DEPLOYED instance,
+  # not deduced from the Terraform. With NAT disabled, an EC2 instance booted
+  # successfully, pulled a 263MB container image, and downloaded 340MB of model
+  # weights — all over the IGW route. An earlier revision of this comment
+  # asserted the opposite, that private subnets lose internet access entirely;
+  # the deployed stack disproved it, so the claim was removed rather than kept
+  # as a warning.
   #
   # Accepting `false` means accepting "no egress isolation for the tier that
   # holds EC2 and, in Phase 2, RDS".

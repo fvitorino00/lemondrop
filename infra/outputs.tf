@@ -86,10 +86,11 @@ output "sg_db_id" {
 # before variables, data sources, locals, and the provider exist. There is no
 # expression that would make it reflect the configured bucket.
 #
-# So `output "region"` below is real (it reads var.aws_region), but
-# `state_bucket_name_expected` is an ECHO of the placeholder, not a reading of
+# So `output "region"` below is ALSO an echo — it reads var.aws_region, which
+# does not configure the provider (there is no provider block in this config).
+# And `state_bucket_name_expected` is an ECHO of the placeholder, not a reading of
 # the backend. The authoritative value is the `bucket` argument in
-# versions.tf:74, and nothing in this file can cross-check it.
+# versions.tf:42, and nothing in this file can cross-check it.
 #
 # An earlier revision of this section claimed an operator could compare the two
 # and detect a mismatch. That was false, and dangerously so: the failure mode
@@ -104,7 +105,7 @@ output "sg_db_id" {
 # does not depend on this value ever being correct.
 
 output "region" {
-  description = "Region these resources are in. Must match the backend region in versions.tf. Unlike the bucket output below, this one is real — it reads var.aws_region — so comparing it against the backend `region` is a genuine cross-check."
+  description = "Echoes var.aws_region — NOT the region resources actually live in. There is no provider block in this config, so the provider resolves its region from AWS_REGION or the AWS CLI config. If the environment and this variable disagree, this output reports the variable's value and is wrong about reality, and nothing in this config would reveal the disagreement. Do not treat it as a cross-check; read the provider's environment for the real region."
   value       = var.aws_region
 }
 
