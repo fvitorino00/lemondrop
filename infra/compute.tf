@@ -250,65 +250,29 @@ resource "aws_instance" "app" {
     #!/usr/bin/env bash
     #
     # lemondrop application host — boot script (cloud-init user_data).
+    # Design rationale, failure history and known limits: docs/boot-script.md.
+    # They live there because EC2 rejects user_data over 16,384 bytes and this
+    # script was measured at 24,994. Measure any addition against that ceiling.
     #
-    # ── WHY THIS SCRIPT IS SHAPED THE WAY IT IS ─────────────────────────────────
+    # IDEMPOTENT means "safe to repeat", NOT "repairs what it finds". Every step
+    # checks before it acts or is natively idempotent, so a re-run over a healthy
+    # prior run converges. It does NOT clean up a failed part-way run: an $APP_DIR
+    # that exists but is not a checkout halts the boot with a named error rather
+    # than deleting it — whether a half-built directory is disposable is the
+    # operator's call. This re-runs often (user_data_replace_on_change, by hand
+    # while debugging), so the distinction matters.
     #
-    # The previous version of this script died at its FIRST `dnf install` and
-    # told nobody why. Amazon Linux 2023 ships `curl-minimal`, which already
-    # provides /usr/bin/curl; asking dnf to install full `curl` next to it is a
-    # package conflict, dnf refused, `set -e` aborted the script, and every
-    # later step — docker, compose, the models, the stack — never ran. The
-    # target group was registered, the port was published, and nothing was
-    # listening, which is exactly what an ALB reports as 502.
-    #
-    # That failure was invisible because of a verification gap worth naming: an
-    # earlier pass checked this script with `bash -n`. That proves SYNTAX and
-    # nothing else. The package database that rejected the install lives on
-    # AWS's side, so no amount of reading, linting or shell-parsing can reach
-    # it — only running the instance can. "It parses" is not "it runs".
-    #
-    # Two things therefore changed. First, do not assume a package layout the
-    # host may not have: use what AL2023 already ships, and install from where
-    # AL2023 actually publishes things. Second, make the script name its own
-    # failure. The ERR trap below costs four lines and turns "the log stops for
-    # no reason" into "line N exited 1: <the exact command>". The log from the
-    # failed boot was 305 bytes and identified nothing.
-    #
-    # IDEMPOTENT BY DESIGN — with a stated boundary on what that means.
-    # Every step below either checks before it acts or is natively idempotent
-    # (dnf, amazon-linux-extras behind a `command -v` guard, git pull, the
-    # model fetcher's skip-if-present, compose up), so a re-run over a HEALTHY
-    # prior run converges on the same state rather than duplicating work or
-    # failing on things that already exist. That matters for two reasons:
-    # user_data_replace_on_change re-runs this on every script change, and an
-    # operator debugging a boot will re-run it by hand.
-    #
-    # The boundary, stated so this claim is not read as stronger than it is:
-    # idempotent means "safe to repeat", NOT "repairs whatever it finds". A
-    # prior boot that failed part-way leaves partial state behind, and this
-    # script does not clean that up for you. Step 3 is the clearest case —
-    # an $APP_DIR that exists but is not a git checkout halts the boot with a
-    # named error rather than deleting the directory or cloning over it,
-    # because deciding that a half-built directory is disposable is the
-    # operator's call, not this script's. Other steps may have similar
-    # boundaries. Read a failure, resolve it, re-run.
-    #
-    # LOGGED THROUGHOUT. Every step announces itself to
-    # /var/log/lemondrop-boot.log AND to /var/log/cloud-init-output.log. A
-    # failed boot on a host with no SSH key and no public IP is otherwise a
-    # mystery, and "mystery" is the most expensive kind of infrastructure bug:
-    # the only handle you have is the log written to tell you where it stopped.
-    # Read it with:
+    # LOGGED THROUGHOUT to /var/log/lemondrop-boot.log AND
+    # /var/log/cloud-init-output.log. A failed boot with no SSH key and no public IP
+    # is otherwise a mystery; the log is the only handle:
     #
     #     sudo tail -n 100 /var/log/lemondrop-boot.log
     #     sudo cat  /var/log/cloud-init-output.log
     #
-    # NO SECRETS IN THIS FILE. See the comment on user_data above.
+    # ⚠️  NO SECRETS IN THIS FILE. See the comment on user_data in compute.tf.
 
-    # -E (errtrace) is NOT optional decoration here. Without it the ERR trap is
-    # NOT inherited by shell functions, so a failure inside log/die/on_err would
-    # go untrapped. `-Eeuo pipefail` is the combination that makes the trap below
-    # actually fire everywhere a command can fail.
+    # -E (errtrace) is NOT decoration: without it the ERR trap is NOT inherited by
+    # shell functions, so a failure inside log/die/on_err goes untrapped.
     set -Eeuo pipefail
 
     LOG_FILE="/var/log/lemondrop-boot.log"
@@ -319,28 +283,22 @@ resource "aws_instance" "app" {
     PLUGIN_DIR="/usr/libexec/docker/cli-plugins"
     BOOT_STATUS="did not finish"
 
-    # tee is allowed to fail here WITHOUT taking the script down with it. A log
-    # write that fails (read-only fs, full disk, bad perms) must not become the
-    # reason the boot dies with no explanation — that is the exact failure shape
-    # this script exists to eliminate, and a logger that can kill its own caller
-    # is one more way to produce it.
+    # tee may fail here WITHOUT taking the script down: a failed log write (ro fs,
+    # full disk, bad perms) must not become the reason the boot dies unexplained —
+    # the exact failure shape this script exists to eliminate.
     log() { printf '%s [%s]\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$LOG_FILE" || true; }
 
-    # Named, logged, then exited: a deliberate abort with a stated reason. Used
-    # for conditions a human must resolve (missing curl, docker that will not
-    # start) so that "the operator chose to stop" never looks like "something
-    # crashed".
+    # Named, logged, then exited: a deliberate abort with a stated reason, so "the
+    # operator chose to stop" never looks like "something crashed".
     die() {
       BOOT_STATUS="FAILED — $1"
       log "FATAL: $1"
       exit 1
     }
 
-    # The single highest-value line in this script. Any uncaught non-zero exit
-    # prints the LINE NUMBER, the COMMAND, and the EXIT CODE, then the EXIT
-    # trap below prints the terminal marker. Without it a failed boot is a log
-    # that stops for no visible reason — which is precisely how the previous
-    # version of this script spent an evening.
+    # The highest-value line here: any uncaught non-zero exit prints the LINE
+    # NUMBER, COMMAND and EXIT CODE, then the EXIT trap prints the terminal marker.
+    # Without it a failed boot is a log that just stops, with no visible reason.
     on_err() {
       BOOT_STATUS="FAILED at line $2 (exit $1)"
       log "FATAL: boot died at line $2, exit status $1"
@@ -349,8 +307,7 @@ resource "aws_instance" "app" {
     }
     trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
-    # Always fires, on success and on failure, so the last line of the log is
-    # always a verdict rather than a truncation.
+    # Always fires, so the last log line is a verdict rather than a truncation.
     finish() { log "=== lemondrop boot: $BOOT_STATUS ==="; }
     trap finish EXIT
 
@@ -359,38 +316,23 @@ resource "aws_instance" "app" {
     log "app url      : $APP_URL"
     log "app host port: $APP_PORT"
 
-    # ── 1. Packages ──────────────────────────────────────────────────────────
-    # docker: the runtime for all three services.
-    # git   : the application source is cloned, not baked into the AMI.
+    # 1. Packages-------------------------------------------------------
+    # git   : the source is cloned, not baked into the AMI.
     # curl  : NOT INSTALLED, and that is the correction. AL2023 ships
-    #         curl-minimal, which provides /usr/bin/curl and handles the HTTPS
-    #         this script needs. Requesting full `curl` alongside it is the
-    #         conflict that killed the previous boot. Installing nothing is
-    #         strictly more robust than installing something, so the script
-    #         uses what is there and VERIFIES it below.
-    #
-    # The trust store is not in doubt either, and the evidence is on the record:
-    # the failed boot's dnf got far enough to resolve dependencies, which means
-    # it had already downloaded repository metadata over HTTPS, which means the
-    # system CA bundle on this AMI is present and working. ca-certificates is
-    # listed below as a belt-and-braces no-op — on a stock AMI it is already
-    # installed and dnf reports "Nothing to do" — and it cannot conflict with
-    # anything, because it IS the preinstalled trust store package.
+    #         curl-minimal, which already provides /usr/bin/curl. Requesting full
+    #         `curl` beside it is a package conflict that kills the boot at this
+    #         line. Installing nothing beats installing something, so use what is
+    #         there and VERIFY it below.
+    # ca-certificates: a belt-and-braces no-op — it IS the preinstalled trust store
+    #         package, so it cannot conflict.
     log "step 1/6: installing packages (docker, git) and verifying curl"
     dnf install -y git ca-certificates
 
-    # ── docker comes from amazon-linux-extras, NOT from a bare dnf install ────
-    # AL2023 publishes the Docker Engine as an EXTRAS TOPIC, and the extras
-    # repository is not enabled by default. `dnf install docker` is therefore a
-    # "No match for argument: docker" failure on a stock AL2023 image — the same
-    # shape of failure as the curl line, one step later, waiting for anyone to
-    # remove the first one. This is how AL2023 ships docker.
-    #
-    # Two guards make this robust to the packaging detail above being different
-    # from what is documented: the `command -v` test means a re-run never calls
-    # the installer at all, and the `||` falls back to dnf so that an image
-    # which DOES carry docker in its base repo still ends up with docker rather
-    # than with a failed boot.
+    # docker comes from amazon-linux-extras, NOT from a bare dnf install---
+    # AL2023 publishes Docker Engine as an EXTRAS TOPIC, not enabled by default, so
+    # `dnf install docker` is "No match for argument" on a stock image. Two guards:
+    # `command -v` means a re-run never calls the installer; `||` falls back to dnf
+    # for an image that does carry docker in its base repo.
     if ! command -v docker >/dev/null 2>&1; then
       log "  installing docker from amazon-linux-extras"
       amazon-linux-extras install -y docker || dnf install -y docker
@@ -399,8 +341,8 @@ resource "aws_instance" "app" {
       die "docker is still absent after amazon-linux-extras and dnf both ran"
     fi
 
-    # A clear, readable error if curl really is missing — rather than the dnf
-    # conflict dump that this guard exists to make unnecessary.
+    # A clear error if curl really is missing, not the dnf conflict dump this guard
+    # exists to make unnecessary.
     if ! command -v curl >/dev/null 2>&1; then
       log "       AL2023 normally provides curl via the curl-minimal package, so"
       log "       reaching this means the image is not a stock AL2023 AMI."
@@ -412,19 +354,13 @@ resource "aws_instance" "app" {
 
     systemctl enable --now docker
 
-    # ── Wait for the daemon, do not merely check that it was asked to start ──
-    # `systemctl enable --now` QUEUES the start job; it does not wait for
-    # dockerd to finish initialising. `systemctl is-active` called immediately
-    # afterwards legitimately returns non-zero while the unit is still
-    # `activating`, which on a cold t3.micro takes real seconds. The previous
-    # version treated that transient state as fatal and exited 1 with "the
-    # docker service did not start" — a message that is both wrong and
-    # unactionable, on a host where dockerd was about to come up fine.
-    #
-    # So this polls until the daemon is genuinely answering, and asks `docker
-    # info` as well as systemd: a unit can be `active` a moment before the
-    # socket is usable, and `docker info` is the check that actually proves the
-    # next step can talk to it.
+    # Wait for the daemon, don't just check it was asked to start-------
+    # `systemctl enable --now` QUEUES the start job; it does not wait for dockerd.
+    # `systemctl is-active` right afterwards legitimately returns non-zero while
+    # the unit is still `activating` (real seconds on a cold t3.micro).
+    # Treating that as fatal is wrong and unactionable when dockerd was about to
+    # come up. Poll until it answers, and ask `docker info` too:
+    # unit can be `active` a moment before the socket is usable.
     log "  waiting for the docker daemon to answer (up to 60s)"
     docker_ready=0
     for ((i = 1; i <= 30; i++)); do
@@ -441,32 +377,23 @@ resource "aws_instance" "app" {
     fi
     log "  docker: $(docker --version)"
 
-    # ── 2. Docker Compose ────────────────────────────────────────────────────
-    # The AL2023 docker package does not reliably bundle the Compose v2 CLI
-    # plugin, and this stack needs it — `docker-compose` (v1, hyphenated) is a
-    # different command with different flags. Try the packaged plugin first and
-    # install the official binary only if it is genuinely absent.
-    #
-    # The release is PINNED rather than "latest": an unpinned curl-to-shell of
-    # a binary is the same reproducibility problem as a hardcoded AMI id, and
-    # it would also break silently whenever GitHub changes a URL.
-    #
-    # linux-x86_64 matches the AMI architecture chosen above, for the same
-    # reason. On an ARM host this asset name 404s, which `set -e` turns into a
-    # loud, immediate failure instead of a mysterious one.
+    # 2. Docker Compose-------------------------------------------------
+    # The AL2023 docker package does not reliably bundle the Compose v2 plugin, and
+    # `docker-compose` (v1, hyphenated) is a different command, different flags.
+    # PINNED, not "latest": an unpinned curl-to-shell of a binary breaks silently
+    # whenever GitHub changes a URL. linux-x86_64 matches the AMI arch; on ARM this
+    # asset 404s, which `set -e` turns into a loud failure, not a mystery.
     if docker compose version >/dev/null 2>&1; then
       log "step 2/6: compose plugin present ($(docker compose version --short))"
     else
       log "step 2/6: installing docker compose plugin $COMPOSE_PLUGIN_RELEASE"
-      # /usr/libexec/docker/cli-plugins is one of the docker CLI's default
-      # plugin search paths on Linux, which is why the plugin is installed there
-      # rather than into a path only this script knows about.
+      # A default docker CLI plugin search path on Linux, hence here and not in a
+      # path only this script knows about.
       install -d -m 0755 "$PLUGIN_DIR"
-      # Downloaded to a .part file and moved into place only on success. The old
-      # version wrote directly to the final path: an interrupted transfer left a
-      # truncated file sitting at the name docker looks for, and every LATER run
-      # would then find a plugin that existed, was executable, and was garbage.
-      # That is the same "plausible-looking file poisons the next run" failure
+      # Downloaded to .part and moved into place only on success. Writing straight to
+      # the final path leaves an interrupted transfer sitting at the name docker
+      # looks for, so every LATER run finds a plugin that exists, is executable and
+      # is garbage — the "plausible file poisons the next run" failure
       # fetch-models.sh already guards against for the GGUFs.
       if ! curl -fsSL -o "$PLUGIN_DIR/docker-compose.part" \
         "https://github.com/docker/compose/releases/download/$COMPOSE_PLUGIN_RELEASE/docker-compose-linux-x86_64"; then
@@ -478,59 +405,35 @@ resource "aws_instance" "app" {
       log "  compose: $(docker compose version --short)"
     fi
 
-    # ── 3. Application source ───────────────────────────────────────────────
-    # The instance starts with no copy of the application, so it fetches one.
-    # --depth 1 because a boot does not need history; it needs the current
-    # tree, and a shallow clone is several times faster on a small instance.
+    # 3. Application source---------------------------------------------
+    # --depth 1: a boot needs the current tree, not history, and a shallow clone is
+    # several times faster on a small instance.
     #
-    # If the repository is PRIVATE this step fails with an authentication error
-    # and says so in this log. That is expected, and it is NOT fixed by putting
-    # a token in the URL — see app_source_url for why that is not done here.
-    # The alternatives are a baked AMI or a registry the instance can pull from
-    # anonymously.
+    # If the repository is PRIVATE this fails with an authentication error and says
+    # so in this log. Expected — and NOT fixed by a token in the URL; see
+    # app_source_url for why, docs/boot-script.md for the options.
     log "step 3/6: fetching application source"
     if [ -e "$APP_DIR/.git" ]; then
       log "  existing checkout found, fast-forwarding"
       git -C "$APP_DIR" pull --ff-only
     elif [ -e "$APP_DIR" ] && [ -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
-      # ⚠️  THIS BRANCH EXISTS AND IS DELIBERATE. ⚠️
+      # ⚠️  THIS BRANCH IS DELIBERATE. ⚠️
       #
-      # $APP_DIR exists but is not a git checkout. That is reachable, not
-      # theoretical: a first boot that failed at an earlier step can leave the
-      # directory behind, and so can anyone — or anything — removing .git from
-      # an otherwise perfectly good tree.
+      # $APP_DIR exists but is not a checkout — reachable, not theoretical: an
+      # earlier failed boot can leave it, and so can anyone removing .git from a
+      # good tree. Git's own error ("already exists and is not an empty directory")
+      # never mentions the real problem: not empty AND not a repo.
       #
-      # The old guard tested only `[ -d "$APP_DIR/.git" ]`, so this case fell
-      # through to `git clone`, which fails with "destination path already
-      # exists and is not an empty directory". Under `set -e` that aborts the
-      # boot with a git error that never mentions the real problem: the
-      # directory is not empty AND is not a repo. Two distinct faults, one
-      # unhelpful message.
+      # `-e` on .git, not `-d`: in a worktree or submodule .git is a FILE, and `-d`
+      # would misclassify a good checkout as this fatal case. Not
+      # `git rev-parse --git-dir` either — it succeeds for any directory NESTED
+      # INSIDE a repo, so a parent checkout would make the `git pull --ff-only`
+      # above run against the PARENT repository.
       #
-      # The test above is `-e` on .git rather than `-d` because in a worktree or
-      # submodule `.git` is a FILE, not a directory — the old `-d` test would
-      # misclassify a working checkout as this fatal case and refuse a tree
-      # that was perfectly fine.
-      #
-      # It is deliberately NOT `git rev-parse --git-dir`, which looks tidier
-      # and is wrong here: rev-parse reports success for any directory NESTED
-      # INSIDE a repository, inheriting from the parent. If anything above
-      # $APP_DIR were ever a checkout, an empty or partial $APP_DIR would be
-      # misread as a valid one, and the `git pull --ff-only` above would then
-      # run against the PARENT repository. `-e` asks only about $APP_DIR/.git,
-      # so the answer cannot come from somewhere else.
-      #
-      # Deliberately NOT auto-repaired. Deleting $APP_DIR to make the clone
-      # succeed would be a bootstrap that silently destroys whatever it finds
-      # — and that directory can hold a generated .env, downloaded model
-      # weights, and hand-edits, none of which this script is entitled to
-      # discard. Fail loudly, name the fault, and let a human decide.
-      #
-      # An EMPTY leftover directory is deliberately NOT caught by this branch:
-      # `git clone` into an empty directory succeeds, so halting there would
-      # break a boot that used to work for no gain. The condition above tests
-      # for non-emptiness precisely so this fatal path fires only where the
-      # clone would genuinely have failed.
+      # NOT auto-repaired: deleting $APP_DIR would silently destroy a generated
+      # .env, downloaded weights and hand-edits. An EMPTY leftover is also not
+      # caught — `git clone` into an empty dir succeeds, so halting there would
+      # break a working boot for no gain.
       log "FATAL: $APP_DIR exists, is not empty, and is not a git checkout."
       log "       Refusing to clone into it, and refusing to delete it — it"
       log "       may hold a generated .env, downloaded models, or your edits."
@@ -543,92 +446,69 @@ resource "aws_instance" "app" {
     fi
     log "  commit: $(git -C "$APP_DIR" rev-parse --short HEAD)"
 
-    # ── 4. Environment file ──────────────────────────────────────────────────
-    # `.env` is gitignored, so it never arrives with the clone — and Compose
-    # substitutes empty strings for missing variables, which is how a stack
-    # ends up with API_HOST_PORT="" and a compose file that still looks fine.
-    # It is generated here from the committed .env.example.
+    # 4. Environment file-----------------------------------------------
+    # `.env` is gitignored and never arrives with the clone, and Compose substitutes
+    # empty strings for missing variables — how a stack gets
+    # API_HOST_PORT="" and still looks fine. Generated here from .env.example.
     #
-    # REGENERATED EVERY BOOT, ON PURPOSE. This file is machine-owned and never
-    # hand-edited, and its one variable that matters here — API_HOST_PORT —
-    # must agree with local.app_port, which is ALSO what the ALB target group
-    # is configured with. An operator-edited .env would drift out of agreement
-    # with the load balancer and produce a stack that is healthy and
-    # unreachable, which is the worst possible combination of properties.
-    # Overwriting is the correct behaviour for a generated file.
+    # REGENERATED EVERY BOOT, ON PURPOSE: machine-owned, never hand-edited, and
+    # API_HOST_PORT must agree with local.app_port, ALSO the ALB target group's
+    # port. An operator-edited .env drifts out of agreement and produces a stack
+    # that is healthy and unreachable — the worst combination of properties.
     log "step 4/6: generating .env from .env.example"
     cp "$APP_DIR/.env.example" "$APP_DIR/.env"
     sed -i "s|^API_HOST_PORT=.*|API_HOST_PORT=$APP_PORT|" "$APP_DIR/.env"
-    # The line below VERIFIES the substitution happened. It is not decoration.
-    # sed only rewrites a line that already matches ^API_HOST_PORT=, so if
-    # .env.example ever loses that key the sed silently does nothing, Compose
-    # interpolates an empty host port, and the result is a stack that is
-    # healthy and unreachable — the exact failure the block comment above warns
-    # about, arrived at by the quietest possible route. Assert it instead.
-    #
-    # Note this used to be `log "  $(grep ...)"`, where a grep that matched
-    # nothing returned 1 and was swallowed: command substitution in an argument
-    # position does not trip `set -e`, so it printed an empty line and the boot
-    # carried on. That is why it is an explicit test now.
+    # This VERIFIES the substitution; not decoration. sed only rewrites a line
+    # already matching ^API_HOST_PORT=, so if .env.example ever loses that key the
+    # sed does nothing and Compose interpolates an empty port — a healthy,
+    # unreachable stack by the quietest route. Note this used to be a bare
+    # `log "$(grep ...)"`: a grep matching nothing returned 1 and was SWALLOWED,
+    # because command substitution in an argument position does not trip `set -e`.
     if ! grep -q "^API_HOST_PORT=$APP_PORT$" "$APP_DIR/.env"; then
       log "       .env contains: $(grep '^API_HOST_PORT=' "$APP_DIR/.env" || true)"
       die ".env does not set API_HOST_PORT=$APP_PORT; check .env.example for that key"
     fi
     log "  $(grep '^API_HOST_PORT=' "$APP_DIR/.env" || true)"
 
-    # NOTE, for whoever adds database support to the api: do NOT add a
-    # DATABASE_URL line here. There is no password to put in one, and the
-    # endpoint hostname is not knowable from this file — both are fetched at
-    # runtime from SSM and Secrets Manager through the instance role. See the
-    # bottom of iam.tf.
+    # For whoever adds database support to the api: do NOT add a DATABASE_URL line
+    # here. There is no password for one and the hostname is not knowable here —
+    # both are fetched at runtime from SSM and Secrets Manager via the instance
+    # role. See the bottom of iam.tf.
 
-    # ── 5. Model weights ────────────────────────────────────────────────────
-    # ~340MB of GGUF downloaded FROM HuggingFace AT BOOT. This is the slow
-    # step, it happens on every fresh instance, and it is why the ALB target
-    # group runs at the maximum unhealthy_threshold it is allowed — see
-    # var.app_health_check_unhealthy_threshold and load_balancer.tf. Note that
-    # even at that maximum the tolerance window is 10 × 30s = 5 minutes, which
-    # this boot can exceed: the real fix is baking the models into the AMI.
+    # 5. Model weights--------------------------------------------------
+    # ~340MB of GGUF from HuggingFace AT BOOT: the slow step, every fresh
+    # instance, and why the ALB target group runs at the maximum
+    # unhealthy_threshold — even then 10 x 30s = 5 minutes, a window this boot can
+    # exceed.
     #
-    # If this step fails, EVERYTHING downstream fails, and the api never
-    # becomes healthy because its compose healthcheck waits on two workers
-    # whose models are not on disk. So let it fail LOUDLY here, where the cause
-    # is visible, rather than quietly later.
+    # If this fails EVERYTHING downstream fails: the api never becomes healthy,
+    # because its healthcheck waits on two workers whose models are not on disk. So
+    # let it fail LOUDLY here, where the cause is visible. pipefail makes this
+    # pipeline's status the WORST of its two commands, so the abort happens HERE,
+    # nowhere else; the ERR trap records WHICH line.
     log "step 5/6: fetching model weights (~340MB from HuggingFace)"
-    # Note on pipefail: because this pipeline's status is the WORST of its two
-    # commands, a failed download aborts the boot here and nowhere else. That
-    # is the intent stated above. What was missing before was any record of
-    # WHICH line did it — that is what the ERR trap at the top now supplies.
     bash "$APP_DIR/scripts/fetch-models.sh" 2>&1 | tee -a "$LOG_FILE"
     log "  models directory: $(du -sh "$APP_DIR/models" | cut -f1)"
 
-    # ── Resource headroom, recorded BEFORE the stack starts ───────────────────
-    # This is two lines of `free -m` and `df -h`, and it is here because an OOM
-    # kill and a full root volume are both SILENT from the outside: the container
-    # dies, the ALB sees nothing on 8000, and the boot log reads like a clean run
-    # that simply never became healthy. Writing the numbers down first means the
-    # next person can compare them against what the host looked like at the
-    # moment of failure instead of guessing after the fact.
-    #
-    # t3.micro is ~913Mi total with no swap, and the two GGUFs alone are ~410MB
-    # resident once both workers have loaded them. That is tight. It is not a
-    # change to the instance type — that is the operator's call — but if this
-    # boot is killed here, the memory line above is the first evidence.
+    # Resource headroom, recorded BEFORE the stack starts---------------
+    # Two lines, here because an OOM kill and a full root volume are both SILENT
+    # from outside: the container dies, the ALB sees nothing on 8000, and the log
+    # reads like a clean run that never became healthy. The numbers let the next
+    # person compare against the host at the moment of failure instead of guessing.
+    # t3.micro is ~913Mi with no swap and the two GGUFs are ~410MB resident once
+    # loaded. Tight — if this boot dies there, the memory line above is the evidence.
     log "  memory before start:"
     free -m | tee -a "$LOG_FILE"
     log "  disk before start:"
     df -h / | tee -a "$LOG_FILE"
 
-    # ── 6. Start the stack ───────────────────────────────────────────────────
-    # The api builds locally from ./api (it has a `build:` section, no published
-    # image); the two workers pull the published llama.cpp image.
+    # 6. Start the stack------------------------------------------------
+    # The api builds locally from ./api (`build:`, no published image); the workers
+    # pull the published llama.cpp image.
     #
-    # The pull is NAMED per service on purpose. A bare `docker compose pull`
-    # pulls every service, including the api — whose image `lemondrop-api` is
-    # built here and exists in no registry, so that command could only ever fail
-    # and could only ever trip its own "WARNING: pull failed" line. Pulling the
-    # two services that genuinely have published images makes the warning mean
-    # something when it appears.
+    # The pull is NAMED per service on purpose: a bare `docker compose pull` also
+    # pulls the api, whose image `lemondrop-api` is built here and exists in no
+    # registry, so it could only fail and trip its own "WARNING: pull failed".
     log "step 6/6: starting compose services"
     cd "$APP_DIR"
     docker compose pull embedder reranker 2>&1 | tee -a "$LOG_FILE" \
@@ -636,21 +516,17 @@ resource "aws_instance" "app" {
     docker compose up -d --remove-orphans 2>&1 | tee -a "$LOG_FILE"
     docker compose ps 2>&1 | tee -a "$LOG_FILE"
 
-    # ── Post-boot verification ───────────────────────────────────────────────
-    # Confirm the api answers, so that "the stack is up" is an OBSERVED fact
-    # rather than an assumption. 300 seconds, because the api's own compose
-    # healthcheck waits for BOTH workers to finish loading their models into
-    # memory — a correct boot legitimately looks unhealthy for a while.
+    # Post-boot verification--------------------------------------------
+    # Confirm the api answers, so "the stack is up" is an OBSERVED fact. 300s,
+    # because the api's own healthcheck waits for BOTH workers to load their
+    # models — a correct boot legitimately looks unhealthy for a while.
     #
-    # Exits 0 even on timeout, deliberately. A non-zero exit here would mark
-    # the boot as failed at the cloud-init layer, which is noise on top of an
-    # ALB grace period that is already handling the real delay — and it would
-    # bury the diagnostics below, which are the thing the operator actually
-    # needs. A loud warning beats a failure code that says nothing about which
-    # of six steps went wrong.
+    # Exits 0 even on timeout, deliberately: non-zero would mark the boot failed at
+    # the cloud-init layer — noise on top of an ALB grace period already handling
+    # the delay — and would bury the diagnostics below, which are what the operator
+    # needs.
     log "verifying /health (up to 300s)"
-    # A C-style loop rather than `seq 1 60`: it drops a dependency on coreutils'
-    # seq for no gain, and `$((i * 5))` keeps the elapsed-seconds figure.
+    # A C-style loop, not `seq 1 60`: one less coreutils dependency for no gain.
     for ((i = 1; i <= 60; i++)); do
       if curl -fsS -o /dev/null "http://127.0.0.1:$APP_PORT/health"; then
         BOOT_STATUS="SUCCESS — api healthy after $((i * 5))s"
@@ -666,9 +542,8 @@ resource "aws_instance" "app" {
     log "  free -m    # an OOM kill while loading the reranker is the first suspect"
     log "  df -h /    # a full root volume fails in ways that mimic every other fault"
     log "Compare both against the 'before start' readings logged in step 6."
-    # The EXIT trap prints the terminal marker, so this line sets the verdict
-    # rather than printing it, and the last line of the log is always the same
-    # shape no matter which path the boot took.
+    # The EXIT trap prints the terminal marker, so this sets the verdict; the last
+    # log line is the same shape whichever path the boot took.
     BOOT_STATUS="FINISHED WITH WARNINGS — api never answered /health"
     exit 0
   EOF
@@ -678,3 +553,4 @@ resource "aws_instance" "app" {
     Role = "application-host"
   })
 }
+
