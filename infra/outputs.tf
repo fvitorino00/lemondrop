@@ -170,27 +170,34 @@ output "alb_dns_zone_id" {
 
 output "ec2_instance_id" {
   description = "Instance ID of the application host. Pass it to `aws ssm start-session --target <id>` for shell access."
-  value       = aws_instance.app[0].id
+  value       = aws_instance.app.id
 }
 
 output "ec2_public_ip" {
-  description = "Public IP of the application host, or null — which is the DEFAULT, because the instance lives in a private subnet. Null when the instance is unreachable except through SSM."
+  description = "Public IP of the application host, or an empty string — which is the DEFAULT, because the instance lives in a private subnet. Empty when the instance is unreachable except through SSM."
   # The instance is in aws_subnet.private, where map_public_ip_on_launch is
   # false (main.tf). It gets a public address ONLY if the operator passes
   # -var app_associate_public_ip=true, and even then only while that subnet
   # setting and the instance setting agree — which is the interaction
   # documented on that variable.
-  value       = one(aws_instance.app[*].public_ip)
+  #
+  # NOT null: aws_instance.public_ip is a string attribute that AWS reports as
+  # "" when there is no public address, so this output is an empty string rather
+  # than a null. Read it with a length() check, not a null check.
+  value       = aws_instance.app.public_ip
 }
 
 output "ec2_private_ip" {
   description = "Private IP of the application host. Stable for the life of the instance and the address to use from anywhere inside the VPC."
-  value       = aws_instance.app[0].private_ip
+  value       = aws_instance.app.private_ip
 }
 
 output "ec2_public_dns" {
-  description = "Public DNS name of the application host, or null when it has no public address. Empty-string in AWS terms; null here."
-  value       = one(aws_instance.app[*].public_dns_name)
+  description = "Public DNS name of the application host, or an empty string when it has no public address. Empty is the DEFAULT, because the instance lives in a private subnet."
+  # NOT null. aws_instance.public_dns is a string attribute that AWS reports as
+  # "" when the instance has no public address, so this output is an empty
+  # string rather than a null — do not test it with a null check.
+  value       = aws_instance.app.public_dns
 }
 
 output "ec2_ssh_key_name" {

@@ -346,27 +346,42 @@ variable "app_source_url" {
   }
 }
 
-variable "app_health_check_grace_period_seconds" {
-  description = "Seconds the ALB target group waits before counting health check failures against the target. Covers the boot-time model download."
+variable "app_health_check_unhealthy_threshold" {
+  description = "Consecutive failed ALB health checks before the target is marked unhealthy. With the interval configured in load_balancer.tf this sets how long boot has to produce a healthy /health."
   type        = number
-  default     = 300
+  default     = 10
 
-  # NOT a performance tuning knob — it exists because of the ~340MB of GGUF
-  # that scripts/fetch-models.sh downloads AT BOOT, before the api can answer a
-  # single request. During that window every ALB health check on /health fails,
-  # because there is no listener yet. Without a grace period the target would
-  # be marked unhealthy, would never be marked healthy, and the stack would
-  # look broken for a reason that has nothing to do with the application.
+  # RENAMED from app_health_check_grace_period_seconds. That name described an
+  # attribute that does not exist on aws_lb_target_group — grace periods belong
+  # to aws_ecs_service. This variable was kept and repointed at the knob that
+  # genuinely governs the same problem, rather than deleted, because the
+  # operator still needs one documented place to tune boot tolerance.
   #
-  # 300s is generous on purpose. Being generous costs nothing: the clock only
-  # runs while the target is UNHEALTHY, and an instance that boots correctly
-  # goes healthy in well under five minutes. Being too short is the failure
-  # mode that matters, and it is expensive to diagnose because it looks like
-  # an application bug. Raise this before you ever lower it.
+  # It exists because of the ~340MB of GGUF that scripts/fetch-models.sh
+  # downloads AT BOOT, before the api can answer a single request. During that
+  # window every ALB health check on /health fails, because there is no listener
+  # yet.
+  #
+  # TOLERANCE IS THIS NUMBER × interval, NOT THIS NUMBER ALONE. The ALB waits
+  # `interval` seconds between probes and marks the target unhealthy after this
+  # many CONSECUTIVE failures, so at interval = 30 the window is:
+  #
+  #     10 × 30s = 5 MINUTES
+  #
+  # 10 is the maximum AWS permits for an ALB target group, so this is the
+  # ceiling, not a preference. The boot timeline in compute.tf reaches /health
+  # at roughly 7 minutes, which is BEYOND that ceiling: on a slow cold start
+  # the target WILL go unhealthy and the ALB WILL return 503s until boot
+  # finishes. That is expected for this architecture. The durable fix is to
+  # bake the models into the AMI so boot does not download them — out of scope
+  # for this milestone.
+  #
+  # Raising this is not possible; it is already at the cap. Lowering it buys
+  # nothing and costs a real failure mode, so raise the AMI instead.
 
   validation {
-    condition     = var.app_health_check_grace_period_seconds >= 120
-    error_message = "app_health_check_grace_period_seconds must be at least 120. The boot-time model download alone can take minutes; a short grace period turns boot timing into a false application failure."
+    condition     = var.app_health_check_unhealthy_threshold >= 2 && var.app_health_check_unhealthy_threshold <= 10
+    error_message = "app_health_check_unhealthy_threshold must be between 2 and 10. AWS caps an ALB target group's unhealthy_threshold at 10."
   }
 }
 

@@ -41,15 +41,11 @@ resource "aws_lb" "main" {
   name = "${local.name_prefix}-alb"
 
   internal = false # PUBLIC. This is the internet-facing resource.
-  type     = "application"
 
-  # load_balancer_type is set explicitly even though `type = "application"`
-  # above says the same thing. They are different attributes in the provider:
-  # `type` is the AWS-facing value and `load_balancer_type` constrains which
-  # implementations Terraform will let you configure. Setting only the first
-  # leaves the second defaulted, and defaulting a load balancer's capabilities
-  # is not something to leave implicit in a file whose whole subject is
-  # accidental exposure.
+  # `load_balancer_type` is the correct and only attribute for this on aws_lb.
+  # There is no `type` argument. Valid values are "application", "network" and
+  # "gateway"; this stack wants "application" because /embed and /rerank are
+  # HTTP request/response calls behind one door.
   load_balancer_type = "application"
 
   # BOTH public subnets, via splat. An ALB in one AZ has no failover: it is
@@ -57,7 +53,7 @@ resource "aws_lb" "main" {
   # second subnet costs nothing — an ALB bills per load balancer and per LCU,
   # not per AZ — so paying for one zone and calling it highly available is
   # paying for a decoration.
-  subnet_ids = aws_subnet.public[*].id
+  subnets = aws_subnet.public[*].id
 
   # The EXISTING security group from security_groups.tf, not a new one. Phase 2
   # consumes Phase 1's security story; creating a second group here would
@@ -124,11 +120,12 @@ resource "aws_lb" "main" {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ⚠️  THE HEALTH CHECK GRACE PERIOD — A BOOT-TIMING PROBLEM, NOT A TUNING ONE
+# ⚠️  BOOT TIMING vs. THE HEALTH CHECK — AND AN HONEST LIMIT ON WHAT CAN BE
+#     DONE ABOUT IT FROM HERE
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# This block carries the single most important number in the file, and the
-# reason it exists is a specific, measurable, boot-time fact:
+# A real, measurable, boot-time fact starts this section, because it is the
+# reason the health_check block below is tuned the way it is:
 #
 #   A FRESH INSTANCE DOWNLOADS ~340MB OF GGUF MODEL WEIGHTS BEFORE THE API CAN
 #   ANSWER A SINGLE REQUEST.
@@ -149,36 +146,75 @@ resource "aws_lb" "main" {
 # connection-refused, because there is no listener yet. That is correct
 # behaviour being reported accurately.
 #
-# WHAT GOES WRONG WITHOUT health_check_grace_period_seconds:
+# ── ⚠️  THERE IS NO GRACE PERIOD ON AN ALB TARGET GROUP. ⚠️
 #
-#   The ALB's failure threshold (5 consecutive failures) is reached in under
-#   two minutes. The target is marked unhealthy. Requests routed to it get 503
-#   from the load balancer. It recovers when the boot finishes — but the
-#   OPERATOR'S EXPERIENCE is: "I applied the stack, the DNS name is there, and
-#   everything 503s. The application is broken."
+# This file previously carried:
 #
-#   And that diagnosis is WRONG, in a way that costs hours. The application is
-#   fine. It is a boot-timing issue. But every diagnostic taken from the
-#   outside — curl the ALB, check the target group, read the health check
-#   reason — says "unhealthy application", because from the load balancer's
-#   point of view that is exactly what it is observing. The evidence that
-#   would settle it is INSIDE the instance, and the instance has no public IP,
-#   no SSH key, and was just created — so the obvious move is to conclude the
-#   app is at fault, and to start changing api code.
+#     health_check_grace_period_seconds = var.app_health_check_grace_period_seconds
 #
-#   That is the failure this number prevents: a correct milestone failing its
-#   own acceptance criterion for a reason that has nothing to do with the code.
+# on this target group, under an essay explaining at length what a 300-second
+# grace period protected against. That attribute DOES NOT EXIST on
+# aws_lb_target_group. It is an attribute of aws_ecs_service, where it means
+# something real: the delay before ECS starts counting health check results
+# for a task that has just started. An ALB target group has no equivalent
+# escape hatch. The knob was invented by analogy with ECS, the essay around it
+# was written to justify a lever that was never there, and the whole document
+# read as though a solved problem had been solved. It had not.
 #
-# WHY 300 SECONDS
-# Generous on purpose. Being generous costs literally nothing: the clock only
-# advances while the target is UNHEALTHY, and a correctly booting instance goes
-# healthy well inside five minutes. Being too short costs the entire debugging
-# session above. There is no scenario where the too-long setting hurts and a
-# real scenario where the too-short one does — so the asymmetry decides it.
+# So the mitigation described below has been rewritten to describe the mechanism
+# that ACTUALLY exists.
 #
-# If a future image or model set makes boot genuinely slower, RAISE THIS. Do
-# not lower it, and do not "fix" a slow boot by shrinking this number: that
-# converts a diagnosable delay into an indistinguishable application failure.
+# ── THE REAL MECHANISM: unhealthy_threshold × interval ──
+#
+# An ALB marks a target unhealthy after `unhealthy_threshold` CONSECUTIVE
+# failures, with those probes spaced `interval` seconds apart. Tolerance is
+# therefore the PRODUCT of the two, not the threshold alone. AWS caps
+# `unhealthy_threshold` at 10 and `interval` at 300 for an ALB — and because the
+# product is what matters, the practical ceiling for a target group of this
+# shape is set by the interval actually configured. With `interval = 30`, the
+# maximum tolerance is:
+#
+#     10 × 30s = 5 MINUTES
+#
+# There is no configuration of this resource that buys more than that. The
+# settings below sit AT that ceiling: `unhealthy_threshold` is pinned at the
+# maximum legal value of 10 and `interval` is 30. Raising the threshold is
+# rejected by AWS; raising the interval trades probe frequency for a longer
+# window (and at 300s the ceiling becomes 50 minutes, at the cost of detecting a
+# genuinely dead target almost fifty times more slowly than this does).
+#
+# ── THE HONEST CONSEQUENCE: 503s DURING BOOT ARE EXPECTED ──
+#
+# The boot timeline above reaches /health at roughly 7 minutes. The ceiling is
+# 5. If the download and model load run to the top of their range — which is a
+# routine outcome on a cold NAT gateway, not an exotic one — the target WILL be
+# marked unhealthy before /health answers, and the ALB WILL return 503s to
+# anything routed at it during boot.
+#
+# That is expected behaviour for THIS architecture, not an application bug. The
+# target recovers on its own as soon as the api's listener is up. It is stated
+# here because the misdiagnosis it invites is expensive: every diagnostic taken
+# from outside — curl the ALB, read the target group, inspect the health check
+# reason — reports "unhealthy application", because from the load balancer's
+# point of view that is exactly what it is observing. The evidence that would
+# settle it is inside the instance, which has no public IP and was just created.
+# Without this paragraph the next operator to see a 503 during boot starts
+# changing api code.
+#
+# ── THE DURABLE FIX IS AN AMI, AND IT IS OUT OF SCOPE HERE ──
+#
+# No amount of threshold tuning solves this, because the problem is that boot
+# downloads 340MB that could already have been on disk. The real answer is to
+# pre-bake the model weights into the machine image — a Packer build or an
+# equivalent AMI assembly step that installs docker, the application and the
+# GGUF files up front — so a replacement instance boots with the models already
+# present and /health answers in seconds rather than minutes. That is a
+# deliberate change to how this stack produces AMIs and is explicitly OUT OF
+# SCOPE for this milestone.
+#
+# Until that exists, these settings are the maximum the platform allows and
+# they are NOT sufficient to cover the full boot window. Treat a 503 during the
+# first minutes after `terraform apply` as expected.
 
 resource "aws_lb_target_group" "app" {
   count = var.enable_load_balancer ? 1 : 0
@@ -214,21 +250,23 @@ resource "aws_lb_target_group" "app" {
 
     # 30s between checks, 10s timeout. Generous relative to a local FastAPI
     # response, because a check that times out under a momentary CPU spike
-    # during model loading contributes unhealthy counts during exactly the
-    # window the grace period is already covering. Belt and braces.
+    # during model loading wastes one of a very small number of allowed
+    # failures. See the tolerance arithmetic in the essay above before
+    # changing either number.
     interval = 30
     timeout  = 10
 
-    # Two consecutive successes to be healthy, and five consecutive failures to
-    # be unhealthy. The asymmetric thresholds (2 up, 5 down) stop one lucky
-    # probe from declaring the stack ready, while stopping one unlucky probe
-    # from taking it out of service.
+    # Two consecutive successes to be healthy — the legal range is 2-10, and 2
+    # stops one lucky probe from declaring the stack ready.
+    #
+    # TEN consecutive failures to be unhealthy, which is the MAXIMUM an ALB
+    # allows. This is not a balance between tolerance and sensitivity; it is
+    # the only setting that buys the most boot time, because tolerance =
+    # unhealthy_threshold × interval and the interval is already at a value
+    # that makes 30s worth having. See the essay above.
     healthy_threshold   = 2
-    unhealthy_threshold = 5
+    unhealthy_threshold = var.app_health_check_unhealthy_threshold
   }
-
-  # ← THE NUMBER. See the essay above before changing it.
-  health_check_grace_period_seconds = var.app_health_check_grace_period_seconds
 
   # 30s of connection draining on deregistration. Short, because the api holds
   # no long-lived state: a request either completes or it is retried. This
@@ -246,12 +284,14 @@ resource "aws_lb_target_group" "app" {
 #
 # ⚠️  THIS IS THE CROSS-FILE REFERENCE THAT A COUNT TOGGLE WOULD BREAK ⚠️
 #
-# `aws_instance.app[0]` is referenced from inside a count-gated resource. That
-# is safe ONLY because aws_instance.app has NO count — it is always created
-# (see the note at the top of compute.tf). If anyone ever puts a toggle on the
-# instance, THIS LINE BECOMES A PLAN-TIME FAILURE whenever that toggle is
-# false, with an "Invalid index" error that names aws_instance.app rather than
-# the toggle that caused it.
+# `aws_instance.app` is referenced from inside a count-gated resource. That is
+# safe ONLY because aws_instance.app has NO count — it is always created
+# (see the note at the top of compute.tf). Note the reference carries no [0]:
+# a resource without count is a single value, and indexing it is a plan-time
+# error in Terraform, not an accident that happens to work. If anyone ever puts
+# a toggle on the instance, this line does not become an "Invalid index" error —
+# it becomes a conditional-reference problem, because a counted resource needs
+# a one() or try() around it.
 #
 # That coupling is the reason the instance is deliberately ungated, and it is
 # why adding `enable_compute` is not a small change to compute.tf — it is a
@@ -260,7 +300,7 @@ resource "aws_lb_target_group_attachment" "app" {
   count = var.enable_load_balancer ? 1 : 0
 
   target_group_arn = aws_lb_target_group.app[0].arn
-  target_id        = aws_instance.app[0].id
+  target_id        = aws_instance.app.id
 
   # Explicit, and equal to local.app_port. For instance targets the default is
   # the TARGET GROUP's port, so this is redundant — but it is the port that

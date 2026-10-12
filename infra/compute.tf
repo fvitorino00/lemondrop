@@ -18,12 +18,17 @@
 # `sg_app_ec2` is always created in security_groups.tf: it is the thing the
 # milestone is for, and a stack with no compute does not boot the application
 # at all. The consequence is load-bearing for the whole directory — because
-# aws_instance.app always has count = 1, `aws_instance.app[0]` is safe to
-# reference from ANYWHERE without a guard, including from the count-gated
-# load_balancer.tf. That single fact is what keeps the conditional-reference
-# surface in this stack small. Do not add a toggle to this resource without
-# auditing every reference to it, because removing this guarantee is what
-# turns a safe reference into a plan-time "Invalid index" failure.
+# aws_instance.app has NO count, it is a SINGLE VALUE, so `aws_instance.app`
+# can be referenced unconditionally from anywhere, including from the
+# count-gated resources in load_balancer.tf.
+#
+# It must be referenced WITHOUT an index. An uncounted resource is not a list
+# that happens to have one element, so `aws_instance.app[0]` is a plan-time
+# error ("does not have count or for_each set, references to it must not
+# include an index key"), not a safe-looking idiom. Do not add a toggle to this
+# resource without auditing every reference to it: adding one does not make
+# these references invalid, it makes them CONDITIONAL, and each one then needs
+# a one() or try() to survive a false toggle.
 
 # ═══════════════════════════════════════════════════════════════════════════
 # AMI — resolved from SSM Parameter Store, never hardcoded
@@ -421,9 +426,11 @@ resource "aws_instance" "app" {
 
     # ── 5. Model weights ────────────────────────────────────────────────────
     # ~340MB of GGUF downloaded FROM HuggingFace AT BOOT. This is the slow
-    # step, it happens on every fresh instance, and it is the single reason the
-    # ALB target group needs a 300-second health check grace period — see
-    # var.app_health_check_grace_period_seconds and load_balancer.tf.
+    # step, it happens on every fresh instance, and it is why the ALB target
+    # group runs at the maximum unhealthy_threshold it is allowed — see
+    # var.app_health_check_unhealthy_threshold and load_balancer.tf. Note that
+    # even at that maximum the tolerance window is 10 × 30s = 5 minutes, which
+    # this boot can exceed: the real fix is baking the models into the AMI.
     #
     # If this step fails, EVERYTHING downstream fails, and the api never
     # becomes healthy because its compose healthcheck waits on two workers
