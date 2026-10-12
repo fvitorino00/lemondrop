@@ -1,3 +1,30 @@
+"""Integration tests for the LemonDrop API.
+
+These are INTEGRATION tests, not unit tests. They make real HTTP calls against a
+running stack -- there is no mocking and no in-process test client.
+
+The stack must already be running before pytest is invoked. From the repository
+root:
+
+    cp .env.example .env
+    ./scripts/fetch-models.sh
+    docker compose up -d --build
+
+Then run the suite from the repository root with the project virtual
+environment active:
+
+    python -m pytest api/tests/test_integration.py -v
+
+If the API is not running, every test in this file fails. That is correct
+behaviour, not a broken test: a connection error means the stack is down, and
+the assertions here have no meaning without a live service behind them.
+
+What this suite protects: the 384-dimension embedding contract (both the
+declared ``dimensions`` field and the length of the vector actually returned),
+validation of blank input, correct best-first reranking, and preservation of
+the caller's original document indices through the rerank results.
+"""
+
 import os
 import requests
 
