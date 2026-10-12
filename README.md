@@ -108,6 +108,9 @@ Step by step:
   the `api` image from `./api`.
 - `docker compose ps` — all three services reach `(healthy)`.
 
+If a service does not reach `(healthy)`, read its logs rather than restarting —
+see [Troubleshooting](#troubleshooting).
+
 Expect the first start to be slow. The models take roughly 30–60 seconds to load
 from disk on CPU. The API reports `health: starting` until both of its
 dependencies have passed, which is expected behaviour, not a fault.
@@ -407,6 +410,22 @@ repository path. Run the setup commands from the repository root, which is
 where `docker-compose.yml`, `.env.example` and `scripts/` all live.
 
 **2. Reranker healthcheck failing, or `api` stuck at `health: starting`**
+
+Start by reading what the containers are actually doing. Recent output from
+every service, or one service followed live:
+
+```
+docker compose logs --tail=50
+docker compose logs -f embedder
+```
+
+A container sitting in `health: starting` for a long time is usually still
+loading its model off disk; that progress appears in that worker's own logs, not
+in the `api` logs. A worker that exits and restarts repeatedly is a different
+problem from one that is merely slow, and the logs tell the two apart. The `api`
+logs are the ones to read when a request returns 502 or 504, because the API
+records the upstream detail server-side while the caller receives only a short
+sentence — see [Upstream failures](#upstream-failures).
 
 The `llama.cpp` image hardcodes its healthcheck to port 8080. A worker moved to
 any other port can never pass it, so `depends_on: condition: service_healthy`
