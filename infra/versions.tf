@@ -1,8 +1,59 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # Terraform and provider version constraints, and remote state backend
 # ═══════════════════════════════════════════════════════════════════════════
+#
+# A backend block must be nested INSIDE the top-level `terraform` block.
+# Terraform rejects a top-level one with "blocks of type backend are not
+# expected here". The narrative below documents the three literals the backend
+# carries; the block itself is the first thing inside the `terraform` block at
+# the foot of this file, with the version floor and provider constraints after
+# it.
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REMOTE STATE BACKEND — S3 STATE BUCKET FROM `infra/bootstrap`
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The three values below are the outputs of the applied `infra/bootstrap` stack:
+#
+#   bucket → `terraform output state_bucket_name`  → lemondrop-tfstate-filipe
+#   region → `terraform output state_bucket_region` → eu-west-1
+#   key    → `terraform output state_key_prefix`    → lemondrop/dev/terraform.tfstate
+#
+# They are already filled in — bootstrap has been applied and this backend is
+# wired to the real bucket. Re-run `terraform output` in `infra/bootstrap` after
+# any change to that stack, and update these literals by hand to match.
+#
+# These are LITERAL STRINGS and they have to be literal. A backend block is
+# evaluated before variables, data sources, locals, and even the provider are
+# available — Terraform initialises the backend during `init`, which happens
+# before any of that is read. There is no way to interpolate `var.aws_region`
+# here, and any attempt to do so will fail at init with a parse error.
+#
+# That is why `infra/bootstrap/outputs.tf` exists: it exists purely to be
+# copy-pasted into this block by a human. Change the values, do not parameterise
+# them.
+#
+# The bucket must already exist or `init` fails. See infra/bootstrap/README.md.
+# The values below were transcribed character-for-character; a typo here is only
+# detectable by running `terraform init`.
 
 terraform {
+  backend "s3" {
+    bucket = "lemondrop-tfstate-filipe"       # ← from: terraform output state_bucket_name
+    key    = "lemondrop/dev/terraform.tfstate" # ← from: terraform output state_key_prefix
+    region = "eu-west-1"                       # ← from: terraform output state_bucket_region
+
+    # Native state locking. Writes a .tflock object inside the bucket and
+    # arbitrates with conditional writes. Replaces the old DynamoDB lock table —
+    # there is no aws_dynamodb_table anywhere in this stack. Requires
+    # Terraform >= 1.10, which is why the version floor below is 1.10.
+    use_lockfile = true
+
+    # State holds secrets in plaintext (RDS passwords from Phase 2, any key
+    # material). Encrypt it in flight and at rest.
+    encrypt = true
+  }
+
   # ── Why ">= 1.10" — the floor is set by ONE feature, not two ─────────────
   # Two features in this config postdate Terraform 1.5, but only one of them
   # sets the floor:
@@ -37,55 +88,11 @@ terraform {
 
   required_providers {
     aws = {
-      source = "hashicorp/aws"
+      source  = "hashicorp/aws"
       # Provider 5.x is where all S3 bucket settings moved out of the
       # aws_s3_bucket resource into their own resources (versioning, encryption,
       # public access block). bootstrap/main.tf is written in that style.
       version = "~> 5.0"
     }
   }
-}
-
-# ═══════════════════════════════════════════════════════════════════════════
-# REMOTE STATE BACKEND — S3 STATE BUCKET FROM `infra/bootstrap`
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# The three values below are the outputs of the applied `infra/bootstrap` stack:
-#
-#   bucket → `terraform output state_bucket_name`  → lemondrop-tfstate-filipe
-#   region → `terraform output state_bucket_region` → eu-west-1
-#   key    → `terraform output state_key_prefix`    → lemondrop/dev/terraform.tfstate
-#
-# They are already filled in — bootstrap has been applied and this backend is
-# wired to the real bucket. Re-run `terraform output` in `infra/bootstrap` after
-# any change to that stack, and update these literals by hand to match.
-#
-# These are LITERAL STRINGS and they have to be literal. A backend block is
-# evaluated before variables, data sources, locals, and even the provider are
-# available — Terraform initialises the backend during `init`, which happens
-# before any of that is read. There is no way to interpolate `var.aws_region`
-# here, and any attempt to do so will fail at init with a parse error.
-#
-# That is why `infra/bootstrap/outputs.tf` exists: it exists purely to be
-# copy-pasted into this block by a human. Change the values, do not parameterise
-# them.
-#
-# The bucket must already exist or `init` fails. See infra/bootstrap/README.md.
-# The values below were transcribed character-for-character; a typo here is only
-# detectable by running `terraform init`.
-
-backend "s3" {
-  bucket = "lemondrop-tfstate-filipe"  # ← from: terraform output state_bucket_name
-  key    = "lemondrop/dev/terraform.tfstate" # ← from: terraform output state_key_prefix
-  region = "eu-west-1"          # ← from: terraform output state_bucket_region
-
-  # Native state locking. Writes a .tflock object inside the bucket and
-  # arbitrates with conditional writes. Replaces the old DynamoDB lock table —
-  # there is no aws_dynamodb_table anywhere in this stack. Requires
-  # Terraform >= 1.10, which is why required_version says so.
-  use_lockfile = true
-
-  # State holds secrets in plaintext (RDS passwords from Phase 2, any key
-  # material). Encrypt it in flight and at rest.
-  encrypt = true
 }
