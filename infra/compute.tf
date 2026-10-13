@@ -210,12 +210,46 @@ resource "aws_instance" "app" {
   #
   # This is the same subject as the rest of iam.tf from a different angle: the
   # credentials the host uses should be hard to STEAL, not merely absent by
-  # policy. Note that the hop limit of 1 is what makes this control effective —
-  # it stops a proxy or a container reaching IMDS from a hop further away.
+  # policy. What the hop limit below governs, and why this stack sets it to 2
+  # rather than 1, is argued at the argument itself — read that comment before
+  # changing it.
   metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 1
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+
+    # WHAT THIS GOVERNS. http_put_response_hop_limit is the maximum number of
+    # network hops the instance metadata service will allow an IMDSv2 token
+    # response to be proxied across. A token fetched on the host and replayed
+    # from further away is refused. It defends against an OFF-HOST attacker
+    # replaying a stolen token — it is not a defence against a local process.
+    #
+    # WHY 1 BREAKS THE APPLICATION. The API resolves its database credential
+    # from SSM and Secrets Manager using the instance role, and boto3 does that
+    # FROM INSIDE THE DOCKER CONTAINER. A container's request crosses an extra
+    # network hop before it reaches IMDS: out through its veth pair, then across
+    # the host bridge. At a hop limit of 1 the token does not survive that
+    # traversal, boto3 cannot obtain credentials, and the failure surfaces as an
+    # opaque "Unable to retrieve credentials" — which points an operator at IAM
+    # rather than at the hop limit, and sends them to widen a policy that was
+    # never the problem.
+    #
+    # WHY 2, STATED HONESTLY. Raising it to 2 means any process on that host —
+    # which INCLUDES a compromised container — can reach IMDS and assume the
+    # instance role. That is a genuine widening, not a free win. It is accepted
+    # because the role's secretsmanager:GetSecretValue grant has been narrowed,
+    # in this same milestone, to exactly ONE ARN: the application's own
+    # credential (see the resources list on the db_secret_read statement in
+    # iam.tf). The blast radius of a compromised container is therefore that
+    # single credential rather than the RDS master password, which this role can
+    # no longer read at all. IF THE ROLE'S GRANTS ARE EVER WIDENED AGAIN, THIS
+    # DECISION MUST BE REVISITED — the trade only holds while the grant stays
+    # this narrow.
+    #
+    # NOT A REPLACEMENT. metadata_options is an IN-PLACE UPDATE on aws_instance;
+    # the instance is NOT recreated. This argument sits outside the user_data
+    # heredoc, and user_data_replace_on_change only forces replacement for bytes
+    # changed inside that heredoc.
+    http_put_response_hop_limit = 2
   }
 
   # ── ⚠️  NO SECRETS IN THIS SCRIPT.  ⚠️
