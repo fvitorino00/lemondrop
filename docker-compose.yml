@@ -165,12 +165,81 @@ services:
 
     # Same exec-form argv. Differences from the embedder, all load-bearing:
     #   -m             load the GGUF from the bind-mounted /models path
+    #   --parallel 1   ONE inference slot, not the default four — see below
     #   --reranking    scoring mode; without it the server answers embeddings
     #   --embedding    still required — it is the code path rank pooling rides on
     #   --pooling rank one score per pair, not a vector
+    #
+    # ── `--parallel 1`, AND WHY FOUR IS THE WRONG NUMBER HERE ─────────────────
+    #
+    # WHAT THE FLAG DOES. `--parallel N` sets how many independent inference slots
+    # the server keeps open at once. A slot is a concurrent scoring context, and
+    # each one needs its own context's worth of KV cache, so the cache the server
+    # reserves scales with SLOTS × CONTEXT — not with the model alone. Two models
+    # on disk are two fixed costs; the slot count is the knob that multiplies one
+    # of them, and it is the only one here that multiplies anything at all.
+    #
+    # WHY FOUR WAS WRONG. llama.cpp's default is four. That default was never
+    # revisited when this exact container moved from a 16Gi workstation to a
+    # 913Mi `t3.micro` with no swap and roughly 194Mi available — the argv was
+    # carried across hosts unchanged, so it kept asking for the memory profile of
+    # the machine it was written on. Four slots' worth of KV cache does not fit in
+    # ~194Mi alongside two resident models and the API, and llama.cpp says so
+    # itself before the model has finished loading ("failed to fit parameters to
+    # free system memory"). A reranker that cannot hold its own cache dies
+    # mid-request, which the API sees as a connection reset and reports as 502.
+    # The memory has to come from somewhere; four slots was the wrong answer to a
+    # question nobody had asked at the size this host actually is.
+    #
+    # CONFIRMED LOCALLY, not assumed. Before this flag the running server logged
+    #     initializing, n_slots = 4, n_ctx_slot = 512, kv_unified = 'true'
+    # and after it logs
+    #     initializing, n_slots = 1, n_ctx_slot = 512, kv_unified = 'false'
+    # so the reserved KV falls from four contexts to one while per-slot context is
+    # untouched. Note kv_unified flips too: at four slots the build unifies the
+    # pool into one shared buffer, and at one slot there is nothing to unify. The
+    # saving is real and it is measurable, not a guess.
+    #
+    # ── WHY 1 IS NOT A FUNCTIONAL REGRESSION HERE ──────────────────────────────
+    # A single slot serves one request at a time, so the only thing lost is
+    # CROSS-request concurrency — and this application does not use it. /search
+    # issues exactly ONE rerank call per request (a single `_post_upstream` to
+    # /v1/rerank in api/app/main.py, no fan-out, no gather), so a second slot
+    # would have nothing to serve while the first was busy. The concurrency the
+    # default of four was buying here was idle capacity, paid for in resident
+    # memory on every request.
+    #
+    # WITHIN a request nothing is dropped. All documents are still scored and all
+    # of them still come back; they are scored sequentially rather than several at
+    # a time. The result set is identical — only the order in which the CPU visits
+    # the candidates changes.
+    #
+    # ── THE TRADE, STATED PLAINLY ─────────────────────────────────────────────
+    # Sequential scoring RAISES LATENCY. That cost is accepted rather than
+    # avoided: memory is the binding constraint on a 913Mi host, and a request
+    # that fails is strictly worse than a request that is slow. A 502 is not a
+    # faster answer, it is no answer. If this host is ever given enough memory to
+    # hold several slots again, revisit this upward — with a measurement of what
+    # one slot costs, not with the default, which is how four got here.
+    #
+    # ── WHY --ctx-size AND --batch-size ARE DELIBERATELY LEFT ALONE ───────────
+    # These are the obvious next two knobs, and adding them here would be a
+    # mistake dressed as thoroughness. llama.cpp TRUNCATES over-long inputs rather
+    # than rejecting them: shrink `--ctx-size` below what a real (query, passage)
+    # pair needs and the server quietly scores a cut-off passage. It still returns
+    # 200, every document still comes back, and every index still lines up — the
+    # only symptom is that relevance scores are quietly worse than they should be,
+    # with no failure anywhere to trace. A silent relevance regression is a worse
+    # failure than a loud one, because nothing alerts on it and the corpus drifts.
+    # `--batch-size` carries the same class of risk for the same reason. So both
+    # stay unset until there is a MEASURED maximum input length in hand to size
+    # them against — a corpus of real runbooks and the longest passage in it, not
+    # an average, because averages are what make truncation invisible.
     command:
       - "-m"
       - "/models/bge-reranker-base-q8_0.gguf"
+      - "--parallel"
+      - "1"
       - "--reranking"
       - "--embedding"
       - "--pooling"
