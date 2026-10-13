@@ -1,0 +1,746 @@
+{
+  "corpus_version": "1.0.0",
+  "synthetic": true,
+  "generation_note": "SYNTHETIC corpus generated for LemonDrop Milestone 3 retrieval evaluation. No operator-supplied or third-party dataset was found in this repository, so these 40 runbooks were written from scratch to exercise ingestion, chunking, and collection-scoped semantic search. Nothing here is real-world documentation and no real credentials, AWS account identifiers, hostnames, or personal data appear in it. Safe to delete and replace wholesale with an official dataset as long as the document schema is preserved.",
+  "generator": "lemondrop-milestone-3",
+  "document_count": 40,
+  "collections": [
+    "infrastructure",
+    "it-support"
+  ],
+  "documents": [
+    {
+      "id": "infra-aws-iam-key-rotation",
+      "collection": "infrastructure",
+      "content": "Purpose: rotate the AWS IAM access key belonging to the lemondrop service account without interrupting the running API and worker processes. Rotation is required every 90 days and immediately whenever a credential is suspected to have leaked.\n\n1. Confirm which key is live. Run `aws iam list-access-keys --user-name lemondrop-service` and note the access key id currently marked Active. Check `aws iam get-access-key-last-used --access-key-id <KEY_ID>` to confirm the key is genuinely in use rather than a leftover.\n\n2. Create the replacement key. Run `aws iam create-access-key --user-name lemondrop-service --output json` and store the returned secret access key in a password manager entry named lemondrop-service. Never paste the secret into a ticket, a chat message, or a shell history file.\n\n3. Update the consuming workloads. Write the new credentials to AWS Secrets Manager under the path lemondrop/service-account, then restart the api and worker containers so they pick up the new value. Check `docker compose ps` and confirm both containers report a healthy state.\n\n4. Deactivate the old key. Run `aws iam update-access-key --user-name lemondrop-service --access-key-id <OLD_KEY_ID> --status Inactive`. Deactivation, not deletion, is the safe intermediate step because it can be reversed.\n\n5. Observe for seven days. Watch the CloudWatch error dashboard for authentication failures. Any service still presenting the old key will fail loudly once it restarts.\n\n6. Delete the inactive key. Run `aws iam delete-access-key --user-name lemondrop-service --access-key-id <OLD_KEY_ID>` once no failures have appeared for a full week.\n\nVerification: `aws iam list-access-keys --user-name lemondrop-service` returns exactly one Active key, the api container has restarted since the change, and a fresh authenticated request to the internal endpoint succeeds with HTTP 200.",
+      "metadata": {
+        "title": "Rotate an AWS IAM access key for the service account",
+        "tags": [
+          "aws",
+          "iam",
+          "credentials",
+          "rotation"
+        ],
+        "owner": "platform-team",
+        "severity": "medium",
+        "updated_at": "2026-03-14",
+        "isolation_canary": true
+      }
+    },
+    {
+      "id": "infra-rds-snapshot-restore",
+      "collection": "infrastructure",
+      "content": "Purpose: restore the lemondrop PostgreSQL database from an automated snapshot onto a scratch instance, so that the production volume is never touched during an incident investigation.\n\n1. List the available snapshots. Run `aws rds describe-db-snapshots --db-instance-identifier lemondrop-prod --snapshot-type automated` and sort by StartTime to find the newest snapshot created before the incident began.\n\n2. Create a scratch instance from that snapshot. Run `aws rds restore-db-instance-from-db-snapshot --db-instance-identifier lemondrop-scratch --db-snapshot-identifier <SNAPSHOT_ID> --db-instance-class db.t3.micro --no-multi-az`. The restore takes roughly ten minutes for a 40 GB volume.\n\n3. Watch the restore progress with `aws rds describe-db-instances --db-instance-identifier lemondrop-scratch` until the status reads available. Do not attempt to connect while the status is still creating or modifying.\n\n4. Connect over the bastion host, because the scratch instance is private. Run `psql -h lemondrop-scratch.internal -U admin -d lemondrop` and confirm the schema and row counts match expectations.\n\n5. Inspect the data that matters. Run the queries the on-call engineer needs, such as `SELECT count(*) FROM transfers WHERE created_at > now() - interval '1 day'`, and compare them against the pre-incident baseline.\n\n6. When the investigation is finished, delete the scratch instance with `aws rds delete-db-instance --db-instance-identifier lemondrop-scratch --skip-final-snapshot` to avoid storage charges, and confirm the original instance is unchanged.\n\nVerification: the scratch instance reports available, the expected rows are present, and the production instance lemondrop-prod has the same last write timestamp as it did before the restore began.",
+      "metadata": {
+        "title": "Restore the PostgreSQL database from an automated snapshot",
+        "tags": [
+          "aws",
+          "rds",
+          "postgres",
+          "backup",
+          "recovery"
+        ],
+        "owner": "platform-team",
+        "severity": "high",
+        "updated_at": "2026-02-02",
+        "isolation_canary": true
+      }
+    },
+    {
+      "id": "infra-security-group-ingress",
+      "collection": "infrastructure",
+      "content": "Purpose: add an SSH ingress rule to the administrator workstation so that an operator can reach the bastion host from a known static address, after the outbound egress rules have already been verified.\n\n1. Confirm the target security group. Run `aws ec2 describe-security-groups --filters Name=group-name,Values=lemondrop-bastion-sg` and record the group id before making any change.\n\n2. Resolve the workstation address. Ask the administrator for their current public IPv4 address, which the office provider rotates every 24 hours. Never open port 22 to 0.0.0.0/0.\n\n3. Add the ingress rule. Run `aws ec2 authorize-security-group-ingress --group-id <SG_ID> --protocol tcp --port 22 --cidr <ADMIN_CIDR> --tag-specifications ResourceType=security-group-rule,Tags='{Key=Name,Value=bastion-admin-ssh}'` so the new rule is identifiable in the console.\n\n4. Verify the rule exists. Run the describe-security-groups command again and confirm the new ingress entry appears with the expected cidr and port, alongside the pre-existing rules.\n\n5. Test reachability from the workstation with `ssh -v admin@bastion.internal`. A successful login proves the rule is open and the network path works.\n\n6. Remove the rule when the work is finished, or on a fixed fourteen day expiry. Run the revoke-security-group-ingress command with the same values, and tag the workstation address in the change record.\n\nVerification: the describe output shows the new rule, an SSH session from the administrator workstation succeeds, and no rule grants port 22 to the wider internet.",
+      "metadata": {
+        "title": "Add an SSH ingress rule for the administrator workstation",
+        "tags": [
+          "aws",
+          "security-group",
+          "ssh",
+          "network",
+          "access"
+        ],
+        "owner": "platform-team",
+        "severity": "medium",
+        "updated_at": "2026-01-20",
+        "isolation_canary": true
+      }
+    },
+    {
+      "id": "infra-drain-unhealthy-target",
+      "collection": "infrastructure",
+      "content": "Purpose: force an unhealthy target to drain in the load balancer, then replace the instance underneath it, so that in-flight requests finish cleanly instead of being reset mid-transaction.\n\n1. Identify the unhealthy target. Open the target group health page in the AWS console, or run `aws elbv2 describe-target-health --target-group-arn <TG_ARN>`, and note the instance id whose state is unhealthy.\n\n2. Confirm it really is unhealthy. Read the reason code in the health description. A single unhealthy reading may be a blip, so check twice, two minutes apart, before acting.\n\n3. Put the target into draining state. Run `aws elbv2 deregister-targets --target-group-arn <TG_ARN> --targets Id=<INSTANCE_ID>` and check that the state changes from unused to draining.\n\n4. Wait for the drain to finish. Requests that already arrived are allowed to complete. Watch the ActiveRequestCount metric and wait until it reaches zero, usually within sixty seconds.\n\n5. Replace the instance. Terminate the unhealthy instance, let the auto scaling group launch a replacement, and confirm the new instance passes both health checks and registers itself as healthy.\n\n6. Clean up the record. Tag the terminated instance with the incident identifier and archive the health description output.\n\nVerification: the deregistered target reaches the unused state, a healthy replacement target is registered and passing both checks, and the application error rate returns to its normal baseline within five minutes.",
+      "metadata": {
+        "title": "Force an unhealthy load balancer target to drain",
+        "tags": [
+          "aws",
+          "alb",
+          "health-check",
+          "draining",
+          "incident"
+        ],
+        "owner": "platform-team",
+        "severity": "high",
+        "updated_at": "2026-04-07",
+        "isolation_canary": true
+      }
+    },
+    {
+      "id": "infra-rds-master-password-rotation",
+      "collection": "infrastructure",
+      "content": "Purpose: rotate the RDS master password that the lemondrop application stores in AWS Secrets Manager, without losing write access to the database at any point during the change.\n\n1. Record the current state. Run `aws secretsmanager get-secret-value --secret-id lemondrop/rds/master` and note the version id. Never echo the password into the terminal scrollback on a shared screen.\n\n2. Generate a strong replacement. Use a passphrase of at least 32 characters with upper case, lower case, digits, and symbols, avoiding characters that PostgreSQL requires to be escaped.\n\n3. Change the database password first. Run `ALTER USER admin WITH PASSWORD '<NEW_PASSWORD>';` from an authenticated session on the instance. This step alone does not yet update the stored secret.\n\n4. Update the stored secret. Run `aws secretsmanager put-secret-value --secret-id lemondrop/rds/master --secret-string '<JSON_PAYLOAD>'` and record the new version id for the change ticket.\n\n5. Restart the consuming workloads. Restart the api and migration containers so the application reconnects with the new password, then confirm the connection pool recovers without errors.\n\n6. Roll forward, not back. If any consumer still fails, revert the database password to the previous value and restore the previous secret version rather than editing the secret again.\n\nVerification: a fresh `psql` connection using the new password succeeds, the secret version id changed after the rotation, and no authentication errors appear in the application log for a full business day.",
+      "metadata": {
+        "title": "Rotate the RDS master password held in Secrets Manager",
+        "tags": [
+          "aws",
+          "rds",
+          "secrets-manager",
+          "credentials",
+          "rotation"
+        ],
+        "owner": "platform-team",
+        "severity": "high",
+        "updated_at": "2026-05-11",
+        "isolation_canary": true
+      }
+    },
+    {
+      "id": "infra-ec2-health-check-failure",
+      "collection": "infrastructure",
+      "content": "Purpose: diagnose and recover an EC2 instance that is failing its application health check, which is the usual reason an instance is replaced repeatedly by the auto scaling group.\n\n1. Read the failing check description. Run `aws ec2 describe-instance-status --instance-ids <INSTANCE_ID> --include-all-instances` and look for the failing check name, which is usually the HTTPS or the TCP ping check.\n\n2. Reach the instance through the session manager. Use `aws ssm start-session --target <INSTANCE_ID>`, which works even when SSH ingress is closed.\n\n3. Check the service from inside the instance. Run `systemctl status lemondrop-api` and `curl -sv http://127.0.0.1:8080/healthz`. A connection refused answer means the process is down rather than the check being misconfigured.\n\n4. Read the last fifty lines of the application log with `journalctl -u lemondrop-api -n 50 --no-pager` and look for an out of memory kill, a failed database connection, or a port already bound.\n\n5. Apply the narrowest fix. Restart the unit, free disk space, or raise the memory size of the instance. Do not change the health check configuration to make the symptom disappear.\n\n6. Confirm the check recovers. Wait two minutes and run the describe-instance-status command again. If the check still fails, terminate the instance and let the auto scaling group replace it.\n\nVerification: the instance status reports the check passing, the health endpoint answers 200 from inside the instance, and the replacement count for the group has not increased during the following hour.",
+      "metadata": {
+        "title": "Recover an EC2 instance failing its health check",
+        "tags": [
+          "aws",
+          "ec2",
+          "health-check",
+          "ssm",
+          "incident"
+        ],
+        "owner": "platform-team",
+        "severity": "high",
+        "updated_at": "2025-11-18",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-alb-target-registration",
+      "collection": "infrastructure",
+      "content": "Purpose: register a new instance with the application load balancer target group after an instance is launched or scaled out, so that it begins receiving production traffic.\n\n1. Confirm the instance is running and healthy at the instance level. Run `aws ec2 describe-instance-status --instance-ids <INSTANCE_ID>` and check that both the system and instance status checks are passing.\n\n2. Locate the target group. Read the target group arn from the Terraform output, or run `aws elbv2 describe-target-groups --names lemondrop-api-tg`.\n\n3. Register the target. Run `aws elbv2 register-targets --target-group-arn <TG_ARN> --targets Id=<INSTANCE_ID>,Port=8080`. Omitting the port causes registration against the target group default, which is usually wrong for this service.\n\n4. Wait for the health check to run. The initial health check grace period is 60 seconds, then the check runs every 15 seconds, so a target can take up to ninety seconds to turn healthy.\n\n5. Inspect the health description. Run `aws elbv2 describe-target-health --target-group-arn <TG_ARN> --targets Id=<INSTANCE_ID>` and read the reason code if the state is not healthy.\n\n6. Confirm traffic distribution. Watch the RequestCount metric per target in CloudWatch and confirm the new instance begins receiving a share of requests.\n\nVerification: the target reports a healthy state with no reason code, the load balancer sends requests to it, and application error rate is unchanged after registration.",
+      "metadata": {
+        "title": "Register an instance with the ALB target group",
+        "tags": [
+          "aws",
+          "alb",
+          "target-group",
+          "load-balancer"
+        ],
+        "owner": "platform-team",
+        "severity": "medium",
+        "updated_at": "2025-12-09",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-nat-gateway-failure",
+      "collection": "infrastructure",
+      "content": "Purpose: recover private subnets that have lost outbound internet connectivity because a NAT gateway in the subnet is unavailable.\n\n1. Confirm the scope of the failure. Check the reachability dashboard. If every subnet is affected, the problem is the route table or the internet gateway rather than a single NAT gateway.\n\n2. Check the NAT gateway state. Run `aws ec2 describe-nat-gateways --filter Name=state,Values=failed` and note the subnet id of any gateway that is not in the available state.\n\n3. Read why it failed. Open the CloudWatch metric for ErrorPortAllocation and ErrorAllocationLimit on the NAT gateway. Exhausted Elastic IP allocations and port exhaustion are the two usual causes.\n\n4. Replace the gateway. Run `aws ec2 create-nat-gateway --subnet-id <SUBNET_ID> --allocation-id <EIP_ALLOCATION_ID>` and then update the subnet route table to point the 0.0.0.0/0 route at the new gateway id.\n\n5. Wait for the gateway to become available. Use `aws ec2 describe-nat-gateways --nat-gateway-ids <NEW_ID>` and poll every fifteen seconds; a new gateway takes two to five minutes.\n\n6. Delete the failed gateway afterwards, once connections have drained, to stop it accumulating hourly charges.\n\nVerification: an instance in the affected subnet can reach an external endpoint, the old gateway shows deleted, and the NAT gateway CloudWatch metrics show no error codes.",
+      "metadata": {
+        "title": "Recover from a failed NAT gateway in a private subnet",
+        "tags": [
+          "aws",
+          "nat-gateway",
+          "networking",
+          "vpc",
+          "incident"
+        ],
+        "owner": "platform-team",
+        "severity": "high",
+        "updated_at": "2026-03-27",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-ssm-log-retrieval",
+      "collection": "infrastructure",
+      "content": "Purpose: retrieve command output and recent service logs from instances managed by AWS Systems Manager, when SSH access is unavailable or an audit trail is required.\n\n1. Confirm the instance is managed. Run `aws ssm describe-instance-information --filters Key=InstanceIds,Values=<INSTANCE_ID>` and confirm the PingStatus is Online.\n\n2. Find the earlier command. Run `aws ssm list-command-invocations --instance-id <INSTANCE_ID> --details` and note the CommandId of the invocation you need. If you do not have it, use get-command-invocation with the CommandId shown in the runbook.\n\n3. Read the output. Run `aws ssm get-command-invocation --command-id <COMMAND_ID> --instance-id <INSTANCE_ID>` and read the StandardOutputContent and StandardErrorContent fields in full.\n\n4. Decode long output. If the content field looks truncated, pipe it through `base64 -d` or set the document to use the JSON output plugin.\n\n5. For ad hoc collection, run `aws ssm send-command --instance-ids <INSTANCE_ID> --document-name AWS-RunShellScript --parameters commands='journalctl -u lemondrop-api --since -1h --no-pager'` and poll with get-command-invocation until Status is Success or Terminated.\n\n6. Archive the evidence. Store the retrieved output in the incident ticket, because command output is not retained for more than a short period.\n\nVerification: the invocation status is Success, the output contains the expected log lines, and the archived copy in the ticket is readable by the on-call engineer.",
+      "metadata": {
+        "title": "Retrieve command output and service logs with SSM",
+        "tags": [
+          "aws",
+          "ssm",
+          "session-manager",
+          "logging"
+        ],
+        "owner": "platform-team",
+        "severity": "low",
+        "updated_at": "2025-10-30",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-ebs-volume-extension",
+      "collection": "infrastructure",
+      "content": "Purpose: extend the size of the root EBS volume on a running instance when the filesystem is close to full, without downtime and without losing data.\n\n1. Confirm the filesystem is actually the constraint. Run `df -h /` through Systems Manager and check the Use% column. Note the current volume size with `aws ec2 describe-volumes --volume-ids <VOLUME_ID>`.\n\n2. Check for in volume type change limits. Snapshots are required for most modifications, so confirm that a snapshot of the volume already exists or create one with `aws ec2 create-snapshot --volume-id <VOLUME_ID> --description pre-extend`.\n\n3. Extend the volume. Run `aws ec2 modify-volume --volume-id <VOLUME_ID> --size <NEW_SIZE_IN_GIB>`. The instance keeps running while the volume grows underneath it.\n\n4. Grow the partition and filesystem. Connect with start-session and run `sudo growpart /dev/nvme0n1 1`, followed by `sudo xfs_growfs /` for an XFS filesystem or `sudo resize2fs /dev/nvme0n1p1` for ext4.\n\n5. Watch the resize complete. On a large volume the online extension takes several minutes and the growpart command may appear to hang while it works.\n\n6. Delete the pre-extension snapshot afterwards, unless it is covered by a retention policy.\n\nVerification: `df -h /` reports the new size, the application writes and reads files without error, and the describe-volumes output shows the new size.",
+      "metadata": {
+        "title": "Extend an EBS volume and grow the filesystem",
+        "tags": [
+          "aws",
+          "ebs",
+          "storage",
+          "disk-space"
+        ],
+        "owner": "platform-team",
+        "severity": "medium",
+        "updated_at": "2026-01-08",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-terraform-apply-failure",
+      "collection": "infrastructure",
+      "content": "Purpose: resolve a failed Terraform apply without leaving the infrastructure in a half-applied state, and record what actually changed.\n\n1. Read the failure before touching anything. Re-run with `terraform plan` and read the first error line. Terraform usually halts at the first error, so later resources were never considered.\n\n2. Refresh the state file. Run `terraform refresh` or `terraform plan -refresh-only` so the state matches reality. A stale lock file from a killed run is a common cause, and clearing the lock is safe only when no other apply is running.\n\n3. Handle partial replacements. If the error mentions a resource that cannot be replaced in place, read the lifecycle block and add create_before_destroy where the resource supports it.\n\n4. Deal with the classic provider errors. A security group already owned by another rule is fixed by importing the rule; a bucket that already exists is fixed by importing the bucket rather than creating it again.\n\n5. Apply in stages. Run `terraform apply -target=<RESOURCE_ADDRESS>` for the failing unit, confirm it succeeds, then apply the remaining resources normally.\n\n6. Record the outcome. Commit the updated state only after a successful apply, and attach the error output to the change ticket.\n\nVerification: `terraform plan` reports no changes after a successful apply, `terraform state list` contains every expected resource, and the deployed service passes its smoke test.",
+      "metadata": {
+        "title": "Diagnose and recover from a failed Terraform apply",
+        "tags": [
+          "terraform",
+          "iac",
+          "apply",
+          "state"
+        ],
+        "owner": "platform-team",
+        "severity": "medium",
+        "updated_at": "2026-04-22",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-verify-rds-is-private",
+      "collection": "infrastructure",
+      "content": "Purpose: prove that the lemondrop RDS instance is genuinely private, with no public address and no route from the internet, before the security review closes.\n\n1. Read the endpoint and address. Run `aws rds describe-db-instances --db-instance-identifier lemondrop-prod` and check the PubliclyAccessible field, which must read false.\n\n2. Check for a public address. Look at the Address field. If the endpoint resolves outside the VPC, a public IP is attached and the instance is not private.\n\n3. Check the security group. Use `aws ec2 describe-security-groups --group-ids <SG_ID>` and confirm the ingress rules contain no 0.0.0.0/0 entry on the database port.\n\n4. Check the subnet. Compare the DBSubnetGroup against the private route table. A database in a public subnet stays public even when PubliclyAccessible is false.\n\n5. Attempt a connection from outside. From an unmanaged laptop, run `psql -h <ENDPOINT> -p 5432 -U admin`. The connection must time out rather than refuse instantly, because an instant refusal means something answered.\n\n6. Record the evidence in the review ticket, including the four command outputs.\n\nVerification: PubliclyAccessible is false, no public address is shown, the ingress rules are private only, and the external connection attempt times out.",
+      "metadata": {
+        "title": "Verify that the RDS instance is private and unreachable",
+        "tags": [
+          "aws",
+          "rds",
+          "security",
+          "network",
+          "audit"
+        ],
+        "owner": "platform-team",
+        "severity": "medium",
+        "updated_at": "2025-09-25",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-ssm-parameter-read-write",
+      "collection": "infrastructure",
+      "content": "Purpose: read and update configuration values held in the AWS Systems Manager Parameter Store, which is where application settings and feature flags are kept.\n\n1. Fetch a value. Run `aws ssm get-parameter --name /lemondrop/app/log_level --with-decryption`. The --with-decryption flag is required for SecureString parameters and its omission returns an encrypted blob instead of the value.\n\n2. List the parameters under a path. Run `aws ssm get-parameters-by-path --path /lemondrop/app --recursive` to see the whole configuration tree, and add --with-decryption only when you actually need the secret values.\n\n3. Write a value. Run `aws ssm put-parameter --name /lemondrop/app/log_level --value debug --type String --overwrite`. The --overwrite flag is mandatory for an existing parameter, and omitting it fails with ParameterAlreadyExists.\n\n4. Version the change. Every write creates a new version, and every parameter has a history you can read with `aws ssm get-parameter-history --name /lemondrop/app/log_level`.\n\n5. Roll back when needed. Fetch the previous version and re-apply it with put-parameter and --overwrite, using the value from the history output.\n\n6. Make the change effective. Services read the store at start-up or on a scheduled refresh, so restart the relevant containers after a write.\n\nVerification: get-parameter returns the new value, get-parameter-history shows a new version, and the application log confirms the new setting took effect.",
+      "metadata": {
+        "title": "Read and write values in the SSM Parameter Store",
+        "tags": [
+          "aws",
+          "ssm",
+          "parameters",
+          "configuration"
+        ],
+        "owner": "platform-team",
+        "severity": "low",
+        "updated_at": "2026-02-18",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-docker-compose-rollback",
+      "collection": "infrastructure",
+      "content": "Purpose: roll the Compose stack back to the previous image tags when a bad release causes errors, restoring service within a few minutes.\n\n1. Capture the current state. Run `docker compose ps` and `docker images --format '{{.Repository}}:{{.Tag}}'` so you know exactly which tags are running before you change anything.\n\n2. Find the previous tag. The release history lives in the repository README, which records each published image tag in chronological order. Take the tag immediately before the failed one.\n\n3. Edit the environment. Change the image tag variables in `.env` for the api, worker, and migrate services to the previous tag, and never hand-edit a running container.\n\n4. Restart the stack. Run `docker compose down && docker compose up -d` and then `docker compose ps` to confirm every container returns to a healthy state.\n\n5. Watch for regressions. Follow `docker compose logs -f api` for several minutes and confirm the error signature from the bad release is gone.\n\n6. Record the rollback. Note the failed tag, the restored tag, and the time in the incident channel so the release owner can investigate before retrying.\n\nVerification: every service reports healthy, the version endpoint returns the previous release identifier, and error rates return to baseline within five minutes.",
+      "metadata": {
+        "title": "Roll back the Docker Compose stack to the previous release",
+        "tags": [
+          "docker",
+          "compose",
+          "rollback",
+          "release"
+        ],
+        "owner": "platform-team",
+        "severity": "high",
+        "updated_at": "2026-06-03",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-alb-tls-certificate-renewal",
+      "collection": "infrastructure",
+      "content": "Purpose: replace an expiring TLS certificate on the application load balancer listener before it lapses, which otherwise causes an immediate outage for every browser and API client.\n\n1. Check the expiry date. Open the ACM console and read the expiry of the certificate in use. Renewal must begin at least 21 days before expiry.\n\n2. Request or upload the new certificate. For an ACM managed certificate, add a DNS validation record and wait for issuance. For an imported certificate, run `aws acm import-certificate --certificate file://cert.pem --private-key file://key.pem --certificate-chain file://chain.pem`.\n\n3. Create a new listener rule or replace the certificate on the existing one. Only one certificate can be set as the default for an HTTPS listener, so the swap must be complete rather than additive.\n\n4. Test before routing traffic. Use `aws acm describe-certificate --certificate-arn <ARN>` and confirm the status is ISSUED, then check the chain with `openssl s_client -connect <DOMAIN>:443 -servername <DOMAIN>`.\n\n5. Apply the certificate to the listener with `aws elbv2 modify-listener --listener-arn <LISTENER_ARN> --certificates CertificateArn=<NEW_ARN>`.\n\n6. Remove the superseded certificate from ACM after the swap, keeping the most recent one for rollback.\n\nVerification: the describe-certificate status is ISSUED, an HTTPS request from outside succeeds with the new chain, and the browser no longer shows a certificate warning.",
+      "metadata": {
+        "title": "Renew the TLS certificate on the ALB listener",
+        "tags": [
+          "aws",
+          "alb",
+          "tls",
+          "acm",
+          "certificates"
+        ],
+        "owner": "platform-team",
+        "severity": "medium",
+        "updated_at": "2026-03-05",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-rds-storage-autoscaling",
+      "collection": "infrastructure",
+      "content": "Purpose: raise the storage capacity of the production database when the free storage metric drops below the safe threshold, without scheduling downtime.\n\n1. Read the current state. Run `aws rds describe-db-instances --db-instance-identifier lemondrop-prod` and note AllocatedStorage, MaxAllocatedStorage, and the StorageType.\n\n2. Check whether autoscaling is enabled. If MaxAllocatedStorage is zero, autoscaling is off and a manual increase is required instead.\n\n3. Enable storage autoscaling with `aws rds modify-db-instance --db-instance-identifier lemondrop-prod --max-allocated-storage 200 --storage-type gp3 --apply-immediately`. Setting the type to gp3 first is what unlocks autoscaling on this instance class.\n\n4. Confirm the thresholds. Autoscaling starts at 20 percent free storage and targets 50 percent, with a six hour cooldown between changes.\n\n5. Watch the growth happen. Follow the FreeStorageBytes metric in CloudWatch and confirm the value rises without a manual intervention.\n\n6. Keep headroom. Revisit the maximum each quarter, because reaching the maximum triggers an automatic growth and an unexpected cost.\n\nVerification: MaxAllocatedStorage is greater than zero, FreeStorageBytes is trending upward, and no storage-related alerts have fired.",
+      "metadata": {
+        "title": "Enable storage autoscaling on the production RDS instance",
+        "tags": [
+          "aws",
+          "rds",
+          "autoscaling",
+          "storage",
+          "cost"
+        ],
+        "owner": "platform-team",
+        "severity": "low",
+        "updated_at": "2025-08-14",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-t3-micro-memory-pressure",
+      "collection": "infrastructure",
+      "content": "Purpose: resolve memory pressure on a t3.micro instance, where the workload outgrows the instance size and CloudWatch shows CPUCreditBalance at zero with sustained memory pressure.\n\n1. Confirm the pressure. Run `aws cloudwatch get-metric-statistics` for CPUUtilization and FreeableMemory on the instance, and read the console status checks for the memory pressure flag.\n\n2. Understand the burst credit model. A t3.micro can burst for a limited period; once CPUCreditBalance reaches zero the instance is throttled, which looks to the application like random latency.\n\n3. Check for a leak before resizing. Connect with start-session and run `ps -eo pid,rss,comm --sort=-rss | head -15` to find the process holding memory, then read its logs.\n\n4. Apply the cheap fix. Restart the memory-hungry worker, or set the instance to unlimited mode with `aws ec2 modify-instance-credit-specification --instance-id <INSTANCE_ID> --credit-specification CpuCredits=unlimited` while a capacity plan is made.\n\n5. Move to a larger class. Run `aws ec2 modify-instance-attribute --instance-id <INSTANCE_ID> --instance-type t3.small`, then stop and start the instance so the change takes effect.\n\n6. Update the Terraform source of truth so the next apply does not resize the instance back.\n\nVerification: FreeableMemory stays above the threshold for 24 hours, CPUCreditBalance no longer sits at zero, and the instance type matches the Terraform module.",
+      "metadata": {
+        "title": "Resolve memory pressure on a t3.micro instance",
+        "tags": [
+          "aws",
+          "ec2",
+          "t3",
+          "memory",
+          "cloudwatch"
+        ],
+        "owner": "platform-team",
+        "severity": "medium",
+        "updated_at": "2026-05-29",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-add-private-subnet",
+      "collection": "infrastructure",
+      "content": "Purpose: add a new private subnet to the VPC and place the remaining services in it, so that capacity is available across at least two availability zones.\n\n1. Check the existing layout. Run `aws ec2 describe-subnets --filters Name=vpc-id,Values=<VPC_ID>` and record the current CIDR blocks, so the new block does not overlap with a peer network or a VPN.\n\n2. Choose a non-overlapping CIDR. Reserve the new subnet in the address plan first, because changing a CIDR later is a replacement, not an in-place change.\n\n3. Create the subnet in the correct availability zone. Run `aws ec2 create-subnet --vpc-id <VPC_ID> --cidr-block <NEW_CIDR> --availability-zone <AZ>`, choosing an AZ that is not already at its subnet limit.\n\n4. Make it private. Remove the default route to the internet gateway and add a route to the NAT gateway instead, then associate a route table that has no route to the internet gateway.\n\n5. Attach the new subnet to the database subnet group and the load balancer, so that new capacity is actually usable.\n\n6. Update Terraform with the new subnet definition so the next apply reproduces the change.\n\nVerification: the describe-subnets output lists the new subnet in the intended AZ, instances launched in it reach the internet only through the NAT gateway, and no unexpected route exists.",
+      "metadata": {
+        "title": "Add a private subnet across availability zones",
+        "tags": [
+          "aws",
+          "vpc",
+          "subnet",
+          "networking",
+          "terraform"
+        ],
+        "owner": "platform-team",
+        "severity": "medium",
+        "updated_at": "2025-12-01",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-audit-iam-wildcard-resources",
+      "collection": "infrastructure",
+      "content": "Purpose: audit IAM policies that grant wildcard resources, so that overly broad permissions are found and narrowed before the quarterly access review.\n\n1. Enumerate the policies in scope. Run `aws iam list-policies --scope Local` and store the policy arns, since only locally managed policies can be edited by the platform team.\n\n2. Find wildcard statements. Run `aws iam list-entities-for-policy --policy-arn <ARN>` per policy, then fetch each policy version with `aws iam get-policy-version --policy-arn <ARN> --version-id <ID>` and read the Resource and Action fields.\n\n3. Classify each finding. A wildcard action with a wildcard resource is the highest risk. A wildcard action with a scoped resource is medium. A wildcard resource with a specific action is usually acceptable and is often a convenience in the source repository.\n\n4. Narrow the finding. Replace a wildcard resource with the specific bucket, queue, or secret arn, and replace a wildcard action with the individual action the workload actually calls.\n\n5. Prove the workload still works. Apply the narrowed policy and watch the CloudTrail events for denied calls; every denial is a missing permission to add back explicitly.\n\n6. Log the result. Record the finding, the narrowed policy, and the reviewer in the access review document.\n\nVerification: no statement grants both a wildcard action and a wildcard resource, the application shows no AccessDenied errors, and the audit note names a reviewer and a date.",
+      "metadata": {
+        "title": "Audit and narrow IAM policies that use wildcard resources",
+        "tags": [
+          "aws",
+          "iam",
+          "security",
+          "audit",
+          "least-privilege"
+        ],
+        "owner": "platform-team",
+        "severity": "medium",
+        "updated_at": "2026-04-15",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "infra-enable-rds-cloudwatch-log-exports",
+      "collection": "infrastructure",
+      "content": "Purpose: enable CloudWatch log exports for the lemondrop database, which are currently disabled, so that connection and query activity is available for debugging and for the audit trail.\n\n1. Check the current setting. Run `aws rds describe-db-instances --db-instance-identifier lemondrop-prod` and look at the EnableCloudwatchLogsExports list.\n\n2. Know what you are enabling. Postgresql logs include connection attempts and session identifiers. Treat them as sensitive and keep the retention period aligned with the audit policy.\n\n3. Create the log group. Run `aws logs create-log-group --log-group-name /aws/rds/instance/lemondrop-prod/postgresql` if it does not already exist, because RDS will not create it for an existing instance.\n\n4. Enable the exports. Run `aws rds modify-db-instance --db-instance-identifier lemondrop-prod --enable-cloudwatch-logs-exports postgresql upgrade --apply-immediately`. The upgrade log is generated once and is not a continuous stream.\n\n5. Wait for the export to begin. Logs appear in the log group within about five minutes, and the instance status briefly reads modifying.\n\n6. Set retention with `aws logs put-retention-policy --log-group-name /aws/rds/instance/lemondrop-prod/postgresql --retention-in-days 90`.\n\nVerification: the describe-db-instances output lists the enabled exports, new log streams appear in the log group, and the retention policy is set.",
+      "metadata": {
+        "title": "Enable CloudWatch log exports for the RDS instance",
+        "tags": [
+          "aws",
+          "rds",
+          "cloudwatch",
+          "logging",
+          "audit"
+        ],
+        "owner": "platform-team",
+        "severity": "low",
+        "updated_at": "2026-02-26",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-service-account-password-rotation",
+      "collection": "it-support",
+      "content": "Purpose: rotate the password for the lemondrop service account without interrupting the running API and worker processes. Rotation is required every 90 days and immediately whenever a credential is suspected to have leaked.\n\n1. Confirm which password is live. Open the password manager entry named lemondrop-service and check the note field recording which secret is currently in production use. The other entry is a leftover from a previous rotation.\n\n2. Create the replacement password. Generate a passphrase of at least 32 characters using the password generator in the vault, and store it as a new entry named lemondrop-service. Never paste the secret into a ticket, a chat message, or a shared document.\n\n3. Update the consuming workloads. Edit the application configuration on the api and worker machines so they read the new value from the vault entry, then restart both processes so they pick up the new value. Check `docker compose ps` and confirm both containers report a healthy state.\n\n4. Deactivate the old password. Mark the previous vault entry as retired rather than deleting it, because retirement can be reversed. Do not delete it in the same step.\n\n5. Observe for seven days. Watch the shared mailbox for failed sign-in alerts and login failure reports. Any service still presenting the old password will fail loudly once it restarts.\n\n6. Delete the retired entry. Delete the old password from the vault once no failures have appeared for a full week, and record the rotation date in the credential register.\n\nVerification: the vault contains exactly one active entry for lemondrop-service, the api and worker processes have restarted since the change, and a fresh authenticated request to the internal service succeeds.",
+      "metadata": {
+        "title": "Rotate the password for the service account",
+        "tags": [
+          "passwords",
+          "credentials",
+          "vault",
+          "rotation"
+        ],
+        "owner": "it-support",
+        "severity": "medium",
+        "updated_at": "2026-03-14",
+        "isolation_canary": true
+      }
+    },
+    {
+      "id": "support-workstation-backup-and-restore",
+      "collection": "it-support",
+      "content": "Purpose: restore a user's project files from an automated shared-drive backup onto a scratch working folder, so that the live project folder is never touched during an incident investigation.\n\n1. List the available backups. Open the Projects folder on the shared drive and sort the restore points by date taken. Find the newest restore point created before the incident began.\n\n2. Create a scratch copy from that backup. Copy the restore point into a temporary folder named for the user and today's date, and confirm the copy reports zero errors. Copying in one direction is what keeps the original folder untouched.\n\n3. Watch the restore progress. Let the transfer finish and do not open the files while the copy is still running, because a file read mid-copy is a file read half written.\n\n4. Open the files from the user's workstation, because the scratch folder inherits the ownership and the permissions of the original folder.\n\n5. Inspect the files that matter. Confirm the expected folders and file counts match what the user saw before the incident began.\n\n6. Delete the scratch copy when the investigation is finished, once the user confirms their work is complete, to avoid filling the shared drive.\n\nVerification: the restored folder opens, the expected files are present, and the original project folder still has the same last modified timestamp it had before the restore began.",
+      "metadata": {
+        "title": "Restore a user's project files from the shared-drive backup",
+        "tags": [
+          "backup",
+          "restore",
+          "shared-drive",
+          "workstation"
+        ],
+        "owner": "it-support",
+        "severity": "medium",
+        "updated_at": "2026-02-02",
+        "isolation_canary": true
+      }
+    },
+    {
+      "id": "support-admin-console-access-grant",
+      "collection": "it-support",
+      "content": "Purpose: grant a new administrator access to the management console so that an operator can reach the services from a known corporate account, after the reporting-line approval has already been verified.\n\n1. Confirm the target permission group. Open the identity provider console and read the membership of the Administrators group before making any change.\n\n2. Resolve the requester account. Ask the administrator for their corporate email address and their employee number from the directory. Never accept a personal account address for an administrator grant.\n\n3. Add the access grant. Add the corporate account to the Administrators group in the console and record the approving manager in the ticket's approvals field, so the new membership is traceable in the console.\n\n4. Verify the grant exists. Reopen the group's membership list and confirm the new administrator appears alongside the pre-existing members.\n\n5. Test access from the administrator workstation with a fresh browser session at the console address. A successful login proves the grant is active and the session works.\n\n6. Remove the grant when the role changes, or on a fixed ninety day review date. Remove the account from the group and record the removal in the access register.\n\nVerification: the membership list shows the new administrator, an administrator console session succeeds, and no personal account has been added to the group.",
+      "metadata": {
+        "title": "Grant a new administrator access to the management console",
+        "tags": [
+          "access",
+          "administrators",
+          "console",
+          "onboarding"
+        ],
+        "owner": "it-support",
+        "severity": "medium",
+        "updated_at": "2026-01-20",
+        "isolation_canary": true
+      }
+    },
+    {
+      "id": "support-departing-employee-access-removal",
+      "collection": "it-support",
+      "content": "Purpose: force a departing employee's access to be removed, then hand over the laptop, so that in-flight work is finished cleanly instead of being cut off mid-task.\n\n1. Identify the departing employee's outstanding sessions. Open the identity provider session list and the shared-drive sign-in history, and note which applications still hold an active session.\n\n2. Confirm the removal really is final. Read the reason code in the offboarding ticket. A single pending ticket may be a rescinded departure, so check twice with the manager before acting.\n\n3. Put the account into removal state. Suspend the corporate account and remove the membership from every privileged group, then check that the state changes from active to suspended.\n\n4. Wait for the removal to finish. Sessions that already arrived are allowed to complete. Watch the last sign-in timestamp and wait until it stops moving, usually within sixty seconds.\n\n5. Hand over the laptop once the access is gone. Wipe and re-image the device, then hand it to the replacement employee and confirm the new owner confirms the device in the asset register.\n\n6. Clean up the record. Tag the asset with the departure identifier and archive the removal output.\n\nVerification: the suspended account reaches the disabled state, a replacement employee has confirmed the reassigned device, and no shared-drive access remains for the departing employee.",
+      "metadata": {
+        "title": "Remove a departing employee's access and hand over the laptop",
+        "tags": [
+          "offboarding",
+          "access",
+          "departing-employee",
+          "device"
+        ],
+        "owner": "it-support",
+        "severity": "high",
+        "updated_at": "2026-04-07",
+        "isolation_canary": true
+      }
+    },
+    {
+      "id": "support-mfa-reset-locked-out-user",
+      "collection": "it-support",
+      "content": "Purpose: reset MFA for a locked-out user whose authenticator device has been replaced, without losing write access to any account at any point during the change.\n\n1. Record the current state. Open the user's enrolment record in the identity provider console and note the recovery code version and the date of the last successful sign-in. Never ask the user to read a current factor code aloud on an unverified call.\n\n2. Generate a strong replacement. Produce an eight-word recovery phrase from the built-in generator, using upper case, lower case, digits, and symbols, avoiding words the user could guess from the account name.\n\n3. Change the enrolled factor first. Reset the authenticator enrolment to the new device in the console. This step alone does not yet update the stored recovery codes.\n\n4. Update the stored backup. Write the new recovery codes to the user's vault entry and record the new code version for the change ticket.\n\n5. Restart the affected applications. Ask the user to sign in again on every device so the new factor is cached, then confirm the session cache recovers without errors.\n\n6. Roll forward, not back. If any application still fails, restore the previous device record rather than resetting the factor again.\n\nVerification: a fresh sign-in using the new factor succeeds, the recovery code version changed after the rotation, and no authentication errors appear in the sign-in log for a full business day.",
+      "metadata": {
+        "title": "Reset MFA for a locked-out user",
+        "tags": [
+          "mfa",
+          "locked-out",
+          "identity",
+          "support"
+        ],
+        "owner": "it-support",
+        "severity": "high",
+        "updated_at": "2026-05-11",
+        "isolation_canary": true
+      }
+    },
+    {
+      "id": "support-sso-password-reset",
+      "collection": "it-support",
+      "content": "Purpose: reset a corporate single sign-on password when a user has forgotten it or their password has expired, and restore access without a visit to the office.\n\n1. Verify the caller before doing anything. Check the caller's employee number and a fact only they would know, such as the name of their current team lead. Never reset a password for a caller who fails verification.\n\n2. Confirm self-service is exhausted. Check whether the user has already tried the self-service portal at the password reset address, because a portal reset completes in under a minute and needs no ticket.\n\n3. Unlock the account. Sign in to the identity provider console, find the user, and clear the lockout counter and the expired flag. Clearing the counter does not change the password.\n\n4. Trigger the reset email. Use the send reset link action rather than setting a password yourself, so that the new value is only ever known to the user.\n\n5. Walk the user through the change. Ask them to read the code from the email, choose a new password of at least 14 characters, and confirm they are not reusing the network password.\n\n6. Check for a compromise. If the reset was unexpected, ask whether the password was entered on a look-alike site and escalate to the security mailbox.\n\nVerification: the user signs in through the portal, the account lockout counter is zero, and no failed sign-in alerts follow in the next hour.",
+      "metadata": {
+        "title": "Reset a single sign-on password",
+        "tags": [
+          "sso",
+          "password-reset",
+          "identity",
+          "support"
+        ],
+        "owner": "it-support",
+        "severity": "medium",
+        "updated_at": "2026-01-14",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-new-laptop-onboarding-vpn",
+      "collection": "it-support",
+      "content": "Purpose: prepare a newly delivered laptop for a user, including enrolment of the VPN profile and the device management agent, before they are asked to work from home.\n\n1. Confirm the device is corporate. Check the asset tag on the underside of the machine and the serial number against the delivery note. Personal devices are not enrolled.\n\n2. Complete first sign-in. Have the user sign in with their corporate account so that the device joins the management agent. The join prompt appears only on a network that permits it.\n\n3. Install the VPN profile. Open the software centre, install the corporate VPN client, and sign in with the corporate account. Confirm the client shows connected after the profile installs.\n\n4. Enrol the device management agent and the full disk encryption key, and confirm the management console shows the laptop as compliant. An uncompliant device cannot receive mail.\n\n5. Test the real path. Ask the user to open the shared drive and the internal tool from a phone hotspot, which proves the VPN works away from the office network.\n\n6. Hand over the accessories and record the asset assignment with the asset register.\n\nVerification: the laptop reports compliant, the VPN connects on a hotspot, the shared drive opens, and the asset record names the user.",
+      "metadata": {
+        "title": "Onboard a new laptop and connect the VPN",
+        "tags": [
+          "onboarding",
+          "laptop",
+          "vpn",
+          "setup"
+        ],
+        "owner": "it-support",
+        "severity": "medium",
+        "updated_at": "2026-02-20",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-wifi-troubleshooting",
+      "collection": "it-support",
+      "content": "Purpose: restore wireless connectivity on a laptop or phone that will not join the office network, so that the user is not left working without a network.\n\n1. Establish whether it is one device or many. Ask whether other devices join the same network. If everything fails, the problem is the access point rather than the laptop.\n\n2. Forget and rejoin the network. Remove the office network from the wireless list, then select it again and enter the passphrase. A stale profile with an old password is the most common cause.\n\n3. Check for the captive portal. Open a browser and watch for a page asking for the network credentials. Some access points require a portal sign-in after joining.\n\n4. Look at band compatibility. Older office access points only broadcast on the 2.4 GHz band. Set the wireless adapter preference to 2.4 GHz and retry.\n\n5. Reset the adapter. Turn the wireless switch off and on again, or run the network reset from the settings page. This clears a wedged adapter without a reboot.\n\n6. Escalate if the reset fails. Collect the wireless adapter model and the error shown in the diagnostics page, then log a network ticket with the access point name from the office map.\n\nVerification: the device joins the network, a page loads without a captive portal, and the connection survives a reboot.",
+      "metadata": {
+        "title": "Troubleshoot Wi-Fi that will not connect",
+        "tags": [
+          "wifi",
+          "network",
+          "connectivity",
+          "troubleshooting"
+        ],
+        "owner": "it-support",
+        "severity": "low",
+        "updated_at": "2025-11-06",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-resource-access-grant",
+      "collection": "it-support",
+      "content": "Purpose: grant a user access to the shared drive and to the code repository, so that they can reach the documents and the source they need without waiting for a manual copy.\n\n1. Confirm the business need. Read the request ticket and check that the user's role justifies the level of access requested. Ask for a narrower scope when the need is unclear.\n\n2. Confirm the owner approval. Shared-drive and repository access both require a named owner to approve in writing. Do not grant access on the strength of a verbal request.\n\n3. Apply the least privilege grant. Add the user to the group that carries the access rather than granting permissions on individual items, because groups can be reviewed in one place later.\n\n4. Read the access levels carefully. For the repository, choose read for a first contribution and write only when the user needs to push branches. For the shared drive, avoid the owner level.\n\n5. Verify the grant exists. Ask the user to sign in again and open the resource. A permission that appears in the console but does not open is usually a caching delay.\n\n6. Record the grant. Note the resource, the level, the approver, and the review date in the access register.\n\nVerification: the user opens both resources at the intended level, the approval is on the ticket, and the entry appears in the access register.",
+      "metadata": {
+        "title": "Grant shared-drive and repository access",
+        "tags": [
+          "access",
+          "shared-drive",
+          "repository",
+          "permissions"
+        ],
+        "owner": "it-support",
+        "severity": "low",
+        "updated_at": "2026-03-11",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-laptop-replacement-departing-employee",
+      "collection": "it-support",
+      "content": "Purpose: replace a departing employee's laptop with a re-imaged device for their successor, ensuring no personal data survives on the hardware.\n\n1. Inventory the device. Record the asset tag, serial number, and every account saved in the browser profile. Ask the departing employee in writing to hand the device over within a stated deadline.\n\n2. Collect the company property. Provide a prepaid return label and a collection slot. Do not ask the employee to post the device themselves without insurance cover.\n\n3. Back up anything still owed to the business. Copy the Projects folder and any documents the manager asks to retain, then confirm the copy is readable on a second machine.\n\n4. Wipe and re-image. Apply the company re-image profile from the deployment tool, which removes all local profiles and the recovery partition, and wait for the confirmation on the console.\n\n5. Assign and enrol. Add the device to the new user's account, complete the management agent enrolment, and confirm the console shows the machine as compliant.\n\n6. Ship it. Record the courier tracking number against the asset register and notify the new user of the expected arrival date.\n\nVerification: the console shows the device wiped and re-assigned, the new user can sign in, and the retention copy opens.",
+      "metadata": {
+        "title": "Replace a departing employee's laptop",
+        "tags": [
+          "offboarding",
+          "laptop",
+          "asset",
+          "replacement"
+        ],
+        "owner": "it-support",
+        "severity": "medium",
+        "updated_at": "2026-06-10",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-mfa-setup",
+      "collection": "it-support",
+      "content": "Purpose: set up multi-factor authentication for a user account on a new authenticator app, so that the account is protected before it is used for anything sensitive.\n\n1. Check whether a factor already exists. Open the enrolment page and look for an existing authenticator or backup method, because enrolling twice silently replaces the first device.\n\n2. Choose the stronger factor. Prefer the security key or the app with number matching over SMS, which is vulnerable to number porting. SMS remains available only as a temporary fallback.\n\n3. Scan the enrolment code. Open the authenticator app and scan the on-screen code, then confirm the app shows the account name before the user saves it.\n\n4. Confirm the code works. Ask the user to enter the six-digit code shown in the app into the confirmation field. A code that does not work usually means the phone clock has drifted by more than a minute.\n\n5. Store backup codes. Generate the backup codes and print them for the user to keep in a safe place. Codes shared in a chat message are considered compromised.\n\n6. Remove the old factor, if any. Only delete the previous device once the new factor has confirmed successfully.\n\nVerification: a sign-in requires the new factor, the backup codes work once and are recorded, and the old factor no longer appears in the account.",
+      "metadata": {
+        "title": "Set up multi-factor authentication on an account",
+        "tags": [
+          "mfa",
+          "authenticator",
+          "setup",
+          "security"
+        ],
+        "owner": "it-support",
+        "severity": "low",
+        "updated_at": "2025-12-18",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-offline-printer",
+      "collection": "it-support",
+      "content": "Purpose: bring an offline network printer back online, so that a user in the office can print without sending documents home or to a public print shop.\n\n1. Confirm the printer is reachable. From the user's laptop, open the printer queue properties and run the network test. A failing test points at the network, not the driver.\n\n2. Check the power and connection. Ask whether the printer shows an error on its panel, and check the cable or wireless connection at the device. Paper jams also make a printer report itself offline.\n\n3. Compare the address. Open the printer queue properties and read the address, then compare it with the address on a label on the device. An address change during a floor move is a common cause.\n\n4. Remove and reinstall the queue. Delete the printer from the user's laptop and add it again using the print wizard, letting the system install the correct driver rather than forcing an older one.\n\n5. Print a test page from the queue, then a second test page from a second nearby machine to confirm the problem was local.\n\n6. Escalate a device fault. If the test page never prints, note the printer asset tag and the panel error code, then raise a facilities ticket.\n\nVerification: the network test succeeds, two test pages print from two machines, and the queue no longer shows an offline warning.",
+      "metadata": {
+        "title": "Bring an offline network printer back online",
+        "tags": [
+          "printer",
+          "networking",
+          "drivers",
+          "office"
+        ],
+        "owner": "it-support",
+        "severity": "low",
+        "updated_at": "2025-10-02",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-recycle-bin-file-recovery",
+      "collection": "it-support",
+      "content": "Purpose: recover a file a user deleted by mistake, as long as it has not been emptied and the device has not been signed out or restarted.\n\n1. Stop writing to the device. Ask the user not to save, copy, or restart anything, because deleted files are overwritten as soon as new data is written to the disk.\n\n2. Check the obvious location. Open the Recycle Bin on the machine and sort by the original location and the deletion date. Restoration takes a second when the file is still listed.\n\n3. Recover from the previous version. Right-click the folder that used to contain the file and choose the previous versions option, which works when the file was deleted rather than emptied.\n\n4. Use shadow copies if the earlier steps fail. Open a command prompt as administrator and run the vssadmin list shadows command, then connect to the share named localhost administrative share from the resulting entry to reach the older snapshot.\n\n5. Copy the recovered file somewhere safe, such as the shared drive, rather than leaving it on a disk that is close to full.\n\n6. Check whether a backup holds a better copy, since the retained backup may include files deleted weeks earlier.\n\nVerification: the user opens the recovered file, a copy exists in the shared drive, and the Recycle Bin still contains the deletion record for audit purposes.",
+      "metadata": {
+        "title": "Recover a deleted file from the Recycle Bin",
+        "tags": [
+          "file-recovery",
+          "recycle-bin",
+          "data-loss",
+          "workstation"
+        ],
+        "owner": "it-support",
+        "severity": "high",
+        "updated_at": "2026-04-30",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-phishing-email-escalation",
+      "collection": "it-support",
+      "content": "Purpose: escalate a suspected phishing email the moment a user reports it, so that the other mailboxes are protected before anyone else clicks.\n\n1. Preserve the original. Ask the user to leave the message in place and not to forward it, since forwarding breaks the headers the analysis depends on.\n\n2. Capture the indicators. Record the sending address, the reply-to address, the link targets without opening them, and the time of receipt. Copy the headers for the analyst.\n\n3. Tell the user what not to do. If they clicked, ask them to disconnect from the network and report immediately rather than waiting for the next meeting. If they entered a password, a password reset is the first action.\n\n4. Raise the alert. Send the captured indicators to the security mailbox and mark the message with the phishing tag, which triggers an automatic purge for every mailbox.\n\n5. Protect the reporting user. Confirm that the purge worked for them and that no credential needs to be reset unless they interacted with the message.\n\n6. Watch for follow-ups. Watch the security dashboard for look-alike domains registered in the following days, which usually accompany a campaign.\n\nVerification: the message is tagged and purged everywhere, the indicators reached the analyst, and the reporting user's credentials are unchanged or reset as required.",
+      "metadata": {
+        "title": "Escalate a suspected phishing email",
+        "tags": [
+          "phishing",
+          "security",
+          "email",
+          "escalation"
+        ],
+        "owner": "it-support",
+        "severity": "high",
+        "updated_at": "2026-03-19",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-password-manager-install",
+      "collection": "it-support",
+      "content": "Purpose: install the company password manager on a device so that credentials are stored in the managed vault instead of in a spreadsheet or a sticky note.\n\n1. Confirm the device is supported. Check the operating system version against the supported list. Devices outside the list must be upgraded before installation proceeds.\n\n2. Install from the software centre. Deploy the client from the management console rather than from a download link, because a link install may not receive security updates.\n\n3. Sign in with the corporate account. Confirm that the vault name shown after sign-in matches the company vault, and never ask the user to paste an existing personal vault into it.\n\n4. Run the health check. Open the built-in assessment, which reports weak, reused, and old passwords, and walk the user through the highest value items.\n\n5. Move the shared credentials only. Import the logins already held in the company vault, delete them from wherever they were kept, and confirm the autofill works on a test page.\n\n6. Record the enrolment, so the security review can see which devices hold vault access.\n\nVerification: the client is installed from the console, the company vault opens, autofill works, and the health check has no unaddressed critical findings.",
+      "metadata": {
+        "title": "Install the company password manager",
+        "tags": [
+          "password-manager",
+          "installation",
+          "vault",
+          "setup"
+        ],
+        "owner": "it-support",
+        "severity": "low",
+        "updated_at": "2025-11-21",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-email-forwarding-rules",
+      "collection": "it-support",
+      "content": "Purpose: set up or correct a mail forwarding rule for a user, so that messages addressed to an absent colleague reach the right person without manual sorting.\n\n1. Confirm the request is legitimate. Ask the user to state the rule in full, including the source address and the destination. Rules that forward everything to an external address are refused.\n\n2. Check for existing rules. Open the mail client's rules page. A single rule can forward mail silently, so existing rules are audited before a new one is created.\n\n3. Create the rule with a narrow condition. Restrict the rule to the specific sender or the specific folder, and avoid a blank condition, which forwards every message.\n\n4. Strip the external footprint. If the destination is external, add the approved disclaimer and confirm that the destination address is on the external allow list.\n\n5. Test it. Send a message from the covered address and confirm it arrives once, at the correct destination, and is not also delivered to the sender.\n\n6. Set an expiry for temporary rules. Add an end date to any rule created for a holiday or a maternity cover, so it removes itself.\n\nVerification: a test message arrives at the destination, the sender receives nothing extra, and any temporary rule has an end date recorded.",
+      "metadata": {
+        "title": "Configure or correct email forwarding rules",
+        "tags": [
+          "email",
+          "forwarding",
+          "mail-client",
+          "configuration"
+        ],
+        "owner": "it-support",
+        "severity": "low",
+        "updated_at": "2026-05-06",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-laptop-wipe-reimage",
+      "collection": "it-support",
+      "content": "Purpose: wipe and re-image a laptop that is being reused, so that no previous user's data, browser profile, or saved credentials survive onto the next device.\n\n1. Back up what must be kept. Copy the previous user's Projects folder and any records the manager asks to retain, then confirm the copy is readable.\n\n2. Record the asset and the user. Note the asset tag, the serial number, and the previous owner's account, because the wipe is irreversible once it starts.\n\n3. Start the wipe. Launch the re-image task from the deployment tool and select the wipe and re-image option, which clears all partitions including the recovery partition.\n\n4. Wait for the image to apply. The task takes 30 to 45 minutes on a typical laptop. Do not power off the device during this time, since an interrupted image leaves an unbootable machine.\n\n5. Complete enrolment. Sign in with the new owner's corporate account, let the management agent enrol, and apply the encryption key.\n\n6. Dispose of the old data correctly. If the device is beyond reuse, follow the destruction procedure rather than storing it in an office drawer.\n\nVerification: the console shows the wipe as successful, the new owner signs in with a clean desktop, and the old profiles are absent.",
+      "metadata": {
+        "title": "Wipe and re-image a laptop for reuse",
+        "tags": [
+          "wipe",
+          "reimage",
+          "laptop",
+          "data-protection"
+        ],
+        "owner": "it-support",
+        "severity": "medium",
+        "updated_at": "2026-02-11",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-external-monitor-setup",
+      "collection": "it-support",
+      "content": "Purpose: set up a second external monitor for a remote worker and keep the display stable, covering both the hardware arrangement and the sluggish display problems that follow it.\n\n1. Confirm the port and the cable. Ask which port is used and whether the cable is HDMI or DisplayPort. A DisplayPort cable is required for the higher refresh rates; HDMI degrades to a lower mode silently.\n\n2. Connect and set the primary display. Plug the cable into the laptop, then open the display settings and set the second monitor as the extended workspace rather than a duplicate of the first.\n\n3. Scale the text. Set the scaling to 125 or 150 percent. At 100 percent on a large panel the text is too small, which is the most common complaint.\n\n4. Suspend the internal display if the user has two external panels, otherwise the laptop and an external monitor can both try to drive the panel and cause flicker.\n\n5. Fix a slow or flickering display. Change the refresh rate to the panel's native value in the display settings, and swap the cable or the port if the image drops out when the screen moves.\n\n6. Record the arrangement. Note the monitor asset tag, the cable type, and the working resolution in the equipment record.\n\nVerification: both displays are extended at the native resolution, the image is stable when the screen moves, and text is legible without scaling the whole desktop.",
+      "metadata": {
+        "title": "Set up a second monitor and fix a slow external display",
+        "tags": [
+          "monitor",
+          "display",
+          "remote-work",
+          "hardware"
+        ],
+        "owner": "it-support",
+        "severity": "low",
+        "updated_at": "2025-09-08",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-new-hire-first-day-setup",
+      "collection": "it-support",
+      "content": "Purpose: complete the first-day access for a new hire, so that the account exists, the mandatory applications are present, and the manager can hand over work on day one.\n\n1. Create the account before the start date. Confirm the hire date and the department, then raise the account request with the manager's approval attached.\n\n2. Send the welcome instructions. The user needs the start date, the enrolment steps, and the courier details for the laptop in one message, before the day itself.\n\n3. Check the mandatory courses. Enrol the user into the security, privacy, and acceptable-use modules, since the account is blocked until these are complete.\n\n4. Confirm the physical kit. Check the asset record for the laptop, the badge, and any monitor, and confirm the courier delivered before the start date.\n\n5. Give the user a landing page. Share the internal portal address, the support channel, and the manager's name, so the first question of the day has an obvious destination.\n\n6. Check in at the end of day one. Ask what is missing while the request list is fresh, and close the loop the same week.\n\nVerification: the account works, all three courses are complete, the kit is on the asset record, and the user can reach the support channel.",
+      "metadata": {
+        "title": "Complete first-day setup for a new hire",
+        "tags": [
+          "onboarding",
+          "new-hire",
+          "access",
+          "first-day"
+        ],
+        "owner": "it-support",
+        "severity": "medium",
+        "updated_at": "2026-01-29",
+        "isolation_canary": false
+      }
+    },
+    {
+      "id": "support-lost-company-phone",
+      "collection": "it-support",
+      "content": "Purpose: secure a lost company phone quickly, so that corporate mail and data on the device are protected before the handset is found or resold.\n\n1. Get the details and the time. Record the device model, the phone number, and the last time the user saw it, since the remote wipe needs all three to succeed.\n\n2. Lock the device first. Send the lock command from the management console, which requires the passcode to restart the handset into a locked state.\n\n3. Wipe the device remotely. Send the wipe command and wait for the console to report the device as wiped. A device that is out of coverage cannot be wiped until it reconnects.\n\n4. Revoke the sessions. Remove the mobile mail account from the container profile and sign out the user, so that access stops even if the device is not wiped yet.\n\n5. Protect the number. Report the number as lost to the carrier so that the SIM is suspended and the handset cannot be used for calls.\n\n6. Rotate what the phone held. Reset the password for any account whose credentials were unlocked on the device, prioritising mail and the password manager.\n\nVerification: the console shows the device locked and wiped, the SIM is suspended, and any account that was unlocked on the device has a new password.",
+      "metadata": {
+        "title": "Secure a lost company phone",
+        "tags": [
+          "lost-device",
+          "mobile",
+          "remote-wipe",
+          "security"
+        ],
+        "owner": "it-support",
+        "severity": "high",
+        "updated_at": "2026-04-01",
+        "isolation_canary": false
+      }
+    }
+  ]
+}
