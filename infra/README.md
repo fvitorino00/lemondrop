@@ -207,12 +207,15 @@ Stated plainly rather than left to be discovered:
 
 ## Verification status
 
-**The infrastructure is deployed and verified.** The stack described in this README was provisioned with Terraform and the running system was exercised against its acceptance criteria. The evidence — the exact commands run and their observed output — is recorded in `docs/verification-milestone-2.md`. Read that for what was verified versus what is only supported by evidence.
+**The infrastructure is deployed and verified.** The stack described in this README was provisioned with Terraform and the running system was exercised against its acceptance criteria. The evidence — the exact commands run and their observed output — is recorded in `docs/verification-milestone-2.md`. Read that for what was verified versus what is only supported by evidence, at the infrastructure level. The **application-level** evidence for Milestone 3, run against this infrastructure on AWS, is recorded separately in `docs/verification-milestone-3.md`; **§12 of that document is the authority** and §12.5 is the acceptance table.
 
-Two things are **not** verified and are not claimed:
+One thing is **not** verified and is not claimed:
 
-1. A full destroy/apply cycle has not been run. Reproducibility is supported by five successful applies that persisted state and produced only intended changes, but the destroy half of the loop is unexercised.
-2. The application does not yet use PostgreSQL. The `psql` probe proves the network path from EC2 to RDS, not application integration. That is Milestone 3.
+1. A full destroy/apply cycle has not been run. Reproducibility is supported by five successful applies that persisted state and produced only intended changes, but the destroy half of the loop is unexercised. **This is still outstanding after Milestone 3** — it is carried forward there as §12.4 item 5. The two documents agree: it is open.
+
+A second claim once stood here and is now closed, recorded rather than deleted:
+
+2. ~~The application does not yet use PostgreSQL. The `psql` probe proves the network path from EC2 to RDS, not application integration. That is Milestone 3.~~ **Closed in Milestone 3.** The application **does** now use PostgreSQL, on the RDS instance defined here, connecting as the least-privilege **`lemondrop_app`** role rather than the RDS master. The original `psql` probe proved the network path from EC2 to RDS and not application integration — that framing was, and remains, accurate about **what that specific probe did**; what changed is that application integration has since been built and verified on top of it. The evidence is `docs/verification-milestone-3.md` §12: the corpus ingested against RDS, the connection identity, and the §11.4 negative control, in which the EC2 instance role was **DENIED** the RDS-managed master secret.
 
 Before the first apply, the following was checked by hand:
 

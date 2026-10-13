@@ -1,4 +1,60 @@
-# Milestone 3 — Verification Record (IN PROGRESS)
+# Milestone 3 — Verification Record
+
+> ## ✅ **MILESTONE 3 IS COMPLETE — all five acceptance criteria were verified on AWS.**
+>
+> **§12 is the authority on the final state of this milestone.** This document was
+> written while M3 was in progress, so a great deal of it below is phase-by-phase
+> working that later sections supersede. **If you read one part of this document, read
+> this block and then §12:**
+>
+> | Section | What it holds |
+> |---|---|
+> | **§12** | The cloud acceptance record as a whole |
+> | **§12.1** | The operator-verified rows, including the final independent pass at §12.1.1 |
+> | **§12.2** | The `t3.small` resize — how it was carried out, and a correction |
+> | **§12.3** | The M3 cloud failure history, preserved with its timeline |
+> | **§12.4** | What is and is not verified on AWS — **six of its eight items STILL OUTSTANDING** |
+> | **§12.5** | The acceptance table — all five criteria **VERIFIED (cloud)**, plus three qualifier rows |
+>
+> **The headline verified facts, compactly.** On a live `t3.small` behind a public ALB,
+> against RDS: the instance runs at **`t3.small` with the EC2 instance ID preserved**;
+> **all three containers healthy**; the reranker reports **`n_slots = 1`**; **40 of 40
+> corpus documents ingested** (20 `infrastructure` + 20 `it-support`); **`/search`
+> returns 10 candidates and 5 results**; **both collections return the correct top
+> documents**; **collection isolation passes for both collections**, including **10 of 10
+> adversarial canaries in both directions through the public ALB**; **search survived an
+> API container restart**; the EC2 **instance role was DENIED the RDS master secret**;
+> the database connection **authenticated as `lemondrop_app`, not the RDS master**; the
+> public ALB returned **HTTP 200 on `/health/ready`** and **HTTP 200 on `/search` in
+> 15.55 s**; and **Terraform state reconciled with no changes, exit 0**. Every row behind
+> those statements was executed and reported by the **operator** — read §12 before
+> relying on any of them, and read §12.4 before generalising from them.
+>
+> **And what those facts do not mean, stated in the same breath so this header cannot be
+> read as a blanket claim:**
+>
+> - **Persistence was verified across an API *container* restart, not an EC2 reboot.**
+> - **Isolation was verified at the RESPONSE boundary on AWS.** The SQL-level mechanism
+>   underneath it was proven **locally, by mutation** (§8.5) — a local result, not a cloud one.
+> - **15.55 s is a SINGLE observation**, not a latency distribution. It is not a mean, not
+>   a median, not a p95, not an SLO, and not a margin measurement.
+> - **The corpus is SYNTHETIC.** It was generated for this milestone and was never tested
+>   against real data.
+> - **Untested:** clean destroy/rebuild reproducibility, sustained and concurrent load, and
+>   CPU-credit exhaustion on the `t3` family. **§12.4 is the full list.**
+
+---
+
+> ⚠️ **SUPERSEDED — the opening below framed M3 as pending. It is preserved verbatim
+> rather than deleted.**
+>
+> The title this document previously carried was *"Milestone 3 — Verification Record
+> **(IN PROGRESS)**"* and it opened with the paragraph below. **That was accurate when
+> written and is no longer.** M3 is closed; §12.5 is the acceptance table. The reasoning
+> the old framing recorded was right at the time — the phases really were unverified when
+> it was written — and it is kept because a reader needs to see what the document claimed
+> before §12 arrived. **Where this block and the block below disagree, this block is the
+> current one**, and §12.6 lists the rest of what §12 supersedes.
 
 **This is a running record, not a finished report.** Milestone 3 is in progress. Phase 0,
 Phase 1, Phase 2, Phase 3a+3b (persistence and ingestion) and Phase 4 (retrieval,

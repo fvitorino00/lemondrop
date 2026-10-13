@@ -4,9 +4,12 @@ A two-stage document-retrieval stack, running on CPU under Docker Compose.
 Two `llama.cpp` workers do the inference — one embeds text into 384-dimension
 vectors, the other scores query/document pairs — and a small FastAPI service
 stands in front of them as the only reachable endpoint. This milestone delivers
-the three services and the HTTP surface that calls them. There is no database,
-no ingestion and no retrieval yet; the API forwards to the models and nothing
-more.
+the HTTP surface that calls them, and Milestone 3 added the database, the
+ingestion and the retrieval on top of them: documents are ingested into a
+PostgreSQL instance with pgvector, and `/search` retrieves and reranks against
+it. The verified M3 record — what was checked, on what, and what the result does
+*not* establish — is `docs/verification-milestone-3.md`, with §12 as the
+authority.
 
 ## Contents
 
@@ -212,7 +215,11 @@ full teardown and are still there after the next `docker compose up`.
 
 ## API routes
 
-All three routes are served by the `api` service on `localhost:8000`.
+All three routes documented below are served by the `api` service on
+`localhost:8000`. **Milestone 3 added further routes to that service —
+`POST /documents` and `POST /search` — which are not documented here**; the
+sections below cover the retrieval-free surface. Their behaviour and evidence
+are recorded in `docs/verification-milestone-3.md`.
 
 ### `GET /health`
 
@@ -406,8 +413,10 @@ route: `/embed` does not know whether its text will be a query or a document,
 and a document is the expensive one to get wrong.
 
 **Do not add the prefix to `/embed`.** It belongs on a `/search` route, which
-does not exist in this milestone. Until it does, the prefix appears in the code
-only in comments.
+~~does not exist in this milestone. Until it does, the prefix appears in the code
+only in comments.~~ **That was written before Milestone 3 and is no longer true.**
+`POST /search` exists and is where the prefix is applied — `api/app/config.py`
+reads it from `QUERY_PREFIX`, exactly as the table above describes.
 
 ## Troubleshooting
 
@@ -480,20 +489,28 @@ again. The script skips files that are already present and non-empty.
 
 ## Project status
 
-This milestone delivers the three services and the HTTP surface that calls them.
-What does **not** exist yet, so nobody goes looking for it:
+Milestone 3 is closed. The verified record — what was checked on AWS, by whom,
+and what the results do not establish — is `docs/verification-milestone-3.md`;
+**§12 is the authority** and §12.5 is the acceptance table. What does **not**
+exist yet, so nobody goes looking for it:
 
-- **No database.** No document ingestion, no storage of vectors, nothing to
-  persist. The `api` service is stateless and mounts no volumes.
-- **No `/search` endpoint.** The API forwards to the models; it does not
-  retrieve or rank anything itself. The query prefix, the candidate count and
-  the top-K value are declared in `.env` but unread, waiting for this route.
 - **No authentication.** The one published port is open to anything that can
-  reach the host.
+  reach the host. On AWS the ALB restricts access by source CIDR, which is a
+  network-level restriction and **not** authentication.
 - **CPU-only.** GPU acceleration is possible — the development host has an
   RTX 5070 Ti with CUDA 13.4 — and was deliberately deferred.
 
-What works today, verified: start the stack from a clean checkout, get three
-healthy containers, get a 384-dimension embedding out of `/embed`, get a
-correctly ordered ranking out of `/rerank`, and pass all six integration tests
-against the live stack.
+What exists, verified on AWS against a live `t3.small` behind a public ALB and
+against RDS: the database (**PostgreSQL with pgvector**, holding stored document
+vectors), document **ingestion**, and **collection-scoped retrieval and
+reranking** through `POST /search`, which reads the query prefix, the candidate
+count and the top-K value declared in `.env`. All five M3 acceptance criteria are
+verified in the cloud environment. Also verified there: `GET /health/ready` HTTP
+200, `POST /search` HTTP 200, the connection authenticating as `lemondrop_app`
+rather than the RDS master, the EC2 instance role being **denied** the RDS master
+secret, 10 of 10 adversarial isolation canaries passing in both directions, and
+search surviving an API container restart. **The evidence, and the boundaries of
+that evidence — a container restart rather than an EC2 reboot, isolation at the
+response boundary, a single latency observation rather than a distribution, and
+a synthetic corpus — are in `docs/verification-milestone-3.md`, not restated
+here.** §12.4 there lists what is still outstanding.
