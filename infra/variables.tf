@@ -261,7 +261,7 @@ variable "app_instance_type" {
   type        = string
   default     = "t3.small"
 
-  # ⚠️  READ THE ForceNew SECTION BELOW BEFORE RUNNING ANY terraform apply.  ⚠️
+  # ⚠️  READ THE REVIEWED-PLAN SECTION BELOW BEFORE RUNNING ANY terraform apply.  ⚠️
   #
   # ── WHAT IS PROVEN — TWO SEPARATE CLAIMS, AND THEY MUST NOT BE BLURRED ───
   #
@@ -308,13 +308,29 @@ variable "app_instance_type" {
   # what it buys.
   #
   # Stated plainly so it cannot be over-read: THIS IS NOT A BENCHMARK OF
-  # t3.small. Nothing in this repository has run the retrieval workload on a
-  # 2 GiB host. t3.small is the next step up from an instance with a
+  # t3.small. The SIZING REASONING below was written BEFORE the resize and is
+  # preserved as it was written, because the reasoning is what the choice
+  # rested on: t3.small is the next step up from an instance with a
   # MEASURED, REPRODUCED failure, chosen because it is the SMALLEST instance
   # that plausibly clears a ~290MiB-weight-plus-runtime model on a host that
-  # had ~194MiB to give. It is a hypothesis with a size attached, chosen
-  # against a measured floor — not a verified sufficiency. Do not claim it is
-  # sufficient. It is untested until retrieval actually runs on it.
+  # had ~194MiB to give. It was a hypothesis with a size attached, chosen
+  # against a measured floor — not a verified sufficiency.
+  #
+  # THAT HYPOTHESIS HAS NOW BEEN EXERCISED. The instance was resized, and
+  # retrieval ran on it and WORKED: 40 of 40 documents ingested, /search
+  # returned 10 candidates and 5 results with the correct top documents,
+  # collection isolation passed, the search survived an API container
+  # restart, and no new kernel OOM occurred within the verified search
+  # window. The public ALB returned HTTP 200 for /search in 15.55 seconds —
+  # a SINGLE OBSERVATION, not a latency distribution, and nothing here may be
+  # quoted as a latency figure. See `docs/verification-milestone-3.md` §12.1
+  # for the row-by-row record, §12.3 for the failures that preceded it, and
+  # §12.4 for what the green rows do NOT mean.
+  #
+  # So the sufficiency question this default was set up to answer has been
+  # answered by measurement, as it said it would have to be. Read the next
+  # section for what remains open — latency distribution, headroom, and
+  # sustained load are not answered by a single successful search.
   #
   # ── WHY NOT BIGGER ──────────────────────────────────────────────────────
   #
@@ -329,6 +345,9 @@ variable "app_instance_type" {
   #
   # If t3.small proves insufficient, that is not a setback. That is NEW
   # EVIDENCE, and the next decision is informed by it instead of guessed.
+  # (It has not proved insufficient: it has served retrieval successfully.
+  # Whether 2 GiB is enough for a SUSTAINED workload is a different question
+  # and is answered below, under the family limitation, not here.)
   #
   # ── ⚠️  THE KNOWN LIMITATION — t3 IS THE WRONG FAMILY, AT ANY SIZE  ⚠️ ───
   #
@@ -386,62 +405,61 @@ variable "app_instance_type" {
   #     new relevance baseline — a substantially larger intervention than the
   #     failure warrants, and one that changes what the system ANSWERS rather
   #     than what it costs to answer.
-  #   * `-S` ON ANY terraform apply THAT CHANGES `instance_type`. EXPLICITLY
-  #     REJECTED BY THE OPERATOR, and it is not a close call — see below.
+  #   * A BLIND `terraform apply` THAT CHANGES `instance_type`. EXPLICITLY
+  #     REJECTED BY THE OPERATOR, and it is not a close call — see below. The
+  #     resize was NOT run that way: a Terraform plan was REVIEWED first, and
+  #     the apply was executed against that reviewed plan.
   #
-  # ── ⚠️  WHY NO terraform apply MAY CHANGE instance_type  ⚠️ ──────────────
+  # ── ⚠️  HOW THE RESIZE WAS ACTUALLY CARRIED OUT  ⚠️ ──────────────────────
   #
   # THIS IS THE MOST IMPORTANT THING IN THIS COMMENT.
   #
-  # `instance_type` on `aws_instance` is ForceNew in the AWS provider.
-  # Changing it therefore makes terraform plan propose DESTROY + CREATE:
-  #   * a NEW instance ID — every CloudTrail reference, every SSM command
-  #     history entry and every runbook address that names this instance
-  #     becomes wrong, and the instance becomes unreachable through the path
-  #     those instructions describe;
-  #   * a NEW EBS ROOT VOLUME — and with it, the docker images, the repository
-  #     checkout, and the downloaded model weights, all of which live on the
-  #     volume and are NOT in the AMI;
-  #   * a FRESH BOOT that must re-clone the repository and re-download every
-  #     model weight from scratch before it can serve a request.
+  # An EARLIER VERSION OF THIS COMMENT said something different, and it was
+  # WRONG. It claimed that `instance_type` on `aws_instance` is ForceNew in
+  # the AWS provider, that a plan carrying the change would therefore propose
+  # DESTROY + CREATE rather than an in-place resize, and that the only path
+  # preserving the instance was a MANUAL stop → modify → start on the AWS
+  # side with `terraform apply` forbidden.
   #
-  # THAT IS NOT A STOP/START. It is the destruction of precisely the things
-  # this capacity upgrade exists to preserve, and it happens at the exact
-  # moment the box is least able to rebuild them quickly.
+  # THE OPERATOR'S ACCOUNT OF WHAT WAS EXECUTED GOVERNS, and it is this:
   #
-  # WHY IT IS WORTH RECORDING SO LOUDLY: the natural next action for an
-  # operator reading a plan that says "forces replacement" is to run
-  # `terraform apply`. That single command is the one action that loses the
-  # instance ID, the volume, the models, the checkout and the images. If you
-  # remember one thing from this block, remember that `apply` is not the tool
-  # for this change.
+  #   THE RESIZE WAS CARRIED OUT THROUGH A REVIEWED TERRAFORM PLAN AND A
+  #   TERRAFORM APPLY. The plan was READ before it was applied, and the apply
+  #   PRESERVED THE EC2 INSTANCE ID — which the operator has INDEPENDENTLY
+  #   CONFIRMED. See `docs/verification-milestone-3.md` §12.1 row 1 and §12.2.
   #
-  # ── THE PATH THAT ACTUALLY SATISFIES PRESERVATION ───────────────────────
+  # THE OBSERVED OUTCOME IS THE EVIDENCE. An instance ID that survived the
+  # apply is not consistent with a destroy-and-recreate having been executed.
+  # This comment therefore does NOT re-assert ForceNew, and the ForceNew
+  # inference that motivated the manual-resize story is withdrawn. The risk
+  # that motivated it — a replacement losing the instance ID, the root volume,
+  # the models, the checkout and the images — is REAL and is still worth
+  # respecting; what is withdrawn is the claim about how Terraform behaves and
+  # the claim that apply could not be used.
   #
-  # Change the instance type ON THE AWS SIDE, deliberately and by hand:
+  # THE LESSON IS UNCHANGED AND IS THE REASON TO KEEP THIS BLOCK. The action
+  # that loses the instance ID, the volume, the models, the checkout and the
+  # images is an UNREVIEWED apply of a plan that proposes replacement. The
+  # thing that prevents it is READING THE PLAN FIRST — which is exactly what
+  # was done. If you remember one thing from this block, remember that the
+  # plan is read before it is applied, not after.
   #
-  #   stop  →  modify instance type  →  start
+  # ── THE RECONCILING CHANGE ───────────────────────────────────────────────
   #
-  # That preserves the instance ID and the root volume, and therefore
-  # everything resident on them — models, images, checkout, all of it. THEN
-  # let `terraform plan` refresh state from the API so that state agrees with
-  # reality. Because the default in THIS file is being changed to match the
-  # new steady state, that refresh produces NO DIFF: state records
-  # t3.small, config declares t3.small, and there is nothing left to plan.
-  #
-  # That is the entire point of the line changed above. It is a RECONCILING
-  # change. Without it, every subsequent plan would propose reverting the
-  # capacity upgrade — proposing to shrink a box that was just enlarged —
-  # produced by nothing more than forgetting a flag, which is the same
-  # hazard class this milestone has been removing since M2.
+  # The default in THIS file declares the same steady state the instance now
+  # runs. That is a RECONCILING change: it exists so that every subsequent
+  # plan proposes reverting the capacity upgrade. Without it, a later plan
+  # would propose shrinking a box that was just enlarged — produced by nothing
+  # more than forgetting a flag, which is the same hazard class this milestone
+  # has been removing since M2.
   #
   # ── WHAT THIS CHANGE IS NOT ─────────────────────────────────────────────
   #
   # THE CHANGE IN THIS FILE ALONE DOES NOT RESIZE ANYTHING. Nothing here
   # touches a live AWS resource, and nothing here will. It reconciles the
-  # DECLARED DEFAULT with the INTENDED STEADY STATE. The actual capacity
-  # change is an AWS-SIDE ACTION THE OPERATOR PERFORMS DELIBERATELY, by hand,
-  # with the stop/modify/start path above.
+  # DECLARED DEFAULT with the STEADY STATE THE INSTANCE NOW RUNS. The capacity
+  # change itself was already carried out, through a reviewed Terraform plan
+  # and a Terraform apply — see the section above.
   #
   # Do not describe this change as an upgrade, and do not let a plan run
   # from it be treated as approval to apply. It is documentation and drift
@@ -458,35 +476,41 @@ variable "app_instance_type" {
   #
   # ── WHAT IS STILL UNVERIFIED ON t3.small ─────────────────────────────────
   #
-  #   * The retrieval workload itself. Nothing has run on 2 GiB. Whether
-  #     retrieval now WORKS is the open question this default is set up to
-  #     answer, and it is answered by measurement, not by this comment.
-  #   * M3 memory and search performance on EC2 remain untaken. The rerank
+  #   * NOTHING about whether retrieval works. That WAS unproven when this
+  #     default was written, and it has since been exercised: ingestion,
+  #     search, ranking, isolation and survival across an API container
+  #     restart all passed on this instance. `docs/verification-milestone-3.md`
+  #     §12.1 is the row-by-row record. Do not re-open it.
+  #   * M3 rerank latency ON EC2 remains untaken as a DISTRIBUTION. The rerank
   #     latency that motivates the 10-candidate funnel — ~11-12.5s median
   #     over ten documents, i.e. ~1.1-1.25s per candidate — was measured on
-  #     the developer's workstation, NOT on any EC2 instance. It is the number
-  #     that decides whether the ALB lb_idle_timeout needs raising.
+  #     the developer's workstation, NOT on any EC2 instance. The cloud run
+  #     produced ONE /search observation of 15.55s, which is not a latency
+  #     distribution and does not answer this. It is the number that decides
+  #     whether the ALB lb_idle_timeout needs raising.
   #   * Sustained-load behaviour, and therefore the CPU-credit throttling
-  #     described above, is unmeasured at every size.
-  #   * The no-diff claim below is reasoned, not observed.
+  #     described above, is unmeasured at every size. A working single search
+  #     says nothing about how t3.small behaves over hours.
+  #   * Terraform state has NOT been confirmed to agree with reality. A
+  #     read-only `terraform plan -detailed-exitcode` reporting no changes is
+  #     still OUTSTANDING. See §12.4 item 1.
   #
   # ── WHY THIS CHANGE SHOULD PRODUCE NO RESOURCE DIFF ──────────────────────
   #
-  # IF the AWS-side resize has already happened, terraform state already
-  # records t3.small, this file now declares t3.small, and a plan is empty.
+  # The resize has been carried out and this file now declares the instance
+  # type the instance runs, so the reasoning for an empty plan is that state
+  # records t3.small, this file declares t3.small, and there is nothing left
+  # to plan.
   #
-  # IF the AWS-side resize has NOT happened, the same reasoning does not
-  # apply: state still records t3.micro while this file now declares
-  # t3.small, and a plan is likely to propose the replacement this comment
-  # forbids. That is not a defect in this file; it is the signal that the
-  # stop/modify/start step is still pending.
-  #
-  # That reasoning is NOT verified here. This change was made deliberately
-  # WITHOUT running terraform — no plan, no apply, no init, no validate. The
-  # ForceNew behaviour of instance_type in particular is stated from PROVIDER
-  # KNOWLEDGE and has NOT been confirmed against this provider version. Do
-  # not take this comment's word for it. The operator's own plan output is
-  # what settles it, and the jq expressions in the verification section of
+  # That reasoning is NOT verified here, and this comment was written
+  # deliberately WITHOUT running terraform — no plan, no init, no validate
+  # was executed to support it. The fact that the resize went through
+  # Terraform makes the no-diff outcome MORE likely; it does not make it
+  # OBSERVED. A read-only `terraform plan -detailed-exitcode` confirming it is
+  # the outstanding check, and until that check has been run and its exit
+  # status recorded, this remains a reasoned claim and not a verified one.
+  # The operator's own plan output is what settles it, and the jq expressions
+  # in the verification section of
   # the operator's plan review are the thing to read, not this prose.
 }
 

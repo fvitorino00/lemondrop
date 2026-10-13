@@ -1386,38 +1386,62 @@ correct top documents and that isolation passes for both collections. **The spec
 document ids ranked first on AWS were not reported**, so they are not recorded here. §8.4
 names them for the local run; those are local results and are not restated as cloud results.
 
-### 12.2 The resize was performed by hand — and why Terraform was not allowed to do it
+### 12.2 The resize was carried out through a reviewed Terraform plan and a Terraform apply
 
 **This is recorded because the mechanism is load-bearing, not because the resize is
-interesting.** A reader who finds §12.1 row 1 and thinks "so Terraform resized it" has the
-process backwards in a way that produces the wrong action next time.
+interesting.** A reader who takes §12.1 row 1 — *t3.small running, instance ID unchanged* — and
+assumes an in-place AWS console resize happened outside Terraform will reach for the wrong
+tool next time. This subsection exists to prevent that.
 
-**The resize was performed manually on the AWS side — stop, modify instance type, start.**
-It was **not** performed through Terraform, and it **could not** have been.
+> ⚠️ **CORRECTION — this subsection previously said the opposite.**
+> **An earlier version of this record stated that the resize was performed manually on the AWS
+> side — stop, modify instance type, start — and that it *could not* have been performed
+> through Terraform, because `aws_instance.instance_type` was described as ForceNew and a
+> Terraform apply would therefore have planned destroy + create.**
+>
+> **That was wrong. The correction is recorded here rather than by rewriting history: the
+> operator's account of what was executed governs, and the observed outcome contradicts the
+> ForceNew inference it rested on.**
 
-`aws_instance.instance_type` is **ForceNew** in the AWS provider. A Terraform apply carrying
-that change plans **destroy + create**, not an in-place resize. That would have produced:
+**The resize was carried out through a REVIEWED Terraform plan and a Terraform apply.** The plan
+was **read before it was applied**, and the apply **preserved the EC2 instance ID** — which the
+operator has **independently confirmed**. This is §12.1 row 1, and row 1 is the check that the
+execution delivered what it was supposed to deliver.
 
-- a **new instance ID** — every CloudTrail reference, SSM command history entry and runbook
-  address naming this instance becomes wrong;
-- a **new EBS root volume** — and with it the **downloaded model weights, the Docker images
-  and the `/opt/lemondrop` checkout**, none of which are in the AMI and all of which would
-  have to be rebuilt;
-- a **fresh boot** that must re-clone the repository and re-download every model before it
-  can serve a request.
+**The ForceNew rationale is WITHDRAWN and is not re-asserted anywhere in this document or in
+`infra/variables.tf`.** The reasoning was that `aws_instance.instance_type` is ForceNew in the
+AWS provider, so a plan carrying the change would propose **destroy + create** — a new instance
+ID, a new EBS root volume, and with it the **downloaded model weights, the Docker images and the
+`/opt/lemondrop` checkout**, none of which are in the AMI — and therefore a fresh boot that must
+re-clone the repository and re-download every model before it can serve a request.
 
-Stop/modify/start is not a cheaper version of that. **It is the only path that preserves the
-instance ID and the root volume**, and therefore everything resident on them. §12.1 row 1 is
-the check that the chosen path delivered what it was chosen for: the instance ID did not
-change.
+**The inference is contradicted by what happened: the instance ID survived the apply.** An
+instance ID preserved across an apply is not the signature of a destroy-and-recreate having been
+executed. That observation governs over the provider-behaviour inference it contradicted, and
+this document does not repeat the inference.
 
-**The Terraform default was reconciled AFTERWARDS, in a separate commit** — commit
+**The underlying risk is still real, and is the reason to keep reading plans.** The action that
+loses the instance ID, the root volume, the models, the checkout and the images is an
+**unreviewed apply of a plan that proposes replacement**. What prevents it is **reading the plan
+before applying it** — which is exactly what was done here. The lesson survives the correction:
+**review the plan, then apply it.** What is withdrawn is the claim that apply could not be used,
+not the claim that a replacement would be destructive.
+
+**The Terraform default was reconciled in a separate commit** — commit
 `fix(infra): reconcile the app_instance_type default with the running instance`, which moves
 `infra/variables.tf`'s `app_instance_type` default from `t3.micro` to `t3.small` and nothing
-else. It reconciles the **declared default** with the intended steady state; **it resizes
-nothing**. The separation is deliberate and should not be collapsed: the capacity change was
-an AWS-side action, the drift correction is a Git commit, and no `terraform apply` was
-involved in either.
+else. It reconciles the **declared default** with the **steady state the instance now runs**. The
+separation is deliberate and should not be collapsed: the capacity change was a Terraform apply
+of a reviewed plan, and the declaration that keeps subsequent plans honest is a Git commit.
+
+> ⚠️ **NOTE ON COMMIT `90e1ebe` — its MESSAGE asserts the superseded rationale.**
+>
+> `git log` will show `90e1ebe fix(infra): reconcile the app_instance_type default with the
+> running instance`, whose **commit message** carries the manual stop/modify/start and ForceNew
+> account corrected above. **The message was written before the correction and is deliberately
+> NOT amended or rewritten** — history is not edited to make a later correction unnecessary.
+> **This subsection is the record of the correction. Where the two disagree, this subsection is
+> the current one.**
 
 **That reconciliation has NOT been checked against real Terraform state. See §12.4 item 1 —
 it is the first thing on that list.**
@@ -1549,13 +1573,19 @@ immediately after the failure history and referenced from §12's own second para
 because the two belong together and separating them is how a verification record starts
 lying.
 
-1. **Terraform state has NOT been reconciled against the manual resize. Until it is, it is
-   ASSUMED reconciled.** The instance was resized on the AWS side (§12.2); **no
-   `terraform plan` has confirmed that state now agrees with reality, and that the plan is
-   empty.** The `t3.small` default committed alongside this section is a reconciliation of
-   the **declared config** with the **intended steady state** — it is an argument about what
-   a plan *would* produce, not an observation of what a plan *did* produce. **This is the
-   first item on the list and it is the one most likely to be assumed done.**
+1. **Terraform state has NOT been confirmed to match reality. Until it is, the no-diff outcome is
+   ASSUMED, not observed.** The resize was carried out through a reviewed Terraform plan and a
+   Terraform apply (§12.2), which makes an empty follow-up plan **more** likely than it was
+   before — and more likely is not verified. **A read-only `terraform plan -detailed-exitcode`
+   confirming that state matches reality and reports no changes is still OUTSTANDING.** No such
+   plan has been run against the resized instance, and its exit status has not been recorded.
+   The `t3.small` default committed alongside this section is a reconciliation of the **declared
+   config** with the **steady state the instance runs** — it is an argument about what a plan
+   *would* produce, not an observation of what a plan *did* produce. **This is the first item on
+   the list and it is the one most likely to be assumed done.** It is a **read-only check**: run
+   `terraform plan -detailed-exitcode` and record the exit status. `-detailed-exitcode` returns 0
+   for no changes and 2 for changes present, so the exit status is the result and must be quoted,
+   not eyeballed. **Do not run an apply to satisfy this item.**
 
 2. **Sustained and concurrent load are untested.** Every latency number in this document is
    **a small number of single requests on a shared host** — §8.6's ten samples and §12.1's
@@ -1615,7 +1645,7 @@ acceptance of any kind — NOT VERIFIED. NOTHING."* **That row is no longer the 
 
 | # | Qualifier | Status |
 |---|---|---|
-| 6 | **Terraform state reconciled against the manual resize** | **NOT VERIFIED.** No `terraform plan` has been run against the resized instance. State is **ASSUMED** reconciled. **§12.4 item 1.** |
+| 6 | **Terraform state confirmed against the resized instance** | **NOT VERIFIED.** A read-only `terraform plan -detailed-exitcode` confirming state matches reality and reporting no changes has **not been run**; its exit status is unrecorded. State is **ASSUMED** reconciled. The resize itself went through a reviewed Terraform apply (§12.2) — which raises the likelihood of a clean plan without supplying the observation. **§12.4 item 1.** |
 | 7 | **Sustained / concurrent load, CPU credits, ALB headroom** | **NOT VERIFIED.** **§12.4 items 2, 3, 4.** |
 | 8 | **Negative control on the instance role** (§11.4) | **NOT RUN. OUTSTANDING.** **§12.4 item 7.** |
 
