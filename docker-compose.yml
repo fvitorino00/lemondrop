@@ -20,8 +20,9 @@
 # from ./api rather than pulled.
 #
 # ── One published port, on `api` ──────────────────────────────────────────────
-# This file contains exactly ONE `ports:` key, and it is on `api`. The workers
-# do not publish one, which is a design decision rather than an oversight:
+# Of the three RUNTIME services, this file publishes exactly ONE `ports:` key,
+# and it is on `api`. The workers do not publish one, which is a design decision
+# rather than an oversight:
 #   * The workers are internal. They exist to be called by the API over the
 #     compose network, not by anything on the host.
 #   * A published port is a public door. Every door is attack surface, and the
@@ -35,6 +36,13 @@
 #     their own network namespaces, so the two are different sockets and nothing
 #     collides; the DNS name — not the port number — is what tells them apart
 #     from the API's side.
+#
+# The one other `ports:` key in this file belongs to the profile-gated `postgres`
+# dev database at the bottom, and it is bound to 127.0.0.1 only. Loopback is not
+# a published door: nothing off this host can reach it, so it does not weaken the
+# claim above. It exists purely so `psql` on the workstation can attach. That
+# distinction is why the same rule that produced "exactly one door" still holds —
+# see the postgres block for the full argument.
 #
 # ── depends_on and container naming ───────────────────────────────────────────
 # `api` declares `depends_on` on both workers with `condition: service_healthy`.
@@ -284,3 +292,128 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ── postgres (DEVELOPMENT ONLY — profile: devdb) ────────────────────────────
+  # Milestone 3 needs real persistence: documents with 384-dim vectors, queried
+  # by pgvector's exact `<=>` operator. So we need PostgreSQL 16 with the
+  # vector extension, locally.
+  #
+  # ── WHY `profiles: [devdb]` IS NOT OPTIONAL ──────────────────────────────────
+  # scripts/boot.sh:267 runs a bare `docker compose up -d --remove-orphans` on
+  # the EC2 PRODUCTION host. Compose only starts services that either have no
+  # profile or whose profile was explicitly enabled. A profile-gated service is
+  # therefore invisible to that command: it is not started, not created, and
+  # nothing on EC2 knows this block exists. Without the profile, production would
+  # boot a second database nobody asked for, and on a db.t3.micro-adjacent host
+  # it would quietly eat memory the inference workers need.
+  # Start it explicitly, always with the profile named:
+  #     docker compose --profile devdb up -d postgres
+  # or `docker compose --profile devdb up -d` to run it alongside everything.
+  #
+  # ── WHY THE VARIABLES BELOW ARE `${VAR}` AND NOT `${VAR:?message}` ───────────
+  # Compose interpolates the WHOLE file before it decides what to start — profile
+  # membership is not an interpolation guard. So `${DEV_DB_PASSWORD:?...}` would
+  # abort EVERY `docker compose` call in this directory, including the
+  # profile-less production boot on EC2, whenever that variable is unset. That is
+  # a hard error on the exact command the EC2 boot depends on, caused by a
+  # database that EC2 is not even running. Plain `${VAR}` it is: the production
+  # path is unaffected by variables it has no use for, and if someone DOES start
+  # this profile without setting a password, the postgres image refuses to
+  # initialise on its own — which is the loud failure we actually want, from the
+  # component that owns the rule.
+  #
+  # ── WHY THE PASSWORD IS NOT IN THIS FILE ────────────────────────────────────
+  # A credential written here is a credential in git: this file is tracked, so
+  # an inline POSTGRES_PASSWORD would live in history permanently, and the exact
+  # same mistake in production would be an RDS master password on the public
+  # internet. The dev password therefore lives in .env (gitignored) as
+  # DEV_DB_PASSWORD. The cost is one extra file to remember; the benefit is that
+  # "this repo contains no database credentials" stays a checkable property
+  # rather than a promise. See .env.example.
+  postgres:
+    image: pgvector/pgvector:pg16
+
+    # The gate. This single line is what keeps the production boot untouched;
+    # everything else in this block is detail. See above for why.
+    profiles:
+      - devdb
+
+    # PostgreSQL 16 to match `var.db_engine_version = "16"` on the RDS instance.
+    # Matching the major version locally is deliberate: pgvector behaviour,
+    # planner choices and index semantics are version-sensitive, so a local
+    # PostgreSQL 15 would let a migration pass here and fail against
+    # production. This is a dev-only container; production is RDS, not this.
+    #
+    # No `build:` — pgvector/pgvector is a published third-party artifact, same
+    # category as llama.cpp:server, and is consumed as published rather than
+    # rebuilt.
+
+    # ── WHY LOOPBACK AND NOT 0.0.0.0 ──────────────────────────────────────────
+    # Publishing to 0.0.0.0 binds every interface the host has, including the
+    # public one. On EC2 that is an internet-facing PostgreSQL with a
+    # guessable user, a weak password and no TLS — a remote compromise, not a
+    # debugging convenience. Binding 127.0.0.1 makes the port reachable from this
+    # machine and from nothing else, which is the entire requirement here:
+    # `psql` on the workstation needs a socket, and no other client does.
+    # This is also why the "one published door" rule above still holds — the
+    # API's door is the only one reachable from off-host.
+    ports:
+      - "127.0.0.1:${DEV_DB_HOST_PORT:-5432}:5432"
+
+    environment:
+      # The three POSTGRES_* names are the image's own contract, not ours: the
+      # official entrypoint creates this user and this database on first boot
+      # of an empty volume, which is what makes the named volume below
+      # self-provisioning on a fresh machine.
+      POSTGRES_USER: "${DEV_DB_USER}"
+      POSTGRES_PASSWORD: "${DEV_DB_PASSWORD}"
+      POSTGRES_DB: "${DEV_DB_NAME}"
+      # Scrypt password hashing (PostgreSQL 10+). Not security theatre: it is
+      # what stops a leaked pgdata directory from yielding plaintext passwords,
+      # and it is the default, so stating it makes the guarantee deliberate
+      # rather than accidental.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+
+    # A NAMED VOLUME, not a bind mount and not an anonymous volume. It has to
+    # outlive `docker compose down`: migrations run, you take the stack down,
+    # you bring it back up, and the schema and your documents must still be
+    # there. A named volume is also not a git object and not something that
+    # `rm -rf` in the project directory destroys.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+    # pg_isready is the image's own liveness tool: it does a real connection
+    # check against the named user and database, so it fails not merely because
+    # the process is up but because the database is actually accepting queries.
+    # It exits 0 on "accepting connections", non-zero while initdb is still
+    # running. This is the probe a future
+    # `depends_on: {postgres: {condition: service_healthy}}` will use — written
+    # now so the wiring is a one-line addition in a later commit rather than a
+    # design change.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      # initdb on a cold, empty volume takes a while; a probe that times out
+      # during it would restart the container mid-initialisation, which is the
+      # failure mode start_period exists to prevent.
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    restart: unless-stopped
+
+    # Identical log bounding to every other service, for the identical reason.
+    # A database is a long-lived process and json-file logs grow without limit.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ── Named volumes ───────────────────────────────────────────────────────────
+# Declared at the top level so `pgdata` is a real project-scoped volume rather
+# than an anonymous one compose invents a random name for. Declaring it is also
+# what makes `docker compose down -v` able to delete it deliberately, instead of
+# it leaking on every machine that ever ran the devdb profile.
+volumes:
+  pgdata:

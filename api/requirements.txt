@@ -28,3 +28,33 @@ uvicorn[standard]==0.54.0
 # routes identical timeout policy and identical 502/504 failure semantics rather
 # than letting them drift apart.
 httpx==0.28.1
+
+# ── Persistence ───────────────────────────────────────────────────────────────
+# The database access layer, and the reason it is SQLAlchemy rather than raw
+# asyncpg: we use Core (text() and explicit SQL), NOT the ORM. Retrieval here is
+# one parameterised SELECT with a `<=>` ordering and a collection predicate, and
+# an ORM would contribute a declarative model, a session lifecycle and an identity
+# map that buy nothing for that query. Core still earns its place: it is the
+# dialect-aware layer that knows how to parameterise pgvector and jsonb correctly
+# and how to pool an async connection, which is the part hand-rolling gets wrong.
+# The [asyncio] extra pulls greenlet (a compiled extension with a cp312
+# manylinux x86_64 wheel) — without it `await engine.connect()` does not work.
+SQLAlchemy[asyncio]==2.0.54
+
+# The async PostgreSQL driver. It is the fast one (it is a C extension speaking
+# the protocol natively rather than going through libpq), and it is async, which
+# matters because the retrieval path holds a connection while the caller waits —
+# a blocking driver would stall the whole event loop, including the /health
+# probe, on every search. psycopg2 was the alternative and loses: it is either
+# sync-only or needs an async wrapper that is slower than this anyway.
+asyncpg==0.32.0
+
+# ── No migrations here, on purpose ────────────────────────────────────────────
+# Alembic used to sit in this file. It has moved to requirements-dev.txt, and
+# the reason is worth stating so nobody "helpfully" puts it back: alembic is a
+# schema-migration tool, and the API container never runs migrations. Migrations
+# run out-of-band, as a separate privileged step — CREATE EXTENSION vector needs
+# a role the application deliberately does not have (see api/alembic/README.md).
+# Shipping the tool anyway is image bloat plus unused attack surface: a
+# credentialed database driver and a DDL executor sitting in a production image
+# where no code path can reach them.
