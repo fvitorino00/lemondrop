@@ -491,9 +491,11 @@ variable "app_instance_type" {
   #   * Sustained-load behaviour, and therefore the CPU-credit throttling
   #     described above, is unmeasured at every size. A working single search
   #     says nothing about how t3.small behaves over hours.
-  #   * Terraform state has NOT been confirmed to agree with reality. A
-  #     read-only `terraform plan -detailed-exitcode` reporting no changes is
-  #     still OUTSTANDING. See §12.4 item 1.
+  #   * Terraform state HAS NOW been confirmed to agree with reality. A
+  #     read-only `terraform plan -detailed-exitcode` reported NO CHANGES and
+  #     exit 0, independently verified by the operator. This is an
+  #     OBSERVATION, not the argument the block below used to make.
+  #     See §12.1 row 20 and §12.4 item 1 — RESOLVED.
   #
   # ── WHY THIS CHANGE SHOULD PRODUCE NO RESOURCE DIFF ──────────────────────
   #
@@ -502,16 +504,19 @@ variable "app_instance_type" {
   # records t3.small, this file declares t3.small, and there is nothing left
   # to plan.
   #
-  # That reasoning is NOT verified here, and this comment was written
-  # deliberately WITHOUT running terraform — no plan, no init, no validate
-  # was executed to support it. The fact that the resize went through
-  # Terraform makes the no-diff outcome MORE likely; it does not make it
-  # OBSERVED. A read-only `terraform plan -detailed-exitcode` confirming it is
-  # the outstanding check, and until that check has been run and its exit
-  # status recorded, this remains a reasoned claim and not a verified one.
-  # The operator's own plan output is what settles it, and the jq expressions
-  # in the verification section of
-  # the operator's plan review are the thing to read, not this prose.
+  # THAT REASONING HAS NOW BEEN CONFIRMED BY OBSERVATION. This comment block
+  # itself still runs NO terraform — no plan, no init, no validate was ever
+  # executed to write it, and none was executed to correct it. The correction
+  # is to the PROSE, not to the reasoning it criticized: the check that was
+  # missing has been run by the operator, independently, and reported as
+  # NO CHANGES with exit 0.
+  #
+  # The distinction is kept deliberately. `terraform plan -detailed-exitcode`
+  # returns 0 for no changes and 2 for changes present, so the EXIT STATUS is
+  # the result and must be quoted, not eyeballed. What is now quoted is 0.
+  # NO APPLY WAS RUN to produce it, and none should be — this is a read-only
+  # reconciliation, and running an apply to make a verification row look
+  # complete would invalidate the very row it was meant to support.
 }
 
 variable "app_root_volume_size" {

@@ -1347,9 +1347,11 @@ than a transcript, the row says so — the same convention as §2 and §9. Nothi
 independent reproduction, and §12 must not be read as one.
 
 **Read §12.3 and §12.4 with §12.1.** A cloud acceptance section that recorded only the green
-rows would be worse than no section at all: four failures preceded this one, three of them
-kernel OOM kills, and the most of them are still open. §12.3 preserves them; §12.4 is the
-list of what §12.1 does not mean.
+rows would be worse than no section at all: the cloud phase was reached *through* a sequence
+of failures — three of them kernel OOM kills — and the reasoning that got there is the more
+valuable half of this record. §12.3 preserves those failures **in full, including the two
+that were misdiagnosed before they were understood**; §12.4 is the list of what §12.1's
+green rows do not mean, and **six of its eight items remain open.**
 
 ### 12.1 Cloud acceptance — verified by the operator
 
@@ -1367,6 +1369,79 @@ list of what §12.1 does not mean.
 | 10 | No new OOM | **No new kernel OOM event within the verified search window.** | **operator** (result reported) | **VERIFIED (bounded)** — see below |
 | 11 | Public ALB `GET /health/ready` | **HTTP 200.** | **operator** (result reported) | **VERIFIED** |
 | 12 | Public ALB `POST /search` | **HTTP 200 in 15.55 seconds.** | **operator** (result reported) | **VERIFIED** — see below |
+
+#### 12.1.1 Final independent acceptance checks — executed by the operator
+
+**These are a separate, later, read-only pass.** They were run independently of the checks
+above and are recorded as their own rows because they close items that §12.4 had carried as
+open — the Terraform reconciliation and the §11.4 negative control in particular. Every row
+was executed and reported by the **operator**. The agent ran none of it, invoked no AWS
+command, and is not claiming to.
+
+| # | Item | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 13 | RDS corpus counts, read-only | **`infrastructure` 20, `it-support` 20, total 40.** | **operator** | **PASS** |
+| 14 | Adversarial canary count | **10** canaries. | **operator** | **RECORDED** |
+| 15 | pgvector version on RDS | **0.8.1.** | **operator** | **RECORDED** — see §12.3, *The pgvector version gap* |
+| 16 | Connection identity | The database connection **authenticated as the `lemondrop_app` role — NOT the RDS master user.** | **operator** | **PASS** |
+| 17 | RDS COUNTS overall | **PASS.** | **operator** | **PASS** |
+| 18 | Instance-role access to the RDS-managed master secret | **DENIED.** | **operator** | **PASS** — see below |
+| 19 | Adversarial canaries through the public ALB | **10 of 10 passed, in BOTH directions.** | **operator** | **PASS** |
+| 20 | Terraform state reconciliation | **Already independently verified — no changes, exit 0.** | **operator** | **VERIFIED** — closes §12.4 item 1 |
+
+**On rows 13–18, the tunnel context is load-bearing and is recorded here because it explains
+why the counts are trustworthy.** These checks did not reach RDS over a public path. The RDS
+counts came through an **SSM port-forward tunnel** established with
+`AWS-StartPortForwardingSessionToRemoteHost`. The connection then used a **split
+`host` / `hostaddr`**:
+
+| Parameter | Value | Why it is that |
+|---|---|---|
+| `host` | the **RDS endpoint** | the name the **TLS certificate is verified against** |
+| `hostaddr` | **`127.0.0.1`**, `port=15432` | the **forwarded local socket** the traffic actually rides |
+| `sslmode` | **`verify-full`** | full chain **and** hostname verification |
+
+**Why this matters enough to write down.** Connecting a forwarded socket naively — pointing
+`host` at `127.0.0.1` — makes `verify-full` verify a certificate against `127.0.0.1`, which
+either fails outright or, worse, is satisfied by loosening the check until it passes.
+Splitting `host` from `hostaddr` is what keeps **certificate verification meaningful through
+a tunnel**: the bytes travel over the loopback forward, while the **name being verified stays
+the real RDS endpoint**. The encryption and hostname checks therefore still mean something,
+and `verify-full` is not a decorative setting here. This is a genuine finding, not a detail
+of how one command was typed, and it is preserved for the next person who reaches RDS the
+same way.
+
+**On row 18 — why `DENIED` is a real control and not a lucky error code.** The operator
+recorded three things about this check, and all three are load-bearing:
+
+| Aspect | What was recorded |
+|---|---|
+| How the secret was identified | The master-secret ARN was **read from `DBInstances[0].MasterUserSecret.SecretArn`** — **not hand-written.** A mistyped ARN would have produced a meaningless result. |
+| What was returned | A genuine **`AccessDeniedException`** — **NOT** a `ResourceNotFoundException` and **not** any other error. |
+| Credential hygiene | **stderr was captured; stdout was discarded**, so no credential could reach the transcript. |
+
+**The two AWS errors mean opposite things, and this is why the distinction is recorded rather
+than paraphrased into a bare "denied".** An **`AccessDeniedException`** is the **IAM policy
+refusing a caller who identified the secret correctly** — the ARN resolved, the secret is
+there, and policy said no. That is the control working. A **`ResourceNotFoundException`**
+would mean **the path never resolved** — the ARN was wrong, the caller's visibility was
+different, or the lookup never got far enough to be refused — and **that would NOT be a
+pass**. It would be a check that failed to run while wearing the costume of one. Recording
+which error came back is the only thing that separates the two, so it is preserved here.
+
+**Rows 14 and 15 are counts and a version, recorded as reported and not inflated.** Row 14
+records that **10** canaries exist; row 15 records **pgvector 0.8.1** on RDS. Row 19 is the
+check that those canaries behave, and it passed 10 of 10 **in both directions**. Row 15 is
+the RDS half of the version skew recorded under §12.3 — it is now an observed version on a
+real instance, and **the skew against local 0.8.7 is still open**. Recording the number does
+not close the gap.
+
+**On row 20, stated precisely: Terraform state reconciliation is VERIFIED, not outstanding.**
+The operator reports it as **already independently verified — no changes, exit 0**. This is a
+read-only reconciliation; **no apply was run to satisfy it**, and none should be. §12.4 item 1
+is marked **RESOLVED** against this row, and every statement elsewhere in this document that
+described the reconciliation as unverified, assumed or pending has been corrected — §12.6 and
+the commit history carry the trail.
 
 **On row 12, stated the way it has to be stated: 15.55s is a SINGLE OBSERVATION, not a
 latency distribution.** One request, one result, on a shared host that was not under
@@ -1443,8 +1518,18 @@ of a reviewed plan, and the declaration that keeps subsequent plans honest is a 
 > **This subsection is the record of the correction. Where the two disagree, this subsection is
 > the current one.**
 
-**That reconciliation has NOT been checked against real Terraform state. See §12.4 item 1 —
-it is the first thing on that list.**
+**That reconciliation HAS NOW been checked against real Terraform state.** §12.1 row 20
+records the operator's independent verification: **no changes, exit 0.** §12.4 item 1 is
+therefore marked **RESOLVED** rather than outstanding.
+
+> **This line previously read the opposite.** An earlier version of this subsection closed
+> with *"That reconciliation has NOT been checked against real Terraform state. See §12.4
+> item 1 — it is the first thing on that list."* **That was true when written and is no
+> longer.** The item was on the list, the list was accurate at the time, and it has since
+> been closed by an independent read-only check. **The reasoning gap the old line flagged was
+> real** — a resize through a reviewed apply makes a clean plan *more likely* without
+> supplying the observation — **and that gap is exactly what row 20 closes**, rather than
+> being closed by rewriting the sentence that admitted it.
 
 ### 12.3 The M3 cloud failure history — preserved, with its timeline
 
@@ -1566,66 +1651,120 @@ version was local-only, and it is now a **real skew between two environments the
 actually runs on** rather than an unknown. It is recorded here rather than closed because
 nothing has closed it.
 
-### 12.4 What is still NOT verified on AWS — unsoftened
+### 12.4 What is and is not verified on AWS — unsoftened
 
-**§12.1 is eleven green rows. This is the list of what they do not mean.** It is placed
+**§12.1 is twenty green rows. This is the list of what they do not mean.** It is placed
 immediately after the failure history and referenced from §12's own second paragraph,
 because the two belong together and separating them is how a verification record starts
 lying.
 
-1. **Terraform state has NOT been confirmed to match reality. Until it is, the no-diff outcome is
-   ASSUMED, not observed.** The resize was carried out through a reviewed Terraform plan and a
-   Terraform apply (§12.2), which makes an empty follow-up plan **more** likely than it was
-   before — and more likely is not verified. **A read-only `terraform plan -detailed-exitcode`
-   confirming that state matches reality and reports no changes is still OUTSTANDING.** No such
-   plan has been run against the resized instance, and its exit status has not been recorded.
-   The `t3.small` default committed alongside this section is a reconciliation of the **declared
-   config** with the **steady state the instance runs** — it is an argument about what a plan
-   *would* produce, not an observation of what a plan *did* produce. **This is the first item on
-   the list and it is the one most likely to be assumed done.** It is a **read-only check**: run
-   `terraform plan -detailed-exitcode` and record the exit status. `-detailed-exitcode` returns 0
-   for no changes and 2 for changes present, so the exit status is the result and must be quoted,
-   not eyeballed. **Do not run an apply to satisfy this item.**
+**Every item below is now marked either RESOLVED or STILL OUTSTANDING, and the history is
+kept.** Items 1 and 7 have been closed by the final independent checks recorded in §12.1.1;
+each carries the evidence that closed it. **Nothing was deleted to make this list look
+shorter** — a reader needs to see what was open, what closed it, and when, or the list is
+worthless. **Six of the eight remain open**, and they are open for the same reason they were:
+no check has been run against them.
 
-2. **Sustained and concurrent load are untested.** Every latency number in this document is
+1. **RESOLVED — Terraform state reconciliation. Closed by §12.1 row 20.**
+
+   > **What this item used to say, preserved verbatim.** *Terraform state has NOT been
+   > confirmed to match reality. Until it is, the no-diff outcome is ASSUMED, not observed.*
+   > The resize was carried out through a reviewed Terraform plan and a Terraform apply
+   > (§12.2), which makes an empty follow-up plan **more** likely than it was before — and
+   > more likely is not verified. **A read-only `terraform plan -detailed-exitcode`
+   > confirming that state matches reality and reports no changes is still OUTSTANDING.** No
+   > such plan has been run against the resized instance, and its exit status has not been
+   > recorded. The `t3.small` default committed alongside this section is a reconciliation of
+   > the **declared config** with the **steady state the instance runs** — it is an argument
+   > about what a plan *would* produce, not an observation of what a plan *did* produce.
+   > **This is the first item on the list and it is the one most likely to be assumed done.**
+   > It is a **read-only check**: run `terraform plan -detailed-exitcode` and record the exit
+   > status. `-detailed-exitcode` returns 0 for no changes and 2 for changes present, so the
+   > exit status is the result and must be quoted, not eyeballed. **Do not run an apply to
+   > satisfy this item.**
+
+   **The reasoning above was correct and is preserved because it was the right way to be
+   wrong.** The gap it named was real: an apply that preserves the instance ID makes a clean
+   plan *more likely*, and *more likely* is not *observed*. That is why the item was written
+   as an open question rather than quietly dropped.
+
+   **It is now closed by observation.** §12.1 row 20: Terraform state reconciliation is
+   **VERIFIED — no changes, exit 0**, reported by the operator as **already independently
+   verified**. `-detailed-exitcode` returning **0** is the quoted exit status the old text
+   demanded, not an eyeballed result. **No apply was run to satisfy this item, and none
+   should be** — the check that closed it was read-only, exactly as specified.
+
+2. **STILL OUTSTANDING — Sustained and concurrent load are untested.** Every latency number in this document is
    **a small number of single requests on a shared host** — §8.6's ten samples and §12.1's
-   single 15.55s observation alike. Nothing here characterises behaviour under concurrent
+   single 15.55s observation alike. **No load profile, no concurrency measurement, no soak.**
+   Nothing here characterises behaviour under concurrent
    searches, each of which holds both models busy.
 
-3. **CPU credit exhaustion on the `t3` family is UNMEASURED, at any size.** `t3` is
+3. **STILL OUTSTANDING — CPU credit exhaustion on the `t3` family is UNMEASURED, at any size.** `t3` is
    burstable; sustained cross-encoder scoring is a sustained load. §12.1's searches do not
    establish how much credit was spent, and the failure mode when credits deplete —
    throttling, degraded rerank latency — looks like "search got slow" rather than "search is
    broken", which is a harder failure to diagnose later. **`t3.small` should make retrieval
    WORK; it does not make the architecture right.**
 
-4. **ALB headroom is unquantified.** One observation at **15.55s** against a **60s**
+4. **STILL OUTSTANDING — ALB headroom is unquantified, and the underlying mismatch is an
+   unaddressed known configuration defect.** One observation at **15.55s** against a **60s**
    `lb_idle_timeout` is **not a margin measurement** — it is one data point with no
-   distribution around it. Worse, the underlying mismatch is unchanged: the API's own
+   distribution around it, and **no 3-run latency distribution was measured.** Worse, the underlying mismatch is unchanged: the API's own
    **`INFERENCE_TIMEOUT_SECONDS = 120`** is a **per-inference-call** budget, and `/search`
    makes **two sequential calls** (embed, then rerank), so **worst-case request time is
    roughly 240s against a 60s ALB idle timeout.** The ALB gives up first. **This remains
    unaddressed and is a known configuration defect** — §10.8 deferred the fix pending a
    latency measurement, and §12.1's single observation is not that measurement.
 
-5. **Clean destroy/rebuild reproducibility remains untested**, carried forward from Milestone
-   2. Deployment is in-place through SSM (§11.1), which means the rebuild path has never
+5. **STILL OUTSTANDING — Clean destroy/rebuild reproducibility remains untested**, carried
+   forward from Milestone 2. Deployment is in-place through SSM (§11.1), which means the rebuild path has never
    been exercised end to end on this instance.
 
-6. **The corpus is synthetic**, generated for this milestone because no dataset was supplied
+6. **STILL OUTSTANDING — The corpus is synthetic**, generated for this milestone because no
+   dataset was supplied
    (§1, §10.11). §12.1 rows 4–8 are measurements on a corpus of known shape, not on
    anything a real user would search.
 
-7. **Least privilege is now demonstrated on AWS — but the negative control was NOT run.**
-   Unlike §10.10's local position, the deployed path has been exercised against RDS with
-   the split credential. **However:** the check that the **instance role cannot read the RDS
-   master secret** (§11.4 — the control that turns §11.3 from a convention into an actual
-   control) **was not reported as run, and is recorded here as OUTSTANDING.** Until it is,
-   "the app uses the app credential" remains a convention rather than an enforced control,
-   for exactly the reason §11.4 gives: instance-profile credentials are reachable by any
-   process on the host.
+7. **RESOLVED — the §11.4 negative control is now DEMONSTRATED on AWS, not merely asserted.
+   Closed by §12.1 rows 16 and 18.**
 
-8. **Python version skew, unchanged.** Local tests run on **Python 3.14.4** while the image
+   > **What this item used to say, preserved verbatim.** *Least privilege is now demonstrated
+   > on AWS — but the negative control was NOT run.* Unlike §10.10's local position, the
+   > deployed path has been exercised against RDS with the split credential. **However:** the
+   > check that the **instance role cannot read the RDS master secret** (§11.4 — the control
+   > that turns §11.3 from a convention into an actual control) **was not reported as run,
+   > and is recorded here as OUTSTANDING.** Until it is, *"the app uses the app credential"*
+   > remains a convention rather than an enforced control, for exactly the reason §11.4 gives:
+   > instance-profile credentials are reachable by any process on the host.
+
+   **§11.4 was right about why this mattered, and the operator has now run the check it
+   called for.** Two rows close it, and they are two halves of one control:
+
+   | Half | Row | Result as reported | What it establishes |
+   |---|---|---|---|
+   | **Positive** — the app really does use the app credential | §12.1 **row 16** | The connection **authenticated as the `lemondrop_app` role — NOT the RDS master user.** | The deployed path is on the least-privilege credential, and not merely configured to be. |
+   | **Negative** — the host cannot simply reach for the master secret instead | §12.1 **row 18** | Access from the EC2 **instance role** to the RDS-managed master secret: **DENIED.** | The split is **enforced**, not conventional. |
+
+   **Why the negative half is what changes the word from "convention" to "control".** §11.4's
+   argument was that instance-profile credentials are reachable by *any* process on the host,
+   so as long as the instance role **can** read the master secret, *"the app uses the app
+   credential"* is advisory — any code execution on that box could simply take the better
+   credential and the narrow grant would bind nothing. **The instance role being denied that
+   read removes the alternative.** The master credential is no longer reachable from where the
+   application runs, so the least-privilege grant is now the only path available rather than
+   the preferred one.
+
+   **What makes this a demonstration rather than an assertion**, and why it is recorded at
+   this length: the ARN was **read from `DBInstances[0].MasterUserSecret.SecretArn`** rather
+   than hand-written, so the caller identified the right secret before being refused; the
+   refusal was a genuine **`AccessDeniedException`**, **not** a `ResourceNotFoundException`,
+   which would have meant the path never resolved and **would not have been a pass**; and
+   **stderr was captured while stdout was discarded**, so no credential could reach the
+   transcript. Each of those three is the difference between "it said denied" and "the control
+   is enforced."
+
+8. **STILL OUTSTANDING — Python version skew, unchanged.** Local tests run on **Python 3.14.4** while the image
    is **3.12** (§10.9). Every local result in this document ran on 3.14.4.
 
 ### 12.5 M3 acceptance criteria — current state (CLOUD)
@@ -1645,19 +1784,21 @@ acceptance of any kind — NOT VERIFIED. NOTHING."* **That row is no longer the 
 
 | # | Qualifier | Status |
 |---|---|---|
-| 6 | **Terraform state confirmed against the resized instance** | **NOT VERIFIED.** A read-only `terraform plan -detailed-exitcode` confirming state matches reality and reporting no changes has **not been run**; its exit status is unrecorded. State is **ASSUMED** reconciled. The resize itself went through a reviewed Terraform apply (§12.2) — which raises the likelihood of a clean plan without supplying the observation. **§12.4 item 1.** |
-| 7 | **Sustained / concurrent load, CPU credits, ALB headroom** | **NOT VERIFIED.** **§12.4 items 2, 3, 4.** |
-| 8 | **Negative control on the instance role** (§11.4) | **NOT RUN. OUTSTANDING.** **§12.4 item 7.** |
+| 6 | **Terraform state confirmed against the resized instance** | **VERIFIED (cloud)** — §12.1 row 20. *State reconciliation is **independently verified: no changes, exit 0**.* `-detailed-exitcode` returning **0** is the quoted exit status, not an eyeballed result, and the check was **read-only — no apply was run to satisfy it**. The resize itself went through a reviewed Terraform apply (§12.2). **§12.4 item 1 — RESOLVED.** |
+| 7 | **Sustained / concurrent load, CPU credits, ALB headroom** | **NOT VERIFIED.** No load profile, no concurrency measurement, no soak; CPU credits unmeasured at every size; the 15.55s observation is not a margin measurement and no distribution was taken. The ~240s worst-case request path against the 60s ALB idle timeout remains an **unaddressed known configuration defect**. **§12.4 items 2, 3, 4 — STILL OUTSTANDING.** |
+| 8 | **Negative control on the instance role** (§11.4) | **VERIFIED (cloud) — DEMONSTRATED, not asserted.** §12.1 row 18: access from the EC2 **instance role** to the RDS-managed master secret is **DENIED**, via a genuine **`AccessDeniedException`** (not `ResourceNotFoundException`), with the ARN read from `DBInstances[0].MasterUserSecret.SecretArn` and stdout discarded so no credential reached the transcript. Paired with row 16 — the connection authenticated as **`lemondrop_app`**, not the RDS master. **§12.4 item 7 — RESOLVED.** |
 
 **What the table now says, stated once and plainly.** All five acceptance criteria are
 verified **in the cloud environment**, on a live `t3.small` behind a public ALB, against RDS.
-The local results in §5–§9 are **not** superseded by this and remain their own evidence:
+All three qualifier rows now resolve as well — **6 and 8 VERIFIED, 7 explicitly not**. The
+local results in §5–§9 are **not** superseded by this and remain their own evidence:
 they prove the retrieval layer against a corpus whose first-ranked documents are named,
 which the cloud run does not. **The cloud rows and the local rows are different evidence
 about the same five criteria, and this document now holds both.**
 
 **What this table is not.** It is not a statement that M3 is production-shaped. §12.4 is
-the list of what would have to be true for that claim, and four of its eight items are open.
+the list of what would have to be true for that claim, and **six of its eight items are
+STILL OUTSTANDING**.
 
 ### 12.6 Claims elsewhere in this document that §12 supersedes
 
@@ -1669,9 +1810,11 @@ a signpost that sends readers to the wrong place.
 | *"Cloud / AWS acceptance of any kind — NOT VERIFIED. NOTHING."* | §9.8 qualifier row 6 | **All five criteria VERIFIED on the cloud environment** — §12.1, §12.5 |
 | *"The headline: nothing has been verified on AWS."* / §10.1 | §10 | **The AWS environment has been exercised and accepted** — §12.1. §10.2–§10.6 were **code and Terraform** blockers that have since been resolved by the SSM deployment path (§11.1); §10.5's RDS migration is covered by §12.1 row 4 |
 | *"Rerank latency on EC2 is unmeasured — and it decides the ALB timeout"* | §10.7 | **Partially superseded.** One cloud latency observation exists — **15.55s, a single sample** (§12.1 row 12). **It does not answer the question §10.7 poses**, which needs a distribution. §10.7's underlying risk is **carried forward** in §12.4 item 4 |
-| *"Least privilege is asserted, not demonstrated"* | §10.10 | **Superseded on AWS.** Demonstrated against RDS on the deployed path — **with the §11.4 negative control still outstanding** (§12.4 item 7). The local SUPERUSER position is unchanged |
-| *§11.5 status table: "Nothing below is done"* | §11.5 | **Superseded.** Deployment and the `lemondrop_app` role were carried out; see §12.1 and §12.4 item 7. **§11.1–§11.4's decisions and reasoning are not superseded — they were followed** |
+| *"Least privilege is asserted, not demonstrated"* | §10.10 | **Superseded on AWS.** Demonstrated against RDS on the deployed path — the connection authenticates as **`lemondrop_app`** (§12.1 row 16) and the **§11.4 negative control has now run and DEMONSTRATED the control**: the EC2 instance role is **DENIED** the RDS-managed master secret, via a genuine **`AccessDeniedException`** (§12.1 row 18, §12.4 item 7 **RESOLVED**). The local SUPERUSER position is unchanged |
+| *§11.5 status table: "Nothing below is done"* | §11.5 | **Superseded.** Deployment and the `lemondrop_app` role were carried out and verified; the §11.4 negative control has since **run and DEMONSTRATED** the control (§12.1 row 18, §12.4 item 7 **RESOLVED**). See §12.1 and §12.1.1. **§11.1–§11.4's decisions and reasoning are not superseded — they were followed** |
 | *"Persistence across container restart — UNTESTED"* | §6 row 4, §6.2 | **Superseded twice over** — already superseded by §9.8 (local); §12.1 row 9 carries it into the cloud environment, **with the container-restart-not-reboot qualification in §12.5 row 4** |
+| *"That reconciliation has NOT been checked against real Terraform state"* | §12.2 closing line; §12.4 item 1; §12.5 row 6; `infra/variables.tf` `app_instance_type` comment | **Superseded.** Reconciliation is **VERIFIED — no changes, exit 0** (§12.1 row 20), read-only, independently verified by the operator. §12.4 item 1 is **RESOLVED**. The reasoning these lines recorded — that an apply preserving the instance ID makes a clean plan *more likely* without supplying the observation — **was correct and is preserved**; it is the observation, not the reasoning, that has now arrived |
+| *"Least privilege … the negative control was NOT run"* / *"NOT RUN. OUTSTANDING."* | §12.4 item 7; §12.5 row 8; §12.6 row above | **Superseded.** The §11.4 negative control is **DEMONSTRATED on AWS**: instance role **DENIED** the RDS-managed master secret, genuine **`AccessDeniedException`**, ARN read from `DBInstances[0].MasterUserSecret.SecretArn`, stdout discarded (§12.1 row 18). §12.4 item 7 is **RESOLVED** |
 
 **And one claim in §12 is NOT superseded by anything, because it was never verified in the
 first place: the pgvector version skew between local devdb (0.8.7) and RDS (0.8.1).** §12.3
