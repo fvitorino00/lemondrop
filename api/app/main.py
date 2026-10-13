@@ -5,10 +5,16 @@ servers that are NOT published to the host. They are reachable only from other
 containers on the compose network, by service name. This API is the single door
 to the outside world, and its job is to stand in front of them.
 
-Three routes, in the order they were earned: ``GET /health`` reports the truth
+Four routes, in the order they were earned: ``GET /health`` reports the truth
 about the two workers beneath it; ``POST /embed`` and ``POST /rerank`` are thin
-proxies that actually call them. There is still no database, no vector store, no
-persistence of any kind — this API forwards and nothing more.
+proxies that actually call them. Two more arrived with the database phase:
+``GET /health/live`` and ``GET /health/ready``, which probe the database as well
+as the workers.
+
+What is still absent is the part that matters most: there is no ``/documents``
+and no ``/search``, so nothing is stored and nothing is retrieved. This API
+forwards, and it now has a pool it does not yet use — ``app/db.py`` builds and
+probes a database connection, and no query in this file touches it.
 
 A NOTE ON THE bge QUERY PREFIX, recorded here because it is the single most
 misreadable decision in this file. bge-small-en-v1.5 was trained with the fixed
@@ -24,11 +30,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, StringConstraints
+
+from app import db
 
 # ── Downstream endpoints ──────────────────────────────────────────────────────
 # Read from the environment with compose-network defaults, so the SAME image runs
@@ -125,10 +135,48 @@ NonBlankItem = Annotated[str, StringConstraints(min_length=1)]
 # the caller — see the docstring on _post_upstream.
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Own the database connection pool for exactly the life of the process.
+
+    This is the only place the engine is created, and the reason is in
+    ``db.startup``: an AsyncEngine binds its pool to the event loop that exists
+    when it is built, so one built at import time is bound to the wrong loop and
+    fails much later with "attached to a different loop" or "await wasn't used
+    with an Future". Here, the loop that will serve requests is already running,
+    and the pool is created inside it and disposed inside it.
+
+    The `finally` is not optional bookkeeping. The shutdown half of a lifespan
+    runs even when startup raised, so without it a partially-initialised
+    process leaks its connections on the way down; and ``db.close`` is
+    deliberately the last thing that happens, so no request is holding a
+    connection from a pool that has already been disposed.
+
+    `db.startup()` never raises. An unreachable or unconfigured database is
+    logged, recorded on the returned object, and the process serves anyway —
+    see that function's docstring for the operational reason. The consequence
+    for this file is that ``/health/live`` answers 200 (the process is fine) and
+    ``/health/ready`` answers 503 (a request needing the database must not be
+    sent here). Both are true simultaneously, which is the point of having two
+    endpoints rather than one overloaded one.
+    """
+    database = await db.startup()
+    # On app.state rather than a module global: state is per-application, so two
+    # apps in one process (which is what a test harness creates) cannot share a
+    # pool bound to the wrong loop. See db.startup's docstring.
+    application.state.database = database
+    try:
+        yield
+    finally:
+        await db.close(database)
+
+
 app = FastAPI(
     title="lemondrop API",
     version="0.1.0",
     description="Orchestrates the embedder and reranker inference workers.",
+    lifespan=lifespan,
 )
 
 
@@ -244,6 +292,186 @@ async def health(response: Response) -> HealthResponse:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return HealthResponse(status=overall, embedder=embedder_state, reranker=reranker_state)
+
+
+# ── Liveness and readiness ────────────────────────────────────────────────────
+# Two endpoints, and the reason there are two rather than one overloaded one is
+# the difference between the questions they answer:
+#
+#   LIVENESS  "is this process irrecoverably broken?"     → the orchestrator's
+#            restart decision.
+#   READINESS "can this process serve a request right now?" → the load
+#            balancer's routing decision.
+#
+# They point in OPPOSITE directions on dependencies, and that is not a subtlety
+# — it is the entire reason the pair exists. Liveness deliberately ignores every
+# external system; readiness depends on all of them.
+
+
+class LivenessResponse(BaseModel):
+    """Body of GET /health/live.
+
+    A NEW model rather than a reuse of `HealthResponse`, and `HealthResponse`
+    itself is untouched. Reusing it would have meant a liveness endpoint whose
+    response claims to describe the embedder and the reranker while containing
+    no information about either — a body that is actively misleading about what
+    it measured, in the one endpoint whose whole contract is that it measures
+    nothing. `HealthResponse`'s two dependency fields stay exactly as they were,
+    because `/health` is referenced by the compose healthcheck, by
+    `scripts/boot.sh` and by the Milestone 2 ALB target group, and its shape is
+    a live production contract.
+    """
+
+    # Always the success word, on every call, unconditionally. A single field
+    # because a body listing dependencies here would be a lie.
+    status: str
+
+
+class ReadinessResponse(BaseModel):
+    """Body of GET /health/ready.
+
+    Deliberately the same SHAPE as `HealthResponse` — same field names, same
+    string-valued verdicts, same 200/503 semantics — with one field added:
+    `database`. Matching the existing shape means an operator who already reads
+    `/health` reads this one without learning anything, and a scraper written
+    against one works against the other. The two are separate models rather
+    than one model with optional fields because the shapes differ in what they
+    promise: `HealthResponse` promises to describe the workers and says nothing
+    about the database, and a model with optional fields would let a future
+    edit quietly turn that promise into a lie.
+    """
+
+    # "ok" only when the database AND both workers answered successfully.
+    # "degraded" when any of them did not.
+    status: str
+    # Per-dependency verdict: "ok", or a short description of the failure. All
+    # three are strings rather than booleans for the reason given on
+    # `HealthResponse`: when a dependency is down, the caller needs to know WHY,
+    # and a boolean can only say "no".
+    embedder: str
+    reranker: str
+    # The database verdict. `db.PingResult.detail` is already short,
+    # single-line and credential-free by construction — `db.ping()` redacts
+    # before it builds the string, so there is nothing for this route to strip
+    # and no way for this route to leak it by formatting it carelessly.
+    database: str
+
+
+@app.get(
+    "/health/live",
+    response_model=LivenessResponse,
+    summary="Liveness: is this process alive at all",
+)
+async def health_live() -> LivenessResponse:
+    """Return 200 immediately, having checked nothing.
+
+    ── WHY THIS PROBES NOTHING. READ THIS BEFORE "IMPROVING" IT ───────────────
+    This looks like a bug. It returns a constant. It could be `return True`.
+    It is not, and it is not an oversight — it is the most important endpoint on
+    the service.
+
+    Liveness exists to answer one question: *is this process so broken that
+    restarting it is the only way forward?* Nothing else. And the answer to that
+    question is structurally independent of every dependency, because a
+    dependency cannot break the process. The embedder can be down. The database
+    can be unreachable. The reranker can be loading a model. Every one of those
+    is a perfectly healthy Python process that has nothing to say about them.
+
+    So imagine "improving" this to also check the database and the workers. It
+    works perfectly — for about forty seconds. Then Postgres has a brief
+    connection blip, and /health/live returns 503. The orchestrator reads that
+    as "irrecoverably broken" and kills a container that is fine. The new
+    container starts, probes, finds the blip still present, and dies too. Now
+    the restart loop is running, and the API is down — not because the database
+    was briefly unreachable, but because the health check disagreed with the
+    dependency. **The liveness check turned a five-second blip into a total
+    outage, and it will keep killing every replacement that suffers the same
+    blip.** Recovery is what a restart is for, and a restart that is triggered
+    by the very condition it cannot fix is the opposite of recovery.
+
+    That is why the answer here is a constant and why the function has no
+    dependencies, no awaits, and no parameters: it is impossible for it to
+    report a failure caused by something else, which is precisely the property
+    that makes it safe to hand to a process supervisor that will act on it
+    destructively.
+
+    Everything this endpoint deliberately does NOT do lives in /health/ready,
+    which checks all three dependencies and returns 503 when any is down — so
+    the information is not lost, it is just consulted by something that can act
+    on it correctly (take the instance out of rotation) rather than
+    destructively (kill it).
+    """
+    return LivenessResponse(status=_PROBE_OK)
+
+
+@app.get(
+    "/health/ready",
+    response_model=ReadinessResponse,
+    summary="Readiness: can this process serve a request right now",
+)
+async def health_ready(request: Request, response: Response) -> ReadinessResponse:
+    """Report whether the database AND both inference workers are usable.
+
+    This is the counterpart to /health/live and shares nothing with it but the
+    `_PROBE_OK` vocabulary. It answers a different question with the opposite
+    policy on dependencies: readiness SHOULD fail when a dependency is down,
+    because the correct response to "I cannot serve requests right now" is
+    "stop sending me requests", which is exactly what a load balancer or an
+    orchestrator does with a 503 — take the instance out of rotation and put it
+    back when it recovers. That is safe, self-limiting and automatic.
+
+    Returns HTTP 200 when all three dependencies are ok, and HTTP 503 otherwise.
+    503 and not 200-with-a-sad-body, for the reason written on /health: a
+    non-2xx is what generic tooling actually reads.
+
+    `/health` is unchanged and is still the workers-only readiness check that
+    compose, scripts/boot.sh and the ALB already depend on. This route is
+    additive; nothing that exists today routes through it yet.
+    """
+    # getattr rather than attribute access: an app driven without its lifespan
+    # has no database on its state, and a 500 from a health endpoint is the
+    # least useful thing a health endpoint can do. `db.ping(None)` reports
+    # not-ready, which is the truthful answer for a process with no pool.
+    database = getattr(request.app.state, "database", None)
+
+    # One client for both worker probes, closed when this block exits, and one
+    # concurrent probe of the database through its own pool. gather means the
+    # total wait is the SLOWEST of the three, not the sum — so adding the
+    # database to this route did not make the slowest case any slower.
+    async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_SECONDS) as client:
+        embedder_state, reranker_state, database_verdict = await asyncio.gather(
+            _probe(EMBEDDER_URL, client),
+            _probe(RERANKER_URL, client),
+            db.ping(database),
+        )
+
+    # The database contributes a bool plus a reason; the workers contribute a
+    # reason that is already "ok" or a description. Normalising the database
+    # through the same `_PROBE_OK` word keeps the response body uniform, and it
+    # is safe to put in a client-visible response precisely because `db.ping()`
+    # redacted it before building it — see `ReadinessResponse.database`.
+    database_state = _PROBE_OK if database_verdict.ok else database_verdict.detail
+
+    # "ok" requires ALL THREE. Two healthy dependencies out of three is not a
+    # healthy service: a search that cannot reach the database serves nothing.
+    is_ok = (
+        embedder_state == _PROBE_OK
+        and reranker_state == _PROBE_OK
+        and database_verdict.ok
+    )
+    overall = _PROBE_OK if is_ok else "degraded"
+
+    if not is_ok:
+        # On the injected Response, which FastAPI uses as the status code for
+        # the response it is about to serialise. Same mechanism as /health.
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+    return ReadinessResponse(
+        status=overall,
+        embedder=embedder_state,
+        reranker=reranker_state,
+        database=database_state,
+    )
 
 
 # ── Inference proxies ─────────────────────────────────────────────────────────

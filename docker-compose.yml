@@ -250,7 +250,90 @@ services:
     ports:
       - "${API_HOST_PORT}:${API_INTERNAL_PORT}"
 
+    # ── WHY THIS BLOCK EXISTS ─────────────────────────────────────────────────
+    # Without it the container receives NO DATABASE_URL at all. Compose reads
+    # `.env` to interpolate the `${...}` in THIS file — it does not hand the
+    # variables to the container as a side effect. The only `environment:` key
+    # in this file used to be the one inside `postgres`, which configures that
+    # container and nothing else. So `api` booted, found no DSN, logged
+    # "database is not configured", and answered 503 on /health/ready — correct
+    # degraded behaviour, and useless for anyone expecting a working local stack.
+    # A rebuild does not fix this. Only this block does.
+    #
+    # ── WHY postgres:5432 AND NOT 127.0.0.1:5432 ──────────────────────────────
+    # Both of those hosts are correct — for DIFFERENT consumers, and using the
+    # wrong one fails in the most confusing way available:
+    #
+    #   alembic / pytest on the workstation -> 127.0.0.1:5432 (the published
+    #     loopback port on THIS machine, see the postgres block)
+    #   this container                    -> postgres:5432 (the service name,
+    #     resolved by Docker's embedded DNS on the compose network)
+    #
+    # `127.0.0.1` inside a container is that container's own loopback. Nothing
+    # listens on 5432 there, so a DSN copied verbatim from the host `.env` gets
+    # `connection refused` from inside `api` while `psql` on the workstation
+    # connects perfectly — a bug that reads as a broken database and is actually
+    # a broken address. Hence the host is spelled out here rather than inherited
+    # from the host-side DATABASE_URL variable.
+    #
+    # ── COMPOSED FROM EXISTING VARIABLES, NO NEW CREDENTIAL ────────────────────
+    # Built from DEV_DB_USER / DEV_DB_PASSWORD / DEV_DB_NAME — the same three
+    # keys the postgres service below turns into POSTGRES_*. Nothing is inlined
+    # here, so this file still contains no credential and "this repo holds no
+    # database credentials" remains a checkable property rather than a promise.
+    # See the postgres block for the longer version of that argument.
+    #
+    # ── THE CREDENTIAL IS NOW VISIBLE TO `docker inspect` ─────────────────────
+    # Once interpolated, this DSN is a plain environment entry on the container,
+    # so `docker inspect lemondrop-<project>-api-1` prints the password in full
+    # to anyone who can read the docker socket — and read/write access to that
+    # socket is already root-equivalent on the host, so this discloses nothing
+    # they did not already have. That is what makes it ACCEPTABLE HERE: the
+    # credential guards a throwaway local database holding test documents on a
+    # developer's own machine. The same line in front of a real secret would be
+    # unacceptable — an RDS master password readable by any user in the `docker`
+    # group is a production credential leak, and no argument about socket access
+    # rescues it. Production therefore does not use this path at all.
+    #
+    # ── THIS IS NOT HOW PRODUCTION GETS ITS DSN — AND DOES NOT WORK THERE ──────
+    # On EC2 the API is meant to resolve host and port from SSM
+    # (`/lemondrop/dev/db/{host,port}`) and the password from Secrets Manager at
+    # runtime, so the credential exists only in process memory. THAT IS NOT
+    # IMPLEMENTED. `DatabaseUrlResolver` in api/app/config.py is the documented
+    # seam for it and nothing more; boto3 is deliberately absent from the image.
+    # So on EC2 this block resolves DEV_DB_* to empty strings, the DSN is
+    # unparseable, and the API reports the database as not configured. It does
+    # not silently connect to a wrong database — which is the correct failure,
+    # but it means the deployed stack still has no database until that resolver
+    # is written. Do not read this block as evidence that production is wired.
+    #
+    # ── WHY THERE IS NO `depends_on: postgres` HERE, DELIBERATELY ─────────────
+    # The obvious thing to add next to a database URL is a dependency on the
+    # database. On this service that would break production. The postgres service
+    # is gated behind `profiles: [devdb]` (see its block), and
+    # scripts/boot.sh:267 runs a bare `docker compose up -d --remove-orphans` on
+    # EC2. A profile-gated service does not exist on that host, so
+    # `depends_on: postgres` makes every compose call there fail with an
+    # undefined-service error — taking down the verified Milestone 2 deployment
+    # over a database EC2 is not running. So it is absent, on purpose.
+    #
+    # The operator starts the dev database explicitly, with the profile named:
+    #     docker compose --profile devdb up -d postgres
+    # and only then does /health/ready report the database as ok. Until then the
+    # API serves and reports degraded, which is the honest answer.
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${DEV_DB_USER}:${DEV_DB_PASSWORD}@postgres:5432/${DEV_DB_NAME}"
+      # The embedding width, passed through so the container validates against
+      # the schema's vector(384) with the real configured value rather than the
+      # compiled-in default. `:-384` is a fallback, not a second source of truth:
+      # app/config.py rejects any width that disagrees with the migration.
+      EMBEDDING_DIM: "${EMBEDDING_DIM:-384}"
+
     depends_on:
+      # NOTE: `postgres` is deliberately NOT in this list. It is profile-gated and
+      # does not exist in production, where this block's absence would fail every
+      # compose call — see the block above. Start it yourself:
+      #     docker compose --profile devdb up -d postgres
       embedder:
         condition: service_healthy
       reranker:
