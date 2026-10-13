@@ -1,0 +1,220 @@
+name: hygiene
+
+# Milestone 4, Stage 1 — the state-leak gate.
+#
+# This is the ONLY Stage 1 gate. It exists because .gitignore is not a security
+# boundary: it shapes what `git add` does by default, and `git add -f` overrides
+# it silently, with no warning and no diff to review. A state file, a `.env`, a
+# Terraform crash log or a model weight can therefore be tracked while every
+# .gitignore rule still "looks correct". The only reliable statement of what is
+# tracked is `git ls-files` — the index itself — so both checks below read that
+# and nothing else.
+#
+# This gate deliberately asserts decisions .gitignore already makes. That is not
+# duplication: .gitignore expresses intent to a human, this gate enforces it
+# against `git add -f`. Neither can replace the other.
+#
+# Two failure modes, two steps, independently removable:
+#   1. forbidden-paths-tracked      — a forbidden artifact is IN THE INDEX
+#   2. secrets-in-tracked-content   — a credential is INSIDE an innocuous file
+# Step 1 catches the wrong path. Step 2 catches the innocuous path. A `.md` full
+# of AWS IAM prose passes step 1 and can still fail step 2.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+# Minimal by construction. This workflow reads the repository and nothing else.
+# `packages: write` and `id-token: write` belong to the image-build/publish
+# stages and are NOT requested here — granting a permission no step uses is
+# gratuitous privilege, and OIDC-to-AWS in particular is a credential-exchange
+# permission that must never ride along on a hygiene check.
+permissions:
+  contents: read
+
+concurrency:
+  group: hygiene-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  state-leak-gate:
+    name: state-leak gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      # ── Check 1 ─────────────────────────────────────────────────────────────
+      - name: forbidden-paths-tracked
+        run: |
+          set -euo pipefail
+
+          # Ground truth is the INDEX. Not the working tree — this repo has a
+          # real 304 MB .gguf and a real .env sitting on disk right now, both
+          # correctly ignored and untracked, and this gate must stay silent
+          # about both. Not .gitignore — see the header.
+          TRACKED="$(git ls-files)"
+
+          # Matched against the FINAL PATH COMPONENT ONLY, so `infra/terraform.tfstate`
+          # is caught exactly as `./terraform.tfstate` would be, at any depth.
+          #
+          # This is not a stylistic detail, it is a correctness one, and getting it
+          # wrong is invisible: the pattern below is anchored `^...$` and contains
+          # `[^/]+`, so running it against a full path like `infra/terraform.tfstate`
+          # simply does not match. An earlier draft of this gate did exactly that and
+          # MISSED both nested state files in its own failure test while still exiting
+          # 1 for other reasons. A gate that half-works is worse than no gate, so the
+          # basename is extracted explicitly below rather than trusted to the regex.
+          #
+          # `.env` is anchored EXACTLY and that is deliberate: `.env.example` is
+          # a committed, credential-free template and must keep passing. Matching
+          # `.env*` here would break the repository on day one.
+          FORBIDDEN_BASENAME='^(\.env|[^/]+\.tfstate|[^/]+\.tfstate\..+|crash\.log|crash\..+\.log|[^/]+\.gguf)$'
+
+          # `models/*` is ignored wholesale with a single re-include, so exactly
+          # one path may ever be tracked beneath it.
+          MODEL_KEEP='models/.gitkeep'
+
+          index="$(mktemp)"
+          printf '%s\n' "$TRACKED" > "$index"
+          echo "Tracked files in index: $(wc -l < "$index" | tr -d ' ')"
+
+          # Test each path's BASENAME against the pattern, but report the FULL path,
+          # so a nested `infra/terraform.tfstate` fails with a path a human can act
+          # on rather than with a bare `terraform.tfstate`.
+          forbidden="$(
+            while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              base="${path##*/}"          # no-slash paths yield themselves
+              if printf '%s\n' "$base" | grep -qE "$FORBIDDEN_BASENAME"; then
+                printf '%s\n' "$path"
+              fi
+            done < "$index"
+          )"
+
+          # `models/` is matched as a full-path PREFIX (not a basename) and the one
+          # permitted file is excluded as an exact whole line, so nested model
+          # artifacts such as `models/extra/x.bin` are caught too.
+          models="$(grep -E '^models/' "$index" | grep -v -F -x "$MODEL_KEEP" || true)"
+
+          failed=0
+
+          # `<<<` rather than a pipe: a piped `while` runs in a subshell and the
+          # `failed=1` would be discarded the moment the loop ended.
+          if [ -n "$forbidden" ]; then
+            failed=1
+            while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              echo "::error file=${path},title=forbidden path is tracked::$(basename "$path") is tracked in git. Remove it from the index (git rm --cached \"$path\") and commit that removal. If a past commit already carried it, the credential is in history and must be rotated, not just deleted."
+            done <<< "$forbidden"
+          fi
+
+          if [ -n "$models" ]; then
+            failed=1
+            while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              echo "::error file=${path},title=model weight is tracked::Only ${MODEL_KEEP} may be tracked under models/. Untrack $path — model weights are build artifacts, not source."
+            done <<< "$models"
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error title=forbidden-paths-tracked::FAILED — the index contains artifacts that must never be tracked. Every path above is listed explicitly."
+            exit 1
+          fi
+
+          echo "forbidden-paths-tracked: PASS — no state, env, crash log or model weight is tracked."
+
+      # ── Check 2 ─────────────────────────────────────────────────────────────
+      - name: secrets-in-tracked-content
+        run: |
+          set -euo pipefail
+
+          # ON FALSE POSITIVES — this repo discusses AWS IAM, Secrets Manager and
+          # least privilege extensively, in prose and in Terraform comments, so
+          # this check was expected to need an allowlist. It does not: every
+          # pattern below is anchored and quantified, and `git grep` over the
+          # tracked set currently returns zero matches. So there is NO allowlist
+          # and NO directory exclusion here — a whole-directory whitelist is the
+          # single fastest way to make a secret gate blind, and there is nothing
+          # to excuse.
+          #
+          # The one near-miss worth recording: docs/verification-milestone-3.md
+          # quotes the regex `ASIA[0-9A-Z]+` verbatim in a table of grep
+          # commands. That is a character class, not sixteen key characters, so
+          # it does not match `ASIA[0-9A-Z]{16}`. The quantifier is what keeps
+          # the prose safe.
+          #
+          # If this gate ever fires on a line a human can see is documentation,
+          # the fix is to adjudicate that printed line — narrow the pattern, or
+          # rephrase the sentence. It is NOT to widen an exclusion list.
+          read -r -d '' SPECS <<'SPECS_EOF' || true
+          aws_access_key_id|AKIA[0-9A-Z]{16}
+          aws_temp_access_key_id|ASIA[0-9A-Z]{16}
+          github_pat_classic|ghp_[A-Za-z0-9]{36}
+          github_pat_fine_grained|github_pat_[A-Za-z0-9_]{20,}
+          pem_private_key|BEGIN [A-Z ]*PRIVATE KEY
+          SPECS_EOF
+
+          printf '%s\n' "$SPECS" | python3 -c '
+          import re, subprocess, sys
+
+          # `git grep` without a rev searches tracked files only — untracked and
+          # ignored files are invisible to it, which is exactly the property
+          # this check needs.
+          tracked = subprocess.run(
+              ["git", "ls-files"], capture_output=True, text=True, check=True
+          ).stdout.splitlines()
+          print(f"Tracked files in index: {len(tracked)}")
+
+          failures = 0
+          for spec in sys.stdin.read().splitlines():
+              spec = spec.strip()
+              if not spec:
+                  continue
+              name, pattern = spec.split("|", 1)
+              rx = re.compile(pattern)
+              proc = subprocess.run(
+                  ["git", "grep", "-nIE", pattern, "--", "."],
+                  capture_output=True, text=True,
+              )
+              if proc.returncode not in (0, 1):
+                  # Distinguish "no matches" (1) from "git grep broke" (>1).
+                  print(f"::error title=secret scan error::git grep failed for {name}: {proc.stderr.strip()}")
+                  failures += 1
+                  continue
+              if proc.returncode == 0:
+                  for line in proc.stdout.splitlines():
+                      path, lineno, text = line.split(":", 2)
+                      # Redact the credential span but keep the surrounding line
+                      # visible. A human adjudicating a false positive needs to
+                      # see that this is a doc sentence about IAM — not the key
+                      # itself. Printing the raw match would copy a live secret
+                      # into CI logs, which is a second leak, not a report.
+                      shown = rx.sub(
+                          lambda m, n=name: f"<REDACTED:{n}:{len(m.group(0))}chars>",
+                          text,
+                      )
+                      print(
+                          f"::error file={path},line={lineno},"
+                          f"title=credential pattern {name} in tracked content::"
+                          f"{shown.strip()}"
+                      )
+                      failures += 1
+
+          if failures:
+              print(
+                  "::error title=secrets-in-tracked-content::FAILED — "
+                  f"{failures} credential pattern(s) matched in tracked content. "
+                  "Each is listed above with its file, line and a redacted "
+                  "rendering of the line."
+              )
+              sys.exit(1)
+          print("secrets-in-tracked-content: PASS — no credential pattern in any tracked file.")
+          '
