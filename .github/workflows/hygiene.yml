@@ -136,7 +136,52 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ON FALSE POSITIVES — this repo discusses AWS IAM, Secrets Manager and
+          # ── WHAT IS ACTUALLY SCANNED ─────────────────────────────────────────
+          # The scan set is NOT an extension list. It is every TRACKED file minus
+          # every file git classifies as BINARY. The command below is
+          #     git grep -nIE <pattern> -- .
+          # and each flag means something specific:
+          #
+          #   no rev   → tracked files only. Untracked and .gitignored files are
+          #              invisible, so the real .env and the real 304 MB .gguf
+          #              sitting on disk cannot trip this step.
+          #   -- .     → a pathspec for the CURRENT DIRECTORY, recursively. This
+          #              step runs at the workspace root, so `.` is the whole tree.
+          #              It filters nothing by extension. A genuinely
+          #              extension-narrowed scan would read `-- '*.md' '*.tf'
+          #              '*.yml'`; this is not that, and it is not a subset of it.
+          #   -I       → SKIP files git classifies as binary: a NUL byte in the
+          #              first ~8000 bytes, or `binary` set in .gitattributes.
+          #
+          # `-I` is the ONLY thing narrowing coverage, and it is a real,
+          # acknowledged gap. Verified empirically: a credential planted in a
+          # tracked .bin/.gguf/.png is reported by plain `git grep -nE` as
+          # "Binary file X matches" with exit 0, but is SILENTLY SKIPPED under
+          # `-I` with exit 1. Do not read "no matches" here as "binaries are
+          # clean". Accepted rather than fixed: tracked binaries are Step 1's
+          # job, and removing `-I` would make this step print binary matches the
+          # redaction path cannot parse.
+          #
+          # So in practice `.py`, `.sh`, `.ps1`, `.json`, `.toml`, `.md`, `.tf`,
+          # `.yml` and extensionless files are ALL scanned. Coverage comes from
+          # "tracked and non-binary" — never from a file-extension allowlist.
+          #
+          # ── WHAT THIS IS NOT ─────────────────────────────────────────────────
+          # The five patterns below are a NARROW BACKSTOP, not comprehensive
+          # secret detection. They are five hand-written regexes. They miss
+          # unlisted providers, unlisted key formats, high-entropy tokens, base64
+          # blobs, connection strings, secrets split across lines, and anything
+          # not already in the index. A PASS here means only "these five shapes
+          # are absent from tracked non-binary files" — not "the repo is clean".
+          #
+          # This repository is PUBLIC. The authoritative detector for it is
+          # GitHub's built-in secret scanning and push-protection alerts, which
+          # run on the platform over the full push history regardless of what
+          # this workflow matches. This step is a cheap early local signal, not
+          # the detector of record. Do not weaken it — but do not treat it as one.
+          #
+          # ── ON FALSE POSITIVES ───────────────────────────────────────────────
+          # This repo discusses AWS IAM, Secrets Manager and
           # least privilege extensively, in prose and in Terraform comments, so
           # this check was expected to need an allowlist. It does not: every
           # pattern below is anchored and quantified, and `git grep` over the
@@ -216,5 +261,5 @@ jobs:
                   "rendering of the line."
               )
               sys.exit(1)
-          print("secrets-in-tracked-content: PASS — no credential pattern in any tracked file.")
+          print("secrets-in-tracked-content: PASS — no credential pattern in any tracked non-binary file. Binary files are skipped by -I and are NOT covered here.")
           '
