@@ -43,6 +43,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -1028,3 +1029,283 @@ def test_the_local_database_url_path_is_byte_for_byte_unchanged(monkeypatch):
     assert config.resolve_database_url() == dsn
     assert get_settings().database_url.get_secret_value() == dsn
     assert get_settings().database_host == "127.0.0.1"
+
+
+# ── 11. The region reaches the CONTAINER (deployment files) ───────────────────
+#
+# Everything above this line tests the resolver. The resolver is correct and was
+# left untouched: it reads AWS_REGION, then AWS_DEFAULT_REGION, and raises naming
+# both when neither is set, and the tests above prove it does. What was missing was
+# one level UP — the region never got INTO the container, because a Docker
+# container does not inherit the host's environment and neither docker-compose.yml
+# nor .env.example mentioned either variable. The failure looked like a resolver
+# bug and was a wiring bug, which is the kind that survives a careful reading of
+# the module that is raising.
+#
+# So these tests read the deployment files instead of the module. No network, no
+# live AWS, no container: the unit under test is the text of the two files.
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
+ENV_EXAMPLE_FILE = REPO_ROOT / ".env.example"
+
+# The pass-through form as it is deployed. Used in assertion messages rather than
+# as a whole-string comparison, so that a test failure shows both what is there and
+# what was required without the check itself depending on incidental quoting.
+PASS_THROUGH_FORM = '${AWS_REGION:-}'
+
+
+def _api_environment_block() -> str:
+    """Return the `environment:` block of the `api` service, as text.
+
+    Parsed by locating the block rather than by loading the file with PyYAML, and
+    that is a deliberate trade. `yaml` is available in this venv today, but it is
+    not something `api/` declares anywhere — there is no requirements file entry
+    for it and no test in this suite imports it — so asserting on `yaml.safe_load`
+    would mean a green suite that turns red the moment someone runs the tests in
+    an environment built from the image's declared dependencies.
+
+    The block is located structurally rather than by a bare substring search,
+    because `DB_DSN_SOURCE` and `DATABASE_URL` appear in several other services'
+    blocks and in the comments above them. Substring search over the whole file
+    would find the wrong line and pass for the wrong reason, which is worse than
+    not testing this at all.
+
+    Indentation is the discriminator: the `api` service's `environment:` key sits
+    at four spaces under `  api:`, and its entries at six. Any future edit that
+    reformats that service's block breaks this helper loudly, which is the correct
+    failure — a silent miss is what this test exists to prevent.
+    """
+    lines = COMPOSE_FILE.read_text(encoding="utf-8").splitlines()
+
+    service_start = next(
+        (i for i, line in enumerate(lines) if line.rstrip() == "  api:"),
+        None,
+    )
+    assert service_start is not None, "docker-compose.yml has no `  api:` service"
+
+    environment_start = next(
+        (
+            i
+            for i in range(service_start, len(lines))
+            if lines[i].rstrip() == "    environment:"
+        ),
+        None,
+    )
+    assert environment_start is not None, "the api service has no `environment:` block"
+
+    block = [lines[environment_start]]
+    for line in lines[environment_start + 1:]:
+        # An entry is `      KEY: value`; a comment inside the block is indented
+        # at the same six. The block ends at the first line that is neither —
+        # which is a blank line, or the next key at a shallower indent.
+        if not line.strip():
+            break
+        if not line.startswith("      ") or line.startswith("       "):
+            break
+        block.append(line)
+
+    return "\n".join(block)
+
+
+# One interpolation, matched rather than split by eye: `${NAME}`, `${NAME:-default}`
+# or `${NAME-default}`. The two groups are the variable and the default, and the
+# distinction that matters here is between group 2 being None — no `:-` at all, so
+# there is no default expressed and the host's own shell decides — and it being
+# the empty string, which is the explicit empty default this fix relies on. A
+# plain string split on `:-` cannot tell those apart, which is why this is a
+# regex.
+INTERPOLATION = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-?([^}]*))?\}$")
+
+
+def _api_environment_value(name: str) -> str:
+    """The `api` service's declared value for `name`, unquoted.
+
+    Unquoted because compose treats `"${X:-}"` and `${X:-}` as the same value, and
+    the quoting is a YAML detail — asserting on it would fail a correct edit that
+    added or removed quotes for readability.
+    """
+    block = _api_environment_block()
+    prefix = f"{name}:"
+    entries = [
+        line.strip() for line in block.splitlines() if line.strip().startswith(prefix)
+    ]
+
+    assert len(entries) == 1, (
+        f"expected exactly one {name} entry in the api service's environment "
+        f"block, found {len(entries)}: {entries!r}\nBlock was:\n{block}"
+    )
+
+    return entries[0][len(prefix):].strip().strip("\"'")
+
+
+def test_the_compose_file_passes_the_region_into_the_api_container():
+    """`api` must RECEIVE `AWS_REGION`, in the pass-through form, with no default.
+
+    Three claims, and the third is the one that matters most:
+
+      1. the key exists in the `api` service's `environment:` block, so the
+         container receives the host's value at all. A container does not inherit
+         the host environment, so a key that is only in `.env` reaches nothing;
+      2. its value is an interpolation of AWS_REGION — the pass-through — rather
+         than a literal this file invented;
+      3. the default after `:-` is EMPTY. Not `:-eu-west-1`, not
+         `${AWS_REGION:-us-east-1}` — empty.
+
+    Claim 3 is asserted on the PARSED fallback rather than by comparing the whole
+    string, because that is the claim which survives a plausible edit: someone who
+    "helpfully" fills in a region keeps the pass-through syntax and changes only
+    that one substring. Naming it separately is what makes "no hardcoded region
+    here" an enforced property rather than a convention.
+
+    What this test deliberately does NOT claim is that the interpolation reads the
+    right variable — the test below owns that, so that neither is a restatement of
+    the other and a failure names the specific mistake.
+
+    The empty default is the local-development case, and it is load-bearing in the
+    same way the empty DATABASE_URL above is. This stack never builds an AWS
+    client, so an empty region here is inert. A hardcoded one would be worse than
+    inert: on the deployed host a wrong region does not fail as a configuration
+    error, it fails as an AWS error naming a region that deployment never used,
+    which reads like an IAM problem and sends the operator to audit the instance
+    role.
+    """
+    block = _api_environment_block()
+
+    assert "AWS_REGION:" in block, (
+        "the api service's environment block declares no AWS_REGION, so the "
+        "container cannot receive the host's region and _aws_region() raises "
+        f"before boto3 is ever constructed. Block was:\n{block}"
+    )
+
+    value = _api_environment_value("AWS_REGION")
+
+    parsed = INTERPOLATION.match(value)
+    assert parsed is not None, (
+        f"AWS_REGION must be the pass-through {PASS_THROUGH_FORM}, not a value "
+        f"this file composed: {value!r}"
+    )
+
+    fallback = parsed.group(2)
+    assert fallback == "", (
+        "AWS_REGION must be the empty-default pass-through "
+        f"{PASS_THROUGH_FORM}: no `:-` at all, or a `:-` followed by a hardcoded "
+        f"region. Got a default of {fallback!r}. A hardcoded region here fails as "
+        "an AWS error naming a region this deployment never used, which reads "
+        "like an IAM problem, and the operator audits the instance role instead "
+        "of this file"
+    )
+
+
+def test_the_compose_file_does_not_compose_the_region_out_of_other_variables():
+    """The compose block hands the region over; it does not build one.
+
+    The counterpart to the empty-default check above, and non-redundant with it:
+    a substituted variable (`${AWS_DEFAULT_REGION:-}`, wrong name, empty default)
+    passes that check and fails this one, while a hardcoded region fails both.
+
+    Asserted as: the interpolation references exactly one variable, named
+    AWS_REGION, and its default is free of any further reference. The regex is
+    deliberately closed — no nesting, no `$` inside — so a composed expression such
+    as `${AWS_REGION:-${AWS_DEFAULT_REGION:-}}` cannot match it by being clever,
+    and a bare literal region matches nothing at all.
+    """
+    value = _api_environment_value("AWS_REGION")
+
+    parsed = INTERPOLATION.match(value)
+    assert parsed is not None, (
+        f"AWS_REGION is not a single-variable interpolation, it is composed: {value!r}"
+    )
+
+    variable, fallback = parsed.groups()
+
+    assert variable == "AWS_REGION", (
+        f"the interpolation must read AWS_REGION itself, got: {variable!r}"
+    )
+    assert "$" not in (fallback or ""), (
+        "the pass-through composes nothing from another variable; "
+        f"got: {value!r}"
+    )
+
+
+def test_the_env_example_defines_the_region_and_leaves_it_empty():
+    """`.env.example` must NAME the key and ship it with NO value.
+
+    Both halves. The key has to be there, because `scripts/boot.sh` copies this
+    template over `.env` on the EC2 host: a key the template never mentions is a
+    key the operator has to discover from a stack trace. And the value has to be
+    empty, because this file is committed — a region in it would be a region that
+    nobody chose, that every clone inherits, and that quietly becomes the answer
+    on a host where the real region is something else. Same reasoning as
+    DEV_DATABASE_URL above, applied to a value that happens not to be a secret.
+
+    The literal `AWS_REGION=` with nothing after it is the assertion. Matching it
+    on the KEY alone would pass for `AWS_REGION=eu-west-1`, which is exactly the
+    mistake this test is for.
+    """
+    text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    assignments = [
+        line for line in text.splitlines() if line.startswith("AWS_REGION=")
+    ]
+
+    assert assignments, (
+        ".env.example does not define AWS_REGION at all; boot.sh copies this "
+        "template over .env on EC2, so the key must exist for the operator to fill in"
+    )
+
+    assert assignments == ["AWS_REGION="], (
+        "AWS_REGION must be declared exactly once in .env.example and with an "
+        f"EMPTY value — a committed template must not ship a working "
+        f"configuration. Got: {assignments!r}"
+    )
+
+
+def test_the_resolver_still_refuses_to_guess_a_region(aws, monkeypatch):
+    """With BOTH variables absent it must still raise, naming both — no fallback.
+
+    This is the assertion that the deployment fix does not become a resolver fix.
+    Softening `_aws_region` to default to some region would make the tests above
+    pass on a host that never set one, and it would do it by producing an AWS
+    error that names a region the deployment never used — a failure mode that
+    looks like IAM and is not, and that the operator pays for by auditing a role
+    that was fine.
+
+    So the guarantee is pinned on BEHAVIOUR, with both variables removed by this
+    test itself rather than trusting the autouse fixture: a fixture that forgot a
+    variable would silently turn "no region" into "whatever this machine exports",
+    and the test would keep passing while testing nothing. `delenv` on both names
+    is the construction of the situation, not an assumption about it.
+
+    Both names appear in the message, for the reason `_aws_region` gives: either
+    one satisfies the read, so an operator told only about AWS_DEFAULT_REGION on a
+    host that sets AWS_REGION would go looking at the instance role.
+
+    And no client is constructed — asserted by the stub's call list, which the
+    resolver cannot reach without a region. That ordering is the property that
+    makes the guarantee worth having: there is no state in which the process has
+    begun talking to AWS somewhere unintended.
+    """
+    stub = aws()
+
+    # Removed here, in the test, rather than left to the autouse fixture: this is
+    # the construction of the situation, and a fixture that forgot one of the two
+    # names would otherwise turn "no region" into "whatever this machine exports"
+    # and the test would keep passing while testing nothing. `monkeypatch.delenv`
+    # rather than `os.environ.pop` because it restores the developer's own value
+    # at teardown, so a machine that exports AWS_REGION is left as it was found.
+    for name in ("AWS_REGION", "AWS_DEFAULT_REGION"):
+        monkeypatch.delenv(name, raising=False)
+    config._resolve_database_url_from_aws_once.cache_clear()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        config.resolve_database_url()
+
+    message = str(excinfo.value)
+
+    assert "AWS_REGION" in message, f"the error must name AWS_REGION, got: {message}"
+    assert "AWS_DEFAULT_REGION" in message, (
+        f"the error must name AWS_DEFAULT_REGION as well — either satisfies the "
+        f"read. Got: {message}"
+    )
+    assert stub.calls == [], "no client may be constructed without a region"

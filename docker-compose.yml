@@ -361,6 +361,46 @@ services:
     environment:
       DATABASE_URL: "${DEV_DATABASE_URL:-}"
       DB_DSN_SOURCE: "${DB_DSN_SOURCE:-environment}"
+      # ── THE REGION IS A PASS-THROUGH, AND IT IS NOT A DEFAULT ─────────────────
+      # The AWS SDK resolves a region when a client is CONSTRUCTED, from the
+      # config object or the environment — it does NOT go and ask the instance
+      # metadata service which region it is in. `placement/region` appears
+      # nowhere in botocore. So a container that calls SSM or Secrets Manager
+      # has to be GIVEN one, and the only place it can be given one is here: a
+      # Docker container does not inherit the host's environment, so without this
+      # line the `api` container reaches `resolve_database_url`, finds
+      # DB_DSN_SOURCE asking for the AWS path, and raises before boto3 is ever
+      # constructed. That is the resolver behaving correctly; the missing piece
+      # was in this file, not in api/app/config.py.
+      #
+      # Passed through, not composed, for the same reason DATABASE_URL above is:
+      # `${AWS_REGION:-}` gives the container exactly what the operator's `.env`
+      # holds and NOTHING ELSE. On a host that does not use the AWS credential
+      # path — which is every local development machine, where DB_DSN_SOURCE
+      # stays at its `environment` default — AWS_REGION is unset and this
+      # interpolates to EMPTY, mirroring how DB_DSN_SOURCE defaults to
+      # `environment` rather than to a source nobody chose. The local stack
+      # never constructs an AWS client, so an empty region is inert there rather
+      # than broken.
+      #
+      # A region is NOT a credential. It names a location, carries no secret
+      # material, and grants nothing on its own — access still comes from the
+      # instance role, or from whatever credential chain boto3 finds. So this is
+      # safe as a plain container environment entry, where `docker inspect` would
+      # show it, in a way that the DATABASE_URL line above is safe only because
+      # it points at a throwaway local database. Do not let that distinction
+      # blur: the reason this line discloses nothing is that there is nothing in
+      # it to disclose.
+      #
+      # AND DO NOT REPLACE THE EMPTY DEFAULT WITH A REAL REGION. This is the one
+      # line where a "helpful" hardcode does real damage. A wrong hardcoded region
+      # does not fail as a configuration error — it fails as an AWS error naming a
+      # region this deployment never used, which reads like an IAM or networking
+      # problem and sends the operator to audit the instance role while the actual
+      # fault is one word in this file. Silence is the correct default; the
+      # operator who knows where their RDS instance lives sets AWS_REGION in
+      # /opt/lemondrop/.env alongside the other production values.
+      AWS_REGION: "${AWS_REGION:-}"
       # The embedding width, passed through so the container validates against
       # the schema's vector(384) with the real configured value rather than the
       # compiled-in default. `:-384` is a fallback, not a second source of truth:
