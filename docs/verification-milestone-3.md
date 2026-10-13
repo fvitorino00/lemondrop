@@ -1,11 +1,11 @@
 # Milestone 3 — Verification Record (IN PROGRESS)
 
 **This is a running record, not a finished report.** Milestone 3 is in progress. Phase 0,
-Phase 1, Phase 2 and Phase 3a+3b (persistence and ingestion) have been touched. Semantic
-search, reranking, and persistence across a container restart — the remaining M3 acceptance
-criteria — remain untested. Sections below are added as each phase is verified; this
-document will change until the milestone is closed, and anything not yet in it has not
-happened.
+Phase 1, Phase 2, Phase 3a+3b (persistence and ingestion) and Phase 4 (retrieval,
+`POST /search`) have been touched. Persistence across a container restart — the remaining
+M3 acceptance criterion — remains untested. Sections below are added as each phase is
+verified; this document will change until the milestone is closed, and anything not yet in
+it has not happened.
 
 The distinction that matters throughout: **VERIFIED** means a check was run and its result
 is recorded below. **NOT YET VERIFIED** means the claim is untested or the risk is
@@ -119,6 +119,12 @@ Stated plainly, because each of these is a real caveat on everything above:
   **Phase 1 proved a schema exists and is correct. It proves nothing whatsoever about
   retrieval behaviour.** A perfect table and a broken retrieval layer look identical at
   this point in the milestone.
+
+  > **SUPERSEDED BY PHASE 4 (§8), recorded here rather than rewritten.** The above was
+  > true when Phase 1 was verified and is kept as written. As of §8, ingestion, semantic
+  > search, reranking and collection isolation are **VERIFIED** against the live stack.
+  > **Persistence across a container restart remains UNTESTED** — the one M3 criterion
+  > still open, and explicitly not promoted. See §6.2.
 - **The corpus is synthetic.** No conclusion drawn from this corpus is a conclusion about
   real-world documentation quality. See §1.
 
@@ -392,17 +398,20 @@ Stated plainly, not softened.
    route, so none of this has been observed through an API response a caller could receive.
    See §6.
 
+   > **SUPERSEDED BY PHASE 4 (§8).** `POST /search` now exists and is verified end to end:
+   > 62/62 tests, and a live search that ranked the right document first. See §8.2 and §8.4.
+
 ---
 
 ## 6. M3 acceptance criteria — status
 
 | # | Criterion | Status |
 |---|---|---|
-| 1 | Ingestion of the corpus | **PARTIAL** — see below |
-| 2 | Semantic search returns relevant results | **UNTESTED** |
-| 3 | Reranking applied | **UNTESTED** |
-| 4 | Persistence across container restart | **UNTESTED** |
-| 5 | Collection isolation (canary pairs never cross) | **UNTESTED** — store level only; see below |
+| 1 | Ingestion of the corpus | **VERIFIED** — §6.1 |
+| 2 | Semantic search returns relevant results | **VERIFIED** — §8.2 |
+| 3 | Reranking applied | **VERIFIED** — §8.2 |
+| 4 | Persistence across container restart | **UNTESTED** — see §6.2 |
+| 5 | Collection isolation (canary pairs never cross) | **VERIFIED** — §8.4, §8.5 |
 
 Two supporting infrastructure criteria were verified in Phase 2 and are recorded here so
 the milestone's shape stays visible:
@@ -412,10 +421,14 @@ the milestone's shape stays visible:
 | 6 | `GET /health/live` returns 200 | **VERIFIED** | §4.3 row 1 |
 | 7 | `GET /health/ready` returns 200 with `database`, `embedder`, `reranker` all `ok` | **VERIFIED** | §4.3 row 2 |
 
-### 6.1 Why row 1 is PARTIAL and not VERIFIED
+### 6.1 Why row 1 moved from PARTIAL to VERIFIED
 
-Ingestion is the first criterion with **some** evidence behind it, so it is worth being
-precise about what that evidence does and does not reach.
+*(Updated by Phase 4. This subsection's original reasoning is retained below because the
+change in verdict is itself the evidence: each bullet marked **NOW PROVEN** was on this
+list as a gap one phase ago.)*
+
+Ingestion was the first criterion with **some** evidence behind it, so it was worth being
+precise about what that evidence did and did not reach.
 
 **What IS proven** (all of it operator-executed, all of it against the real local
 database — §5.2):
@@ -433,36 +446,48 @@ database — §5.2):
   embedding and collection — with `updated_at` moving and `created_at` **not** moving.
 - **Collection-filtered retrieval.** `store.retrieve` scopes to the requested collection,
   and the test asserts the **returned count**, not merely the absence of a foreign id.
+- **NOW PROVEN (Phase 4, §8):** all 40 documents are reachable **through a search response a
+  caller receives**, with the reranker applied and the collection predicate holding.
 
 **What is NOT proven:**
 
-- **Reranking is untouched.** `POST /rerank` exists from Milestone 2 and this phase does
-  not call it. Nothing here is evidence about it.
-- **`/search` does not exist.** There is no route a user can call to retrieve anything.
+- ~~**Reranking is untouched.** `POST /rerank` exists from Milestone 2 and this phase does
+  not call it. Nothing here is evidence about it.~~ **NOW PROVEN — §8.2:** a live `/search`
+  ranked `support-recycle-bin-file-recovery` first, 10 candidates in, 5 results out.
+- ~~**`/search` does not exist.** There is no route a user can call to retrieve anything.
   Everything above was observed through the store or through `POST /documents`, never
-  through a search response.
-- **Cross-collection isolation has been shown at store level only.** The `WHERE` clause
-  is proven to hold, and the funnel is proven to be applied to the right population. But
-  the criterion as written — *"canary pairs never cross"* — is a claim about what a caller
-  **sees in a search response**, and there is no such response to check. Proving it at the
-  store is real progress and is **not** the same claim.
-- **Persistence across a container restart is still untested** (row 4), and is untested in
+  through a search response.~~ **NOW PROVEN — §8.2.** The route exists and is exercised over
+  HTTP against the running container.
+- ~~**Cross-collection isolation has been shown at store level only.** … the criterion as
+  written is a claim about what a caller **sees in a search response**, and there is no such
+  response to check.~~ **NOW PROVEN — §8.4, §8.5:** measured on the live corpus, the canary
+  twin ranks **#2 overall** in an unscoped search and never appears in the scoped one, and
+  the isolation test was mutation-proved to discriminate rather than merely to pass.
+- **Persistence across a container restart is still untested** (row 4). It is untested in
   a way that matters more now than it did in Phase 2: the pool is now the thing being
   armed by `store.prepare_database`, and that arming has only ever been observed against a
-  freshly started process.
+  freshly started process. See §6.2.
 
-**Why row 5 is left UNTESTED rather than moved to PARTIAL.** The temptation is to promote
-it, because collection scoping *is* demonstrated. The criterion is specifically about the
-ten `isolation_canary` near-duplicate pairs never crossing in a result set, and that is a
-statement about a response. Until `/search` exists there is no response, so the criterion
-has no subject. **PARTIAL** would read as "checked, found mostly fine", which is a
-different and stronger claim than "not yet checkable".
+### 6.2 Row 4 is NOT promoted, and here is why that is the honest call
 
-**No user-facing retrieval criterion has been checked.** Rows 2, 3 and 5 remain UNTESTED
-because there is no search route to test them against. Rows 6 and 7 are infrastructure the
-retrieval layer depends on, not evidence about it: a container that reports itself ready
-and a table that answers a `<=>` query are different claims, and only the first has been
-made. This table exists so the gap is visible, not to imply progress.
+**Persistence across a container restart remains UNTESTED.** Phase 4 did not test it and
+Phase 4's evidence does not reach it.
+
+The temptation is to read the rest of the table being green as momentum, and to promote
+row 4 by association. That would be wrong for a specific reason rather than a general one:
+`store.prepare_database`'s `engine.dispose()` is exactly the mechanism a restart exercises
+and nothing else does. It exists because `db.startup()`'s `SELECT 1` ping leaves one pooled
+connection permanently lacking the pgvector codec, and the dispose is what retires it
+(§5.3). Every observation of that mechanism to date came from a **freshly started process** —
+which is the easy direction. A restart has to prove the documents are still there, the
+migrations have not been re-applied destructively, and the codec is armed again on a pool
+whose *first* connection was created before startup finished. That is the untested direction.
+
+Row 4 stays **UNTESTED**. It is the next task.
+
+**No user-facing retrieval criterion is left unchecked.** Rows 2, 3 and 5 are verified in
+§8 against the live stack. Rows 6 and 7 remain infrastructure the retrieval layer depends
+on rather than evidence about it. Row 1's remaining caveat is row 4, above.
 
 ---
 
@@ -484,14 +509,249 @@ database up (`docker compose --profile devdb up -d postgres`) and
 The Phase 3a+3b claims that **can** be re-checked without Docker:
 
 ```bash
-.venv/bin/python -m pytest --collect-only -q                      # Expected: 35 tests collected
+.venv/bin/python -m pytest --collect-only -q                      # Expected: 62 tests collected
 cat .venv/lib/python3.14/site-packages/pgvector-0.5.1.dist-info/WHEEL   # Expected: Tag: py3-none-any
 ```
 
-The claims that cannot — 35/35 passing, 40/40 ingested, the `psql` row counts, and the
-three-way codec measurement — require the dev database and the rebuilt API container, and
-were executed by the operator. Their provenance is stated per row in §5 and is **not** an
-independent reproduction.
+The claims that cannot — 62/62 passing, 40/40 ingested, the `psql` row counts, the
+three-way codec measurement, and the live `/search` ranking in §8 — require the dev
+database and the rebuilt API container, and were executed by the operator. Their provenance
+is stated per row in §5 and §8 and is **not** an independent reproduction.
 
 When the next phases land, add them as new numbered sections below rather than editing
 rows 1–8 above. A verification record that gets rewritten is not a record.
+
+---
+
+## 8. Phase 4 — `POST /search`
+
+**Status: VERIFIED — 62/62 tests passing, and a live search ranked correctly.**
+
+Everything in this section was executed and reported by the **operator**, who ran the
+commands against the real local PostgreSQL and the real llama.cpp inference workers. The
+agent did not run these and is not claiming to. The one exception is the collection count
+re-check below, which the CEO ran read-only.
+
+### 8.1 Test suite
+
+| # | Item | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | Full suite passes | **62/62** — real local PostgreSQL, real `embedder` and `reranker` containers, HTTP against the running API. No mocks, no in-process client. | **operator** (terminal output pasted) | **VERIFIED** |
+| 2 | Suite size | `pytest --collect-only -q` → **62 tests collected** (35 before this phase; `test_search.py` adds 26 test functions, several parameterised). | **CEO** (command + output below) | **VERIFIED** |
+| 3 | No `pytest.skip()` anywhere in `api/tests/` | AST walk over all four test modules finds **zero** calls to `pytest.skip`, `pytest.mark.skip` or `pytest.mark.skipif`. The four textual matches are the word appearing *inside docstrings that forbid it*. | **CEO** (command + output below) | **VERIFIED** |
+
+```console
+$ .venv/bin/python -m pytest --collect-only -q 2>&1 | tail -1
+62 tests collected in 0.41s
+```
+
+### 8.2 A live search, ranked by the real cross-encoder
+
+| # | Item | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | A relevant query returns the relevant document first | Query about recovering files from a user's Recycle Bin, scoped to `it-support`, ranked **`support-recycle-bin-file-recovery`** first. | **operator** (terminal output pasted) | **VERIFIED** |
+| 2 | The funnel ran at its configured size | **10 candidates considered, 5 results returned.** | **operator** (terminal output pasted) | **VERIFIED** |
+| 3 | Every result is in the searched collection | **All 5 in `it-support`.** No `infra-*` document appeared. | **operator** (terminal output pasted) | **VERIFIED** |
+| 4 | `relevance_score` and metadata survive the round trip | Both present on every result; `distance` (stage 1) accompanies `relevance_score` (stage 2) so a result can explain why it was considered at all. | **operator** (terminal output pasted) | **VERIFIED** |
+
+Nothing here was seeded by the test suite. The corpus is the one
+`scripts/load_corpus.py` loaded, queried over HTTP, and ranked by the real
+`bge-reranker-base` worker.
+
+### 8.3 A transient failure, recorded because hiding it would make this record worthless
+
+**A `connection reset` was observed once on `GET /health/live` during this run. It was not
+reproduced. The full suite passed cleanly on rerun.**
+
+The **operator's assessment** — and it is the operator's, not the agent's — is that this is
+most consistent with the `api` container not yet listening immediately after
+`docker compose up -d --build api`. The compose healthcheck's `start_period` is 30s, and a
+probe issued before the process is accepting connections inside that window gets a reset
+rather than a refusal.
+
+Stated plainly so it cannot be quietly reinterpreted later: **if this recurs OUTSIDE a
+restart window, it is a real defect and must be investigated — not dismissed.** A connection
+reset on liveness in steady state is not a startup artefact; it would point at the
+connection pool, the event loop, or something wedging and restarting the process. The
+30-second-window explanation makes this occurrence unremarkable. It does not license
+ignoring the next one.
+
+The reason this is in the record at all: a verification record that hides a flake is worse
+than one that has never seen one. Green that hides a known-unexplained failure teaches the
+next reader that the log is complete when it is not.
+
+### 8.4 The isolation control — the real proof, on real data
+
+Collection filtering is claimed in `store.py`'s docstring and proved by a mutation test in
+§8.5. This section is the *measurement*: what the claim looks like against the live 40-document
+corpus, with the adversarial `isolation_canary` twin pairs as the probe.
+
+| # | Measurement | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | Search scoped to `infrastructure` | **10 candidates, all 10 in `infrastructure`.** The `it-support` twin of the canary pair **never appears**. | **operator** (terminal output pasted) | **VERIFIED** |
+| 2 | The same query as a **global** search, no collection predicate | The twin **`support-service-account-password-rotation` ranks #2 overall**, distance **0.3018**, behind only its infrastructure counterpart `infra-aws-iam-key-rotation` at **0.2071**. | **operator** (terminal output pasted) | **VERIFIED** |
+| 3 | How much of the global top 10 belongs to the collection actually asked for | **Only 7 of the global top 10 are `infrastructure`.** Three are `it-support`. | **operator** (terminal output pasted) | **VERIFIED** |
+
+**The conclusion, stated because it is the part that matters:** the `WHERE` clause is doing
+**two jobs at once**, and a system that only believed it was doing one was still broken.
+
+1. **It excludes the canary twin that would otherwise have been reranked into the top 5.**
+   Row 2 is not an anecdote — the twin is the *second most relevant document in the entire
+   corpus* for that query. A filter that leaked would surface it immediately, which is why
+   this pair is a canary at all.
+2. **It recovers three `infrastructure` documents a fetch-then-filter would have silently
+   discarded.** Row 3: a global top-10 holds only 7 infrastructure documents, so
+   global-top-10-then-filter-in-Python returns **7, not 10** — and the three it loses are not
+   arbitrary; they are the three the *global* metric judged least similar, which is exactly
+   the population a `collection = :collection` predicate never restricted in the first place.
+
+That second job is the one that fails silently. A leaked filter is loud (a foreign document
+in the response, caught by any isolation assertion). A starved filter is **silent**: correct
+documents, correct collection, fewer of them, HTTP 200, and a retrieval system that gets
+steadily worse as the corpus grows while every test asserting isolation stays green.
+
+This is the recall-destruction argument, demonstrated on real data rather than asserted from
+the shape of the SQL.
+
+### 8.5 An isolation test that was found BLIND
+
+**This is the most important thing this phase produced, and it is a record of a test that
+was passing while testing nothing.**
+
+The original `test_retrieve_returns_only_documents_from_the_asked_collection` used a query
+vector seeded `_vector(1)` — **the same seed as the `alpha-0` fixture**. So `alpha-0` sat at
+distance exactly `0.0000` from the query, and the global top-3 came back as `alpha-0`
+(0.0000), `alpha-1` (0.1298), `alpha-2` (0.1747), with `beta-0` at the *same* 0.1747.
+
+**All three of the global top 3 were collection A's.** A fetch-then-filter implementation
+would therefore return all three and the test would **PASS against the broken code**. The
+test was discriminating on a coin flip that happened to land the right way. It was not a
+test of SQL filtering; it was a test of which three of eight deterministic vectors happened
+to be numerically closest.
+
+**Proven by mutation, not by argument.** `store.retrieve` was temporarily rewritten into
+global-top-N-then-filter-in-Python, and the test was run against the mutated implementation:
+
+| # | Run | Result | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | Old seed **+** post-filter mutation | **PASSED** — the test was blind to the defect it existed to catch. | **operator** (terminal output pasted) | **DEFECT CONFIRMED** |
+| 2 | New seed (`_vector(104)`, one of B's own seeds) **+** post-filter mutation | **FAILED: `assert 2 == 3`** — the post-filter returned 2 where the `WHERE` clause returns 3. | **operator** (terminal output pasted) | **DEFECT CONFIRMED** |
+| 3 | `api/app/store.py` restored | **Byte-identical** to its pre-mutation state. | **operator** (`git diff` empty) | **VERIFIED** |
+
+Measured with the corpus loaded, after the seed change: the global top-3 is `beta-4`
+(0.0000), `alpha-0` (0.2103), `alpha-1` (0.2380) — **two** A documents, so the post-filter
+returns 2 and `len(from_a) == 3` fails.
+
+**A control assertion now runs on every execution**, so the test proves itself armed rather
+than relying on a reader having done the arithmetic:
+
+```python
+shortlist_a = [i for i, c in global_shortlist if c == FIXTURE_COLLECTION_A]
+assert len(shortlist_a) < 3, "a fetch-then-filter could fill the limit entirely from
+                              the right collection and len(from_a) == 3 would be
+                              satisfied by the bug. This test no longer
+                              discriminates."
+```
+
+The CEO verified this arithmetic independently, by recomputing `_vector` in isolation rather
+than trusting the comment: with the current seeds the global top-3 is `['beta-4', 'alpha-0',
+'alpha-1']` — **2 of 3 are collection A**, so the assertion holds and a post-filter genuinely
+under-fills. With the old seed `_vector(1)` the global top-3 is `['alpha-0', 'alpha-1',
+'alpha-2']` — **3 of 3**, confirming the original test was blind.
+
+The general lesson, and the reason it is recorded rather than quietly fixed: **a test whose
+discrimination depends on incidental numeric properties of its fixtures must assert those
+properties on every run.** A comment saying "this seed was chosen because…" is a claim
+about arithmetic that silently rots the first time someone edits `_vector`.
+
+### 8.6 Measured rerank latency
+
+Ten real corpus documents, 15,468 characters total, two independent runs of five samples
+each. This is the evidence behind `RETRIEVAL_CANDIDATES` 50 → 10.
+
+```console
+run A: min  8.191s  median 11.409s  max 12.996s
+run B: min  9.354s  median 12.466s  max 13.214s
+```
+
+| # | Item | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | Cost of one stage-2 pass over 10 documents | **~11–12.5s median**, i.e. **~1.1–1.25s per candidate.** | **operator** (two runs, terminal output pasted) | **VERIFIED** |
+| 2 | Extrapolation to 50 candidates | **~55–60s.** Linear, with no batch discount — the reranker is a cross-encoder scoring every (query, passage) pair on CPU. | **CEO** (arithmetic on row 1) | **VERIFIED** |
+| 3 | Why no latency bound is asserted | The **4.8s spread** between min and max is larger than most of the gap between a fast and a slow run. A tight threshold on a shared host is a flaky test that teaches the team to ignore it. The test therefore **reports its distribution and asserts no bound**; the only assertions are that the call completed and that it scored all 10 documents with a stable index order across samples. | **CEO** (reading the test) | **VERIFIED** |
+
+### 8.7 What this measurement is NOT — the limits, unsoftened
+
+- **Measured on the developer's host, not EC2.** No EC2 instance, no `t3.micro`, no ALB in
+  this measurement. The Milestone 2 hardware description (`t3.micro`, ~913Mi, ~280Mi
+  available at rest) is what motivates the 50→10 decision; it is not what this number was
+  taken on.
+- **Service-to-service, not end-to-end.** This is the client-side cost of calling the API's
+  reranker from inside the test process. It **excludes** the ALB hop, request queueing, and
+  the client's own network — all of which a real latency SLO would have to contain.
+- **This is not an SLO and must not be quoted as one.** It is an observation made after the
+  fact, on one host, at one candidate count, with one model. An SLO is a commitment made in
+  advance and held over time.
+
+### 8.8 Known limitations of this phase
+
+Stated plainly, not softened. Inherited items are marked as such.
+
+1. **Python version skew.** Local venv is **Python 3.14.4**; `api/Dockerfile` is
+   `python:3.12-slim`, and **`python3.12` is not available on this host**. A 3.12-only
+   incompatibility would not be caught locally. Inherited from §4.4 item 2.
+2. **Least privilege is asserted, not demonstrated.** The local devdb role is a
+   **SUPERUSER**, so the `DATABASE_URL` / `ALEMBIC_DATABASE_URL` split is enforced by
+   variable naming and documented intent only. Inherited from §4.4 item 3 / §5.5 item 1.
+3. **No AWS anything.** No SSM, no Secrets Manager, no boto3, no IAM, no RDS. The
+   SSM → Secrets Manager credential path is **still unimplemented** — the
+   `DatabaseUrlResolver` seam is documented and deliberately left unwritten. The
+   `feat/aws-infrastructure` IAM changes are **NOT applied**, so deployed permissions
+   remain unverified. Inherited from §5.5 item 3.
+4. **`RETRIEVAL_CANDIDATES`, `RERANK_TOP_K` and `QUERY_PREFIX` are read by the code but are
+   NOT passed into the `api` container by compose.** `docker-compose.yml`'s `api` service
+   supplies exactly two variables — `DATABASE_URL` and `EMBEDDING_DIM` — so all three
+   resolve from `config.py`'s code defaults regardless of what a local `.env` says. The
+   **asymmetry is real and worth naming**: an operator editing `.env` and seeing no change
+   in the running service has found this, not a bug in the code reading. `test_search.py`
+   asserts against the code defaults (`CONFIGURED_CANDIDATES = 10`, `CONFIGURED_TOP_K = 5`)
+   rather than re-reading its own environment, precisely so it does not fail for this reason,
+   and `README.md` now states it. It is nonetheless an asymmetry, and closing it (passing the
+   three variables through compose) is a change nobody has made.
+5. **The `.env` on the operator's machine still said `RETRIEVAL_CANDIDATES=50`** until this
+   phase. `.env.example` said 50 too, so the operator's file was correct against the
+   documentation — the documentation was wrong against the code. The operator has updated it.
+   Because of item 4 above this had **no effect on the running service**, which is precisely
+   why the bug could sit unnoticed: the code default and the documented value disagreed and
+   nothing was reading either.
+6. **Persistence across a container restart is still UNTESTED.** Row 4 of §6 remains
+   **UNTESTED** and is **not** promoted by this phase. It is now more load-bearing than it
+   was in Phase 2: `store.prepare_database`'s pool-dispose is the thing that arms vector
+   writes, and that arming has only ever been observed against a freshly started process.
+   See §6.2.
+
+### 8.9 The Phase 4 code itself, read by the CEO
+
+Sections 8.1–8.8 are all runtime evidence: something was executed and its output reported.
+This subsection is a different kind of claim — a **static read of the diff**. The CEO read the
+Phase 4 changes directly and reported five findings. No command output is quoted because no
+command produced them; the artefact is the reading, and the references below are the exact
+lines it was made against, re-checked against the tree as committed here.
+
+| # | Finding | Reference | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | **`QUERY_PREFIX` is applied at exactly one site.** `embed(EmbedRequest(text=QUERY_PREFIX + body.query))`. The query is prefixed, documents are not, and there is no second application site anywhere in the tree. | `api/app/main.py:1381` (the only application site); `main.py:1255` is a **docstring example**, not code; the constant and its env var live at `api/app/config.py:160-181` | **CEO** (code read) | **VERIFIED** |
+| 2 | **Index mapping is structurally safe.** The reranker returns an index into the array we sent, and the score is bound **inside the same tuple as its document** (`mapped.append((candidates[result.index], result))`), so the sort at `:1493` cannot physically detach a score from the document it was computed for. An out-of-range index is **logged and skipped**, not turned into a 500 on every search. Mapping happens **before** `mapped[:top_k]` truncation. | `api/app/main.py:1469-1483` (mapping), `:1476` (range check), `:1483` (tuple binding), `:1493` (sort), `:1505` (truncation) | **CEO** (code read) | **VERIFIED** |
+| 3 | **The search path logs no user data.** No query text and no document content at INFO or above. Retrieval failures log the exception **class and SQLSTATE but deliberately not the message** — asyncpg `DETAIL` lines carry row contents, and this query's bound parameters include the caller's query vector. | `api/app/main.py:1418` (class + SQLSTATE, no message); `:1435` (collection only); `:1511` (collection, counts and funnel numbers only) | **CEO** (code read) | **VERIFIED** |
+| 4 | **An empty collection short-circuits before stage 2**, so the reranker is never called with an empty list. | `api/app/main.py:1430` | **CEO** (code read) | **VERIFIED** |
+| 5 | **`Funnel.clamped()` can only ever subtract.** Both bounds are resolved with `min()`, so a caller may narrow the funnel but never widen it. Defaults are `DEFAULT_RETRIEVAL_CANDIDATES = 10` and `DEFAULT_RERANK_TOP_K = 5`. | `api/app/config.py:235-272` (`clamped`), `:267` and `:271` (the two `min()` calls), `:201` (candidates = 10), `:206` (top_k = 5) | **CEO** (code read) | **VERIFIED** |
+
+**Why this subsection exists at all, and what it is not.** §8.5's lesson is that a check
+which passes is not the same as a check which *discriminates*. A code review has the same
+blind spot from the other direction: it can only report what the author drew attention to,
+and its agreement with §8.1–8.8 is **not** independent corroboration — it is the same
+authorial intent inspected twice. What it does add is reach: findings 1–5 are properties of
+the code that no runtime test in §8.1 would exercise. A test suite that passes 62/62 is
+consistent with a second application site of `QUERY_PREFIX`; this reading is what says there
+isn't one. Neither substitutes for the other, and neither is a substitute for the untested
+row 4 in §6.2.

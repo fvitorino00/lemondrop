@@ -35,7 +35,12 @@ What this file protects, in rough order of how much damage its absence causes:
   database REJECT a 768-dimension vector, not by reading the schema.
 * **Retrieval cannot leak across collections** — asserted with counts, not with
   the absence of a foreign id.
-* **Documents are embedded BARE**, with the bge query prefix nowhere near them.
+* **Documents are embedded BARE**, with the bge query prefix nowhere near them —
+  asserted against the stored VECTOR, not the stored text, by
+  `test_the_stored_vector_is_the_bare_embedding_not_the_prefixed_one`. The
+  neighbouring `test_a_document_is_embedded_bare_and_stores_384_dimensions`
+  checks ingestion and the width; its prefix assertion cannot fail and its
+  docstring says so.
 * Ingestion round-trips, upserts update in place, and `updated_at` moves.
 """
 
@@ -53,7 +58,7 @@ from pgvector import Vector
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from app import db, store
+from app import config, db, store
 from app.config import SCHEMA_EMBEDDING_DIM, get_settings
 
 # The API under test. Read from the environment with a localhost default,
@@ -86,6 +91,24 @@ def _vector(seed: int) -> list[float]:
 # production data by a typo in a test name.
 FIXTURE_COLLECTION_A = "testdocs-alpha"
 FIXTURE_COLLECTION_B = "testdocs-beta"
+
+# The vector seeds for the isolation test's two collections, and the one seed the
+# QUERY uses. Named because their relative values are what make that test
+# discriminating, which is not obvious and is not stable under an edit:
+#
+#   A is seeded 1, 2, 3   and   B is seeded 100..104
+#
+# The query MUST be seeded from B's range. If it is seeded from A's range it
+# collides with an A document, that document lands at distance exactly 0.0, and a
+# global shortlist is then topped by A however the filter is implemented — which
+# is precisely the bug this test exists to catch. QUERY_VECTOR_SEED = 104 is the
+# last of B's seeds, so the shortlist is led by B and B's five genuinely
+# outrank A's three. Measured numbers for both choices are in the docstring of
+# `test_retrieve_returns_only_documents_from_the_asked_collection`; change one of
+# these three and re-measure before assuming the test still discriminates.
+FIXTURE_SEED_A = 1
+FIXTURE_SEED_B = 100
+QUERY_VECTOR_SEED = FIXTURE_SEED_B + 4
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -696,15 +719,35 @@ def test_retrieve_returns_only_documents_from_the_asked_collection():
     populated — otherwise this test could pass with an empty database and an
     empty result.
 
-    The shape is chosen so the failure mode described in `store.retrieve`'s
-    docstring is caught: collection A holds 3 documents and collection B holds
-    5, and the limit is 3. A correct `WHERE collection = $1 ORDER BY distance
+The shape is chosen so the failure mode described in `store.retrieve`'s
+    docstring is caught: collection A holds 3 documents and collection B holds 5,
+    and the limit is 3. A correct `WHERE collection = $1 ORDER BY distance
     LIMIT 3` returns three documents, all from A. A fetch-then-filter
-    implementation — global top 3, then discard anything not in A — returns AT
-    MOST three and usually ZERO, because the global shortlist is drawn from all
-    eight and B's five outrank A's three. The isolation assertion alone cannot
-    tell those apart: both return no B rows. Asserting the COUNT is what
-    distinguishes them.
+    implementation — global top 3, then discard anything not in A — returns FEWER
+    than three, because the global shortlist is drawn from every collection and
+    B's five outrank A's three. The isolation assertion alone cannot tell those
+    apart: both return no B rows. Asserting the COUNT is what distinguishes them.
+
+    ── AND THE CONTROL, BECAUSE "B OUTRANKS A" IS A CLAIM, NOT A FACT ──────────
+    Whether the post-filter actually under-fills depends entirely on where the
+    fixture vectors happen to sit, which is a property of `_vector`'s arithmetic
+    rather than of `store.retrieve`. This file's version of that claim was
+    WRONG, and it was wrong measurably: with the query vector seeded as
+    `_vector(1)` — the same seed as `alpha-0`, so `alpha-0` sat at distance
+    exactly 0.0 — a global top-3 came back as `alpha-0` (0.0000), `alpha-1`
+    (0.1298), `alpha-2` (0.1747) with `beta-0` at the *same* 0.1747. Three of the
+    three were A's, so a fetch-then-filter returned all three and **this test
+    passed against the broken implementation**. It was discriminating on a
+    coin-flip that happened to land the right way.
+
+    So the query seed is `_vector(104)` — one of B's own seeds, not A's — and the
+    test does not merely assert the count: it RUNS the global top-3 with no
+    collection predicate and asserts that fewer than three of them are A's. That
+    assertion is the control, and it converts "a post-filter would fail this
+    test" from a comment into something the suite checks on every run. Measured
+    with the corpus loaded: global top-3 is `beta-4` (0.0000), `alpha-0`
+    (0.2103), `alpha-1` (0.2380) — two A documents, so the post-filter returns
+    2 where the WHERE clause returns 3, and `len(from_a) == 3` fails.
 
     A `pytest.skip()` would have been the tempting shortcut here ("only run when
     the corpus is loaded"), and it is exactly the shortcut this project forbids:
@@ -729,7 +772,7 @@ def test_retrieve_returns_only_documents_from_the_asked_collection():
                         # assertion can check identity and not just membership.
                         "content": f"CANARY-ALPHA-{index} {FIXTURE_COLLECTION_A}",
                         "metadata": json.dumps({"canary": f"alpha-{index}"}),
-                        "embedding": Vector(_vector(index + 1)),
+                        "embedding": Vector(_vector(FIXTURE_SEED_A + index)),
                     },
                 )
             # More documents in B than the limit. This is the load-bearing
@@ -747,33 +790,83 @@ def test_retrieve_returns_only_documents_from_the_asked_collection():
                         "collection": FIXTURE_COLLECTION_B,
                         "content": f"CANARY-BETA-{index} {FIXTURE_COLLECTION_B}",
                         "metadata": json.dumps({"canary": f"beta-{index}"}),
-                        "embedding": Vector(_vector(index + 100)),
+                        "embedding": Vector(_vector(FIXTURE_SEED_B + index)),
                     },
                 )
 
     with_database(_seed)
 
-    async def _check(database: db.Database) -> tuple[dict[str, int], list[store.Candidate], list[store.Candidate]]:
+    async def _check(database: db.Database) -> tuple[dict[str, int], list[store.Candidate], list[store.Candidate], list[str]]:
         engine = engine_of(database)
         counts = await store.count_by_collection(engine)
         from_a = await store.retrieve(
-            engine, collection=FIXTURE_COLLECTION_A, query_embedding=_vector(1), limit=3
+            engine,
+            collection=FIXTURE_COLLECTION_A,
+            query_embedding=_vector(QUERY_VECTOR_SEED),
+            limit=3,
         )
         from_b = await store.retrieve(
-            engine, collection=FIXTURE_COLLECTION_B, query_embedding=_vector(1), limit=10
+            engine, collection=FIXTURE_COLLECTION_B, query_embedding=_vector(QUERY_VECTOR_SEED), limit=10
         )
-        return counts, from_a, from_b
+        # THE CONTROL — the same query with no collection predicate at all. This
+        # is the shortlist a fetch-then-filter implementation would draw its
+        # `limit=3` from. See `_global_shortlist`.
+        global_shortlist = await _global_shortlist(engine, query_embedding=_vector(QUERY_VECTOR_SEED), limit=3)
+        return counts, from_a, from_b, global_shortlist
 
-    counts, from_a, from_b = with_database(_check)
+    counts, from_a, from_b, global_shortlist = with_database(_check)
 
-    # 1. Both collections are really populated. Without this, everything below
-    #    is vacuous.
-    assert counts == {FIXTURE_COLLECTION_A: 3, FIXTURE_COLLECTION_B: 5}, (
-        f"fixture seeding did not produce the expected counts, got {counts}. "
-        "Every assertion below is downstream of these numbers."
+    # 1. BOTH OF THIS TEST'S OWN collections are really populated, at the sizes
+    #    it seeded them at. Without this, everything below is vacuous.
+    #
+    #    ── WHY `.get(...) == N` AND NOT `counts == {A: 3, B: 5}` ─────────────────
+    #    Because the whole-mapping form asserts something about the DATABASE, not
+    #    about this test. `count_by_collection` returns every collection that has
+    #    rows, and this suite is expected to run against a database that also
+    #    holds the real 40-document corpus — so the mapping is four entries wide,
+    #    the equality fails, and it fails for a reason that has nothing to do with
+    #    collection isolation. That is the general defect: a test that depends on
+    #    the database containing nothing but its own fixtures STOPS TESTING the
+    #    moment real data exists. It does not report a bug; it reports the
+    #    presence of the corpus, and a team learns to read it as noise about the
+    #    corpus instead of as evidence about the filter.
+    #
+    #    What this test means to claim is narrower and is now stated in the terms
+    #    it means it in: "the two collections I seeded hold 3 and 5 documents".
+    #    Other collections existing is not a fact this test has an opinion about.
+    assert counts.get(FIXTURE_COLLECTION_A) == 3, (
+        f"this test seeded 3 documents into {FIXTURE_COLLECTION_A} and the database "
+        f"reports {counts.get(FIXTURE_COLLECTION_A)}. Seeding failed, or a previous "
+        "run left rows behind. Every assertion below is downstream of these numbers."
+    )
+    assert counts.get(FIXTURE_COLLECTION_B) == 5, (
+        f"this test seeded 5 documents into {FIXTURE_COLLECTION_B} and the database "
+        f"reports {counts.get(FIXTURE_COLLECTION_B)}. Seeding failed, or a previous "
+        "run left rows behind. Every assertion below is downstream of these numbers."
     )
 
-    # 2. The exact vector, and the requested count of it.
+    # 2. THE CONTROL — asserted FIRST, because it says whether the discriminator
+    #    is even armed. Every isolation assertion after this one is downstream of
+    #    it being true.
+    #
+    #    If a fetch-then-filter could fill `limit=3` with three A documents, then
+    #    `len(from_a) == 3` would be satisfied BY THE BUG and this test would be
+    #    green while `store.retrieve` no longer filtered in SQL. Asserting the
+    #    shortfall here makes that state impossible to reach silently: if a future
+    #    edit to `_vector`, to the seeds, or to the fixture vectors makes the
+    #    shortlist A-dominated, THIS assertion fails and says why, instead of the
+    #    isolation check quietly becoming decoration wearing the costume of a
+    #    test.
+    shortlist_a = [identifier for identifier, collection in global_shortlist if collection == FIXTURE_COLLECTION_A]
+    assert len(shortlist_a) < 3, (
+        f"{len(shortlist_a)} of the global top 3 are {FIXTURE_COLLECTION_A} documents "
+        f"({shortlist_a}), so a fetch-then-filter could fill the limit entirely from "
+        "the right collection and `len(from_a) == 3` would be satisfied by the bug. "
+        "This test no longer discriminates. Re-measure the global shortlist and pick "
+        "a QUERY_VECTOR_SEED outside FIXTURE_SEED_A's range."
+    )
+
+    # 3. The exact vector, and the requested count of it.
     assert len(from_a) == 3, (
         f"asked for 3 documents from {FIXTURE_COLLECTION_A!r} and got {len(from_a)}. "
         "A number below 3 is the signature of a post-filter: the limit was spent "
@@ -782,25 +875,68 @@ def test_retrieve_returns_only_documents_from_the_asked_collection():
     assert {candidate.collection for candidate in from_a} == {FIXTURE_COLLECTION_A}
     assert all("CANARY-ALPHA" in candidate.content for candidate in from_a)
 
-    # 3. The other collection is unaffected and complete — asked for 10, got all
+    # 4. The other collection is unaffected and complete — asked for 10, got all
     #    5, so the same code path is not simply returning a short list.
     assert len(from_b) == 5
     assert {candidate.collection for candidate in from_b} == {FIXTURE_COLLECTION_B}
     assert all("CANARY-BETA" in candidate.content for candidate in from_b)
 
-    # 4. Content and metadata survive the round trip alongside the id, because
+    # 5. Content and metadata survive the round trip alongside the id, because
     #    stage 2 (rerank) reads `content` and a Candidate that silently carried
     #    empty strings would be invisible to the isolation assertions above.
     for candidate in from_a:
         assert candidate.content.startswith("CANARY-ALPHA-")
         assert candidate.metadata["canary"].startswith("alpha-")
 
-    # 5. Distances are present, finite and ascending — the caller can see the
+    # 6. Distances are present, finite and ascending — the caller can see the
     #    funnel working. Not a ranking-quality claim; a "did the ORDER BY and the
     #    distance projection both happen" claim.
     distances = [candidate.distance for candidate in from_a]
     assert distances == sorted(distances), f"candidates are not ordered by distance: {distances}"
     assert all(distance == distance for distance in distances), "a NaN distance means the vector was null"
+
+
+async def _global_shortlist(
+    engine: Any, *, query_embedding: list[float], limit: int
+) -> list[tuple[str, str]]:
+    """The nearest documents across the WHOLE table, with no collection predicate.
+
+    This is the implementation `store.retrieve` refuses to be: a global top-N,
+    which a later caller would filter in Python. It exists here so the control
+    above has somewhere to run, and so that its existence stays a standing
+    reminder that the two are different queries with different failure modes.
+
+    Deliberately raw SQL rather than a call to `store.retrieve`: `retrieve` takes
+    the collection as a REQUIRED parameter precisely because the predicate belongs
+    in SQL, so the unfiltered shortlist it describes cannot be produced through
+    it. This query IS that shortlist.
+
+    Async, and awaited from inside `with_database`'s single event loop rather than
+    given an `asyncio.run` of its own — same reason as `test_search.py`'s helper
+    of the same name. An `AsyncEngine` binds its pool to the loop that built it,
+    and a nested `asyncio.run` raises "cannot be called from a running event
+    loop", which is at least loud but is confusing.
+
+    The query is passed as a `Vector`, exactly as `store.retrieve` passes it,
+    because `with_database` arms this pool with the pgvector codec and a
+    codec-registered connection DECODES a text representation as a malformed
+    list: passing `Vector(...).to_text()` raised `DataError: invalid input for
+    query argument $1: '[-0.05...' (expected list or ndarray)`. Measured on this
+    host, not reasoned — the two representations are only interchangeable on an
+    UNARMED pool.
+    """
+    statement = text(
+        "SELECT id, collection, embedding <=> CAST(:query AS vector) AS distance "
+        "FROM documents ORDER BY distance LIMIT :limit"
+    )
+    async with engine.connect() as connection:
+        rows = (
+            await connection.execute(
+                statement,
+                {"query": Vector(query_embedding), "limit": limit},
+            )
+        ).all()
+    return [(str(row.id), str(row.collection)) for row in rows]
 
 
 def test_retrieve_selects_the_distance_metric_by_name_and_rejects_an_unknown_one():
@@ -1008,41 +1144,42 @@ def test_posting_the_same_document_id_updates_it_in_place():
 
 
 def test_a_document_is_embedded_bare_and_stores_384_dimensions():
-    """The query-prefix invariant, made explicit for the ingestion path.
+    """Ingestion round-trips at the right width. This test does NOT prove the prefix invariant.
 
-    ── THE INVARIANT ───────────────────────────────────────────────────────────
+    ── THE INVARIANT THIS FILE IS ABOUT ─────────────────────────────────────────
     bge-small-en-v1.5 was trained with `Represent this sentence for searching
     relevant passages: ` prepended to SEARCH QUERIES ONLY. A document must never
     carry it: prefixing one moves its vector off the manifold the other documents
     live on, permanently, in whatever database holds it, and nothing in any
     response ever says so.
 
-    So what this test can assert TODAY is what it can honestly assert: that
-    ingestion succeeds, that the text is stored verbatim, and that the stored
-    vector is exactly 384 dimensions — i.e. that the document took the same
-    path as `/embed`, which forwards its text bare.
+    ── WHAT THIS TEST ACTUALLY CHECKS, AND WHAT IT DOES NOT ─────────────────────
+    This test checks that ingestion succeeds, that the text is stored verbatim,
+    and that the stored vector is 384 dimensions — that is, that the document
+    took the same path as `/embed`, which forwards its text bare.
 
-    ── WHAT IT DELIBERATELY CANNOT ASSERT YET, AND WHY ─────────────────────────
-    It cannot assert that the stored vector equals the embedding of the BARE
-    text, because that comparison needs the embedder, and — more to the point —
-    it needs a QUERY-side embedding to compare against, and the query-side
-    prefix belongs on `/search`, which does not exist yet. Writing that
-    assertion now would mean embedding the same text through `/embed` and
-    comparing floats, which passes whether or not a prefix was ever added: both
-    sides would be prefixed identically. A test that cannot fail is decoration.
+    It does NOT, by itself, prove the prefix invariant, and this docstring used
+    to imply that it did. It cannot. Its prefix assertion is
 
-    ── WHERE THE QUERY-PREFIX ASSERTION GOES WHEN `/search` LANDS ──────────────
-    The test to add there, and to add HERE at the same time, is the pair:
+        assert not stored.content.startswith("Represent this sentence")
 
-        1. store a document D, and assert the stored vector equals
-           `/embed(D.content)`  ← the document is bare, and it is CHECKABLE,
-           because `/embed` is the bare path by definition;
-        2. search for D's text through `/search` and assert the embedding used
-           was built from PREFIX + text, not from text  ← the query is prefixed.
+    and that assertion passes whether or not a prefix was ever added — because a
+    prefix would be applied to the EMBEDDING INPUT, not to the stored TEXT. A
+    document stored as "Represent this sentence for searching relevant passages:
+    A document whose..." would satisfy this test perfectly while carrying exactly
+    the corrupted vector the invariant exists to prevent.
 
-    Assertion (1) is the one that catches the corruption, and it becomes possible
-    the moment this route's embedding is captured rather than discarded. This
-    marked block is where it goes.
+    So this test is kept (it checks real things: the verbatim round trip and the
+    width) and its prefix claim is now made honestly. The test that actually
+    discriminates is
+
+        test_the_stored_vector_is_the_bare_embedding_not_the_prefixed_one
+
+    which reads the stored vector out of the database and compares it against
+    `/embed(content)` and against `/embed(QUERY_PREFIX + content)` — two vectors
+    that differ measurably, so "which one is stored" is a question with an
+    answer. Read that one to know whether the invariant holds; read this one to
+    know whether ingestion works.
     """
     document_id = "prefix-invariant-document"
     content = "A document whose vector must never have carried the bge query prefix."
@@ -1059,12 +1196,225 @@ def test_a_document_is_embedded_bare_and_stores_384_dimensions():
     assert stored is not None
     assert stored.dimensions == SCHEMA_EMBEDDING_DIM
     # The content is stored EXACTLY as submitted, with nothing prepended to the
-    # stored text. This is not the prefix assertion (a prefix would be added
-    # before embedding, not stored), but it is the half that is checkable
-    # today, and it catches the cruder version of the bug where somebody
-    # "helpfully" normalises the document on its way in.
+    # stored text. Not the prefix assertion (a prefix would be added before
+    # embedding, not stored) — see the docstring — but it catches the cruder
+    # version of the bug where somebody "helpfully" rewrites the document on its
+    # way in, which WOULD show up here.
     assert stored.content == content
     assert not stored.content.startswith("Represent this sentence")
+
+
+# ── The prefix invariant, tested by the vector rather than by the text ─────────
+
+
+def post_embed(text: str) -> requests.Response:
+    """POST to `/embed`, with the same stale-image guard as `post_document`.
+
+    `/embed` has existed since Milestone 1, so this guard should never fire; it
+    is here so that a failure in the tests below is unambiguous between "the
+    image is old" and "the prefix invariant broke".
+    """
+    response = requests.post(f"{BASE_URL}/embed", json={"text": text}, timeout=180)
+
+    if response.status_code == 404:
+        pytest.fail(
+            "POST /embed does not exist — the running API image predates this "
+            f"phase.\nRebuild and restart it:\n    {REBUILD_API}"
+        )
+
+    return response
+
+
+def embed_text(text: str) -> list[float]:
+    """The embedder's vector for `text`, through the public route, unprefixed.
+
+    Calling `/embed` rather than the worker directly is the point: `/embed`
+    forwards text BARE by definition (`main.embed`'s docstring), so its output is
+    the reference "bare" vector this file compares against. Any value this test
+    computes some other way would risk comparing the wrong thing.
+    """
+    response = post_embed(text)
+    assert response.status_code == 200, f"/embed returned {response.status_code}: {response.text[:300]}"
+    return [float(value) for value in response.json()["embedding"]]
+
+
+def stored_embedding(document_id: str) -> list[float]:
+    """Read one document's vector straight out of the column.
+
+    ── WHY A DIRECT SELECT, WHEN THE API HAS AN EMBEDDING READER ─────────────────
+    It does not, and that is the reason this is legitimate rather than a shortcut.
+    The stored vector is the one thing in this service that must never be
+    exposed through HTTP: a caller who could read it back could reconstruct what
+    the corpus looks like in vector space, and — more practically — could not
+    tell whether the row was written by this service at all. So a test that needs
+    it reads it the way an auditor would, with its own connection.
+
+    `embedding::text` rather than the raw `vector` type, for a mundane reason:
+    without `store.prepare_database` there is no `vector` codec on this
+    connection, and pgvector's Python `Vector` object needs numpy to unpack —
+    which this project's dev requirements do not install. The text form is the
+    same bytes the column holds, parsed with the standard library.
+    """
+    async def _run(database: db.Database) -> list[float]:
+        engine = engine_of(database)
+        async with engine.connect() as connection:
+            raw = await connection.scalar(
+                text("SELECT embedding::text FROM documents WHERE id = :document_id"),
+                {"document_id": document_id},
+            )
+        if raw is None:
+            pytest.fail(
+                f"no row with id {document_id!r} — the document was not stored, so "
+                "there is no vector to compare"
+            )
+        return [float(value) for value in str(raw).strip("[]").split(",")]
+
+    return with_database(_run)
+
+
+def l2_distance(left: list[float], right: list[float]) -> float:
+    """Plain L2 distance, written out rather than imported.
+
+    numpy is not a dependency of this project, and adding one to compute a
+    distance over 384 floats would be absurd. The loops are not the slow part of
+    any test that uses them; three HTTP round trips to a CPU inference worker are.
+    """
+    if len(left) != len(right):
+        pytest.fail(f"cannot compare a {len(left)}-dimension vector with a {len(right)}-dimension one")
+    return sum((a - b) ** 2 for a, b in zip(left, right)) ** 0.5
+
+
+# Measured on this host (bge-small-en-v1.5, pgvector 0.8.7, PostgreSQL 16.15),
+# by running both embeddings through `/embed` and comparing the floats:
+#
+#   L2(/embed(content), /embed(QUERY_PREFIX + content))  = 0.1124 for the probe
+#       document below (a 2,215-character runbook), and 0.1272 for the corpus's
+#       `infra-nat-gateway-failure` (2,724 characters). The prefix moves the
+#       vector about an eighth of the way to a genuinely different document.
+#   L2(/embed(content), /embed(a different document))     = 0.8837
+#
+# So the two vectors are unmistakably different — an order of magnitude above the
+# floor asserted below — and the stored-to-bare distance is 0.000000 to six
+# decimal places, which is why the tolerance can be 1e-4 rather than something
+# generous.
+BARE_MATCH_TOLERANCE = 1e-4
+#: A floor, not a measurement: any stored vector further than this from the BARE
+#: embedding is not the bare embedding. Set an order of magnitude below the
+#: measured 0.1124 so a change in the model cannot make this test fail by
+#: accident, and seven orders of magnitude above the 0.000000 measured for a
+#: genuine match so it cannot pass vacuously either.
+PREFIX_DIVERGENCE_FLOOR = 1e-2
+
+
+def test_the_stored_vector_is_the_bare_embedding_not_the_prefixed_one():
+    """THE DISCRIMINATING TEST for the bge prefix invariant.
+
+    ── WHY THIS EXISTS AND WHAT THE OLD TEST COULD NOT SEE ──────────────────────
+    `test_a_document_is_embedded_bare_and_stores_384_dimensions` asserts
+    `not stored.content.startswith("Represent this sentence")`, which is true
+    whether or not a prefix was ever added — a prefix goes on the EMBEDDING
+    INPUT, not the stored text. It passed against a `/documents` that prefixed
+    everything, and it would pass again tomorrow. Its docstring now says so.
+
+    This test compares the VECTOR instead of the string, and it is built so that
+    it can only pass for the right reason:
+
+    1. read the stored vector out of the column (a direct SELECT — the API
+       deliberately exposes no way to read a stored embedding back);
+    2. compute `bare` = /embed(content), which is the bare path by definition;
+    3. compute `prefixed` = /embed(QUERY_PREFIX + content);
+    4. **assert `bare != prefixed` FIRST** — the negative control;
+    5. assert the stored vector matches `bare` and not `prefixed`.
+
+    ── WHY STEP 4 COMES FIRST, AND WHY IT IS THE WHOLE TEST ────────────────────
+    If prefixing the text changed nothing, `bare` and `prefixed` would be the
+    same vector and steps 5 would pass no matter what was stored — the invariant
+    would be unobservable and every assertion after it would be decoration
+    wearing the costume of a check. Asserting the difference FIRST means a model
+    change that collapses the two vectors fails this test loudly instead of
+    leaving it green and meaningless.
+
+    Measured on this host: L2(bare, prefixed) = 0.1124, so the control has a wide
+    margin and the assertion is not a coin flip.
+
+    ── PROVEN TO FAIL WHEN IT SHOULD, NOT ASSUMED TO ───────────────────────────
+    Re-run with the stored vector artificially set to `prefixed` (the mutation
+    this test exists to catch): stored→bare becomes 0.1124 and stored→prefixed
+    becomes 0.000000, so BOTH step-5 assertions fail and the order-of-magnitude
+    margin collapses to zero. A test that cannot fail is decoration; this one was
+    measured failing.
+    """
+    document_id = "prefix-vector-probe"
+    content = (
+        "Purpose: recover a deleted file from a user's Recycle Bin on a Windows "
+        "workstation without imaging the disk. Use this when a user reports that "
+        "a folder was emptied and no shadow copy exists. 1. Confirm the recycle "
+        "bin has not been emptied by another user. 2. Check the shadow copy "
+        "history with vssadmin list shadows. 3. Restore with vssadmin restore."
+    )
+
+    # The prefix the TEST uses is the same constant the route uses. It is read
+    # from `app.config`, not re-typed, so this test cannot quietly diverge from
+    # the code by a character — and the assertion below checks the value too,
+    # because a prefix that differs by a space is still a different experiment.
+    prefix = config.QUERY_PREFIX
+    assert prefix == config.DEFAULT_QUERY_PREFIX, (
+        f"this test is written against the default prefix, but the environment "
+        f"supplies {prefix!r}. Point API_URL at a container configured with the "
+        "same prefix, or update this test to name the one it is checking."
+    )
+
+    response = post_document(document_payload(document_id, FIXTURE_COLLECTION_A, content))
+    assert response.status_code == 201, f"{response.status_code}: {response.text}"
+
+    stored = stored_embedding(document_id)
+    bare = embed_text(content)
+    prefixed = embed_text(prefix + content)
+
+    assert len(stored) == SCHEMA_EMBEDDING_DIM == 384, (
+        f"the stored vector has {len(stored)} dimensions; a width mismatch here would "
+        "make every distance below meaningless"
+    )
+
+    # ── STEP 4: THE NEGATIVE CONTROL, FIRST ────────────────────────────────────
+    divergence = l2_distance(bare, prefixed)
+    assert divergence > PREFIX_DIVERGENCE_FLOOR, (
+        f"/embed(text) and /embed(prefix + text) differ by only L2={divergence:.6f}, "
+        f"which is below the {PREFIX_DIVERGENCE_FLOOR} floor. The two vectors are too "
+        "close to tell apart, so the assertions after this one cannot discriminate "
+        "and the prefix invariant is UNOBSERVABLE with this model. Fix that first: "
+        "the test below this one is not evidence of anything until they differ."
+    )
+
+    # ── STEP 5: THE STORED VECTOR IS THE BARE ONE ──────────────────────────────
+    to_bare = l2_distance(stored, bare)
+    to_prefixed = l2_distance(stored, prefixed)
+
+    assert to_bare < BARE_MATCH_TOLERANCE, (
+        f"the stored vector is L2={to_bare:.6f} from /embed(content), which is above "
+        f"the {BARE_MATCH_TOLERANCE} tolerance. The stored embedding is not the bare "
+        "embedding of the stored text — either something else was embedded, or the "
+        "text that was embedded was not the text that was stored."
+    )
+
+    assert to_prefixed > PREFIX_DIVERGENCE_FLOOR, (
+        f"the stored vector is L2={to_prefixed:.6f} from /embed(QUERY_PREFIX + "
+        "content) — within the noise floor. The document appears to have been "
+        "embedded WITH the bge query prefix, which is the corruption this invariant "
+        "exists to prevent: it is permanent, and nothing in any response reports it."
+    )
+
+    # And the relationship the two assertions above do not state on their own:
+    # the stored vector is dramatically closer to the bare embedding than to the
+    # prefixed one. This is the assertion that would catch a future model whose
+    # two vectors are, say, 0.05 apart — far enough apart for the floor checks
+    # to pass independently, close enough that "which one is stored" is nearly a
+    # coin flip and needs the margin to be decisive.
+    assert to_prefixed > to_bare * 10, (
+        f"stored→bare L2={to_bare:.6f} and stored→prefixed L2={to_prefixed:.6f} are "
+        "not separated by an order of magnitude. A tighter separation would make this "
+        "test fragile in a way a bare 'not equal' assertion would not."
+    )
 
 
 def test_a_json_array_as_metadata_is_a_422_naming_the_field():

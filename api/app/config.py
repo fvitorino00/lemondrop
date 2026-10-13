@@ -18,16 +18,29 @@ Three decisions in this file are load-bearing and all three are about the DSN:
    variable that was never defined interpolates to on a host without a ``.env``,
    which is otherwise set, non-blank, and completely useless.
 
-Everything else in here is either a named constant with a stated reason or a
-small helper that exists to keep a credential out of a log line.
+Everything else in here is either a named constant with a stated reason, a small
+helper that exists to keep a credential out of a log line, or the retrieval
+funnel — ``QUERY_PREFIX``, ``Funnel`` and ``funnel_from_environment`` — which is
+the one piece of configuration that is about behaviour rather than about
+connecting. The bge query prefix is the most dangerous string in this repository
+and is defined here precisely so that there is exactly one of it: see the block
+above ``QUERY_PREFIX``.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, SecretStr, computed_field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SecretStr,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy.engine import make_url
 
 # ── Which environment variable carries the application DSN ────────────────────
@@ -137,6 +150,223 @@ EMBEDDING_DIM_ENV_VAR = "EMBEDDING_DIM"
 # is what `documents.embedding` is, and a mismatch is a bug to fix rather than a
 # setting to tune.
 SCHEMA_EMBEDDING_DIM = 384
+
+# ── Retrieval behaviour ───────────────────────────────────────────────────────
+#
+# Three values, and they belong together because getting one of them wrong
+# produces the same failure: a funnel that quietly returns the wrong number of
+# documents, with a 200 and a plausible-looking result list as the only evidence.
+
+QUERY_PREFIX_ENV_VAR = "QUERY_PREFIX"
+RETRIEVAL_CANDIDATES_ENV_VAR = "RETRIEVAL_CANDIDATES"
+RERANK_TOP_K_ENV_VAR = "RERANK_TOP_K"
+
+# bge-small-en-v1.5's instruction string, verbatim. The trailing space is part of
+# it: the prefix is concatenated with `QUERY_PREFIX + text`, not with a separator
+# added between them, so the space belongs to the constant.
+DEFAULT_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+
+# Read once at import, like the model aliases in main.py, and for the same
+# reason: it is a property of the EMBEDDING MODEL rather than a per-deployment
+# tuning knob, so there is nothing for a caller to disagree about at request
+# time. It is NOT a field on `Settings` — a field would invite per-request
+# variation on a string whose only correct value is the one the model was
+# trained with.
+#
+# It is also the single most dangerous string in this repository, so the comment
+# above it is the invariant: prepended to the QUERY by /search, to NOTHING else.
+# `/embed` and `/documents` both forward text bare, and a document stored with
+# this string attached to it carries a permanently corrupted vector that no
+# response ever reports.
+QUERY_PREFIX = os.environ.get(QUERY_PREFIX_ENV_VAR, DEFAULT_QUERY_PREFIX)
+
+# Stage 1 — how many candidates the vector store returns before reranking.
+#
+# WHY 10 AND NOT 50. `.env.example` documented 50 until this phase, and 50 was
+# never exercised by anything: the value was read by no code. It is sized here
+# rather than carried forward because the reranker is a CROSS-ENCODER: it scores
+# every (query, passage) pair it is handed, on CPU, with no batch discount and
+# no GPU to hide behind. 50 pairs is five times the inference work of 10.
+#
+# And the box is already documented as tight. Milestone 2 measured this host as a
+# `t3.micro`: 913Mi total, with roughly 280Mi available at rest once the two
+# llama.cpp models are resident. A five-fold increase in the slowest thing this
+# service does is exactly the change that turns a documented constraint into an
+# incident, on hardware whose memory headroom is already the subject of
+# `config.py`'s pool-sizing comment.
+#
+# The floor is 1 and not 0: a zero candidate count would make /search return an
+# empty result set for every query, for every collection, with a 200 — the one
+# failure mode in this service that looks exactly like success.
+DEFAULT_RETRIEVAL_CANDIDATES = 10
+
+# Stage 2 — how many reranked results the caller receives. Five is a presentation
+# choice rather than a resource one (the work was already done by the time this
+# number applies), so it is not sized against the host.
+DEFAULT_RERANK_TOP_K = 5
+
+
+@dataclass(frozen=True)
+class Funnel:
+    """The two numbers that size /search, validated together.
+
+    ── WHY THIS IS A SEPARATE OBJECT AND NOT TWO INT FIELDS ON `Settings` ──────
+    `Settings` cannot be constructed without a `DATABASE_URL` (see
+    `resolve_database_url_from_environment`), and `/search` needs these two
+    numbers in order to work. Making the route build a whole `Settings` — whose
+    only other content is a credential it does not need — would mean the route
+    could not run on a host where the DSN is unconfigured, on a service whose
+    documented policy is to keep serving `/health/live` and report 503 elsewhere.
+    The funnel is the retrieval policy; it is not part of the connection
+    configuration, and it is kept separately so it can be validated without one.
+
+    `Settings` still carries both values, because the operator's `.env` is one
+    file and both numbers come from it — but it validates them by constructing
+    one of these, so there is exactly ONE definition of "a coherent funnel" in
+    this module rather than two that could drift.
+    """
+
+    #: Stage 1: candidates drawn from the vector store before reranking.
+    retrieval_candidates: int
+
+    #: Stage 2: reranked results returned to the caller. Always <= the above.
+    rerank_top_k: int
+
+    def clamped(
+        self,
+        *,
+        candidates: int | None,
+        top_k: int | None,
+    ) -> tuple[int, int]:
+        """Resolve caller-supplied optional sizes against the configured maxima.
+
+        Returns `(candidates, top_k)` ready to hand to `store.retrieve` and to
+        the reranker.
+
+        ── WHY A CALLER CAN ASK FOR LESS BUT NEVER FOR MORE ──────────────────────
+        The defaults here are the CONFIGURATION, so a caller that says nothing
+        gets exactly what the operator configured — this function is not a second
+        place that decides the funnel. What a caller MAY do is ask for less, and
+        `min()` is the whole mechanism: a value above the configured maximum is
+        clamped DOWN to it, never honoured and never rejected.
+
+        Clamping rather than rejecting is deliberate. A 422 here would be
+        defensible, but it would also mean a client has to know the server's
+        configuration to be well-formed, and would have to change its code when
+        the operator changes `.env`. Asking for more than the server is willing
+        to compute is not an error — it is a request the server satisfies as
+        fully as it can, and the response says how many candidates it actually
+        considered so the caller can see that.
+
+        Clamping is ALSO what makes the funnel's cost bound real. Without it, a
+        caller could set `candidates=10000` on a box that `config.py` sizes its
+        PostgreSQL pool for 3 connections because the reranker is the bottleneck.
+        The `RERANK_TOP_K <= RETRIEVAL_CANDIDATES` rule protects the pair from
+        each other; this `min()` protects both of them from the caller.
+        """
+        resolved_candidates = min(
+            DEFAULT_RETRIEVAL_CANDIDATES if candidates is None else candidates,
+            self.retrieval_candidates,
+        )
+        resolved_top_k = min(
+            DEFAULT_RERANK_TOP_K if top_k is None else top_k,
+            self.rerank_top_k,
+            # Never return more results than were considered. Without this the
+            # truncation below would be a no-op for a caller who asked for
+            # candidates=2, top_k=5, and the response would claim five results
+            # out of two candidates — a claim that is arithmetic, and arithmetic
+            # is not a creative choice.
+            resolved_candidates,
+        )
+        # `max(1, ...)` is not defensive padding: both maxima are validated as
+        # >= 1 below and both inputs are Field(ge=1), so the only way to reach 0
+        # is to have edited one of those rules. The guard turns that edit into an
+        # obviously wrong number rather than a `store.retrieve` ValueError at
+        # request time.
+        return max(1, resolved_candidates), max(1, resolved_top_k)
+
+
+def funnel_from_environment() -> Funnel:
+    """Read `RETRIEVAL_CANDIDATES` and `RERANK_TOP_K` and return them validated.
+
+    The no-DSN counterpart to `get_settings`, for the reason on `Funnel`: the
+    retrieval route needs these two numbers whether or not a database is
+    configured, so that it can report a truthful 503 about the database rather
+    than a configuration error about something it never used.
+
+    Read at call time rather than import time, so a test can drive it with a
+    patched environment and so that the values are never cached from a moment
+    before `.env` was loaded.
+    """
+    try:
+        retrieval_candidates = int(
+            os.environ.get(RETRIEVAL_CANDIDATES_ENV_VAR, DEFAULT_RETRIEVAL_CANDIDATES)
+        )
+    except ValueError:
+        raise ValueError(
+            f"{RETRIEVAL_CANDIDATES_ENV_VAR} is not an integer. It is a COUNT of "
+            f"documents to fetch from the vector store — {DEFAULT_RETRIEVAL_CANDIDATES} "
+            "in the default configuration."
+        ) from None
+
+    try:
+        rerank_top_k = int(os.environ.get(RERANK_TOP_K_ENV_VAR, DEFAULT_RERANK_TOP_K))
+    except ValueError:
+        raise ValueError(
+            f"{RERANK_TOP_K_ENV_VAR} is not an integer. It is a COUNT of reranked "
+            f"results to return — {DEFAULT_RERANK_TOP_K} in the default configuration."
+        ) from None
+
+    return _build_funnel(retrieval_candidates, rerank_top_k)
+
+
+def _build_funnel(retrieval_candidates: int, rerank_top_k: int) -> Funnel:
+    """Validate the pair and return it, or raise naming BOTH values.
+
+    ── WHY THE PAIR IS VALIDATED TOGETHER, AND WHY A top_k ABOVE THE CANDIDATE
+    COUNT IS A CONFIGURATION ERROR RATHER THAN A RUNTIME SURPRISE ──────────────
+    A `rerank_top_k` larger than `retrieval_candidates` is arithmetically
+    impossible to satisfy: stage 2 can only re-order the documents stage 1
+    returned, so the most it could ever produce is `retrieval_candidates`
+    results. Left unvalidated, that does not raise at startup. It produces a
+    search that returns a SHORTER list than the operator configured, on every
+    query, forever — with a 200 and nothing in the body saying the configured
+    number was unreachable.
+
+    That is the same failure shape this module already rejects everywhere else: a
+    misconfiguration that starts successfully and serves wrong answers. A caller
+    asking for `top_k` above the maximum is a different case and is handled
+    differently — `Funnel.clamped` truncates it — because the caller's request
+    is asking for less work, not expressing a broken belief about the server.
+
+    The message names BOTH numbers because the fix is a comparison between them.
+    A message naming only the offending one leaves the operator to go and look
+    up the other, which is the thing they were about to get wrong.
+    """
+    if retrieval_candidates < 1:
+        raise ValueError(
+            f"{RETRIEVAL_CANDIDATES_ENV_VAR} is {retrieval_candidates}, which is not a "
+            "usable funnel. It must be at least 1: a candidate count of 0 would make "
+            f"/search return an empty result set for every query, with a 200 — the one "
+            f"failure that looks exactly like success. (RERANK_TOP_K is {rerank_top_k}.)"
+        )
+    if rerank_top_k < 1:
+        raise ValueError(
+            f"{RERANK_TOP_K_ENV_VAR} is {rerank_top_k}, which is not a usable result "
+            "count. It must be at least 1, or /search would return nothing after doing "
+            f"all of the work. ({RETRIEVAL_CANDIDATES_ENV_VAR} is "
+            f"{retrieval_candidates}.)"
+        )
+    if rerank_top_k > retrieval_candidates:
+        raise ValueError(
+            f"{RERANK_TOP_K_ENV_VAR} is {rerank_top_k} but "
+            f"{RETRIEVAL_CANDIDATES_ENV_VAR} is only {retrieval_candidates}. "
+            "The reranker can only re-order the documents the vector store returned, "
+            "so it can never produce more results than there were candidates. "
+            f"Raise {RETRIEVAL_CANDIDATES_ENV_VAR} to at least {rerank_top_k}, or lower "
+            f"{RERANK_TOP_K_ENV_VAR} to at most {retrieval_candidates}."
+        )
+    return Funnel(retrieval_candidates=retrieval_candidates, rerank_top_k=rerank_top_k)
 
 
 class DatabaseUrlResolver(Protocol):
@@ -263,6 +493,40 @@ class Settings(BaseModel):
     # changes the width fails here — loudly, at the boundary — instead of
     # failing later at the column or, worse, not failing at all.
     embedding_dim: int
+
+    # ── The retrieval funnel ───────────────────────────────────────────────────
+    # Stage 1 candidate count and stage 2 result count.
+    #
+    # Both carry the documented default as their FIELD default, and both are still
+    # passed explicitly by `get_settings()`, which is what reads the environment.
+    # The field default is not redundant — it is what lets a caller construct a
+    # `Settings` with only the values it cares about, which is how
+    # `api/tests/test_db.py` exercises the DSN validators without standing up a
+    # retrieval configuration to do it. A field with no default would make every
+    # such construction fail for a reason that has nothing to do with the DSN,
+    # and the fix would have been to edit a test about the database.
+    #
+    # They are validated by constructing a `Funnel` rather than by re-stating the
+    # rules: one definition of "a coherent funnel", in `Funnel`/`_build_funnel`,
+    # reached from both places that need it. Two hand-written copies of the same
+    # three comparisons would be free to disagree, and the disagreement would
+    # only show up as a search that returns a different number of results than
+    # the configuration claims.
+    retrieval_candidates: int = DEFAULT_RETRIEVAL_CANDIDATES
+    rerank_top_k: int = DEFAULT_RERANK_TOP_K
+
+    @model_validator(mode="after")
+    def _funnel_must_be_coherent(self) -> Settings:
+        """Run the funnel's own validation over this instance's two numbers.
+
+        `_build_funnel` raises naming both values, which is the message the
+        operator needs, and it is deliberately the SAME function
+        `funnel_from_environment` calls — so a `.env` that is rejected at
+        startup is rejected with the words that explain it, not a pydantic
+        field error that names only `rerank_top_k`.
+        """
+        _build_funnel(self.retrieval_candidates, self.rerank_top_k)
+        return self
 
     @field_validator("database_url")
     @classmethod
@@ -469,6 +733,7 @@ def get_settings(resolver: DatabaseUrlResolver | None = None) -> Settings:
     without mutating global state.
     """
     source = resolver if resolver is not None else DATABASE_URL_RESOLVER
+    funnel = funnel_from_environment()
 
     return Settings(
         # The one line in the codebase that reads a credential. Everything else
@@ -479,6 +744,12 @@ def get_settings(resolver: DatabaseUrlResolver | None = None) -> Settings:
         # is still passed through the validator above, so an explicit wrong value
         # is rejected rather than quietly accepted.
         embedding_dim=int(os.environ.get(EMBEDDING_DIM_ENV_VAR, SCHEMA_EMBEDDING_DIM)),
+        # Validated as a pair by `Settings._funnel_must_be_coherent`. The values
+        # come from `funnel_from_environment()` rather than from two more
+        # `os.environ.get` calls here, so the defaults live in one place and a
+        # test that patches one variable exercises the same read the route does.
+        retrieval_candidates=funnel.retrieval_candidates,
+        rerank_top_k=funnel.rerank_top_k,
     )
 
 

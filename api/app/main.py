@@ -5,25 +5,25 @@ servers that are NOT published to the host. They are reachable only from other
 containers on the compose network, by service name. This API is the single door
 to the outside world, and its job is to stand in front of them.
 
-Five routes, in the order they were earned: ``GET /health`` reports the truth
+Seven routes, in the order they were earned: ``GET /health`` reports the truth
 about the two workers beneath it; ``POST /embed`` and ``POST /rerank`` are thin
 proxies that actually call them; ``GET /health/live`` and ``GET /health/ready``
 came with the database phase, which probes the database as well as the workers.
-The sixth arrived with this one: ``POST /documents``, the first route that
-writes anything. It embeds a document through the same worker proxy ``/embed``
-uses and hands the vector to ``app/store.py``.
-
-What is still absent is retrieval: there is no ``/search``. The database now
-holds embedded documents, and nothing reads them back through the API yet.
+The sixth was ``POST /documents``, the first route that writes anything. It
+embeds a document through the same worker proxy ``/embed`` uses and hands the
+vector to ``app/store.py``. The seventh, ``POST /search``, is the first route that
+reads one back: it embeds a query, filters by collection in SQL, reranks the
+candidates through the existing ``/rerank`` machinery, and returns the top few.
 
 A NOTE ON THE bge QUERY PREFIX, recorded here because it is the single most
 misreadable decision in this file. bge-small-en-v1.5 was trained with the fixed
 instruction string ``Represent this sentence for searching relevant passages: ``
 attached to SEARCH QUERIES ONLY. Documents must never carry it — prefixing a
 document corrupts that document's vector for every future retrieval. So
-``/embed`` forwards its text BARE, deliberately, and so does ``/documents``,
-which embeds through ``/embed`` and therefore inherits the same invariant. The
-prefix belongs on ``/search``, which does not exist yet, and nowhere else.
+``/embed`` forwards its text BARE, deliberately; so does ``/documents``, which
+embeds through ``/embed`` and therefore inherits the same invariant. The prefix
+belongs on ``/search``, which now exists and applies it to the query and to
+nothing else in that route.
 """
 
 from __future__ import annotations
@@ -40,8 +40,8 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import db, store
-from app.config import SCHEMA_EMBEDDING_DIM
+from app import config, db, store
+from app.config import QUERY_PREFIX, SCHEMA_EMBEDDING_DIM
 
 # ── Downstream endpoints ──────────────────────────────────────────────────────
 # Read from the environment with compose-network defaults, so the SAME image runs
@@ -614,10 +614,11 @@ async def _post_upstream(url: str, payload: dict[str, Any], worker: str) -> Any:
 class EmbedRequest(BaseModel):
     """Body of POST /embed — exactly one piece of text.
 
-    One field, because this route does one thing. The moment /search exists it
-    will need a batch and a `kind`, and that is the moment this model grows —
-    not before. A field that no caller uses is a field every caller has to read
-    past.
+    One field, because this route does one thing. `/search` now exists and it
+    embeds its query by calling this handler, so the temptation to add a `kind`
+    field or a batch here is real — and it is refused for the reason in this
+    route's docstring: a prefix applied here cannot tell documents from
+    queries, and it is the document case that is expensive to get wrong.
     """
 
     # Required, and must contain something. See NonBlankText for why this is
@@ -678,8 +679,10 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
     #
     # WHERE THE PREFIX BELONGS: /search. That route is the one that knows, by
     # construction, which side of the retrieval pair it is on, and it is where
-    # the prefix gets added to the query and to nothing else. It does not exist
-    # yet. Until it does, the prefix appears in this file only in comments.
+    # the prefix gets added to the query and to nothing else. It arrived after
+    # this docstring was written; the argument above is unchanged by that, and
+    # the fact that /search applies the prefix to its query is exactly the
+    # reason this route must not apply it to anything.
     #
     # The deliberate omissions, so that nobody re-litigates them later: no `kind`
     # field, no query/document variants of this route, no parameterised prefix.
@@ -984,7 +987,8 @@ async def create_document(request: Request, body: DocumentRequest) -> DocumentRe
     embedder from this route is the caller's own `content`, unmodified.** There
     is no `kind` parameter here, no prefix constant, and no code path that could
     add one without rewriting this sentence and `main.embed`'s docstring
-    together. The prefix belongs on `/search`, which does not exist yet.
+    together. `/search` applies the prefix to its QUERY and to nothing else,
+    including nothing that came through this route.
 
     Calling `embed()` directly rather than reimplementing its body is
     deliberate. FastAPI's route decorators register a handler and return the
@@ -1096,4 +1100,430 @@ async def create_document(request: Request, body: DocumentRequest) -> DocumentRe
         # From `vector_dims(embedding)` — the stored width, not the model's claim.
         dimensions=written.dimensions,
         outcome="inserted" if written.inserted else "updated",
+    )
+
+
+# ── Retrieval ─────────────────────────────────────────────────────────────────
+#
+# `POST /search` is the first route that reads a row back out of the database
+# through the API, and it is the first route that composes the two workers. The
+# stages below run in a fixed order and each one is deliberately boring:
+#
+#   1. validate           — Pydantic, so a bad request never reaches the embedder
+#   2. embed the QUERY    — /embed, WITH the bge query prefix
+#   3. retrieve           — store.retrieve, collection filter IN SQL
+#   4. (zero candidates)  — return empty, WITHOUT calling the reranker
+#   5. rerank             — /rerank, over the candidate CONTENTS, in stage-1 order
+#   6. map + truncate     — attach each score to the document it belongs to
+#
+# The two properties this route exists to hold — the query is prefixed and the
+# documents are not, and every score belongs to the document it was computed for
+# — are easy to state and easy to break silently, so each is marked at the line
+# that enforces it.
+
+
+class SearchRequest(BaseModel):
+    """Body of POST /search — a collection to search, a query, and optional sizes.
+
+    Two required fields and two optional ones. Neither optional field has a
+    default number in THIS model: `candidates` and `top_k` default to `None`,
+    which is not the same as defaulting to a count. `None` means "use the
+    server's configuration" and is resolved by `config.Funnel.clamped`, so the
+    funnel lives in one place — `.env` — instead of being restated in a Pydantic
+    default that a later configuration change would silently contradict.
+    """
+
+    # Which partition to search. NonBlankText, exactly as on `DocumentRequest`:
+    # the same string will be compared for equality by the caller when they post
+    # a document, so stripping it here would create a collection name the caller
+    # cannot then address.
+    collection: NonBlankText
+
+    # The query. NonBlankText, and this is a QUERY by construction — it is the
+    # one field in this service that is guaranteed to be on the retrieval pair's
+    # query side, which is what earns this route the right to prefix it.
+    query: NonBlankText
+
+    # Stage-1 candidate count. `ge=1` because a 0 is a mistake, and a mistake the
+    # caller should hear about rather than a funnel they have silently emptied.
+    # The configured maximum still applies — `clamped` truncates rather than
+    # honouring a larger number, so a caller cannot make this service spend more
+    # inference than its operator sized it for.
+    candidates: int | None = Field(default=None, ge=1)
+
+    # Stage-2 result count, bounded the same way and additionally capped at the
+    # resolved candidate count: the reranker cannot produce more results than
+    # there were documents to rerank.
+    top_k: int | None = Field(default=None, ge=1)
+
+
+class SearchResultDocument(BaseModel):
+    """One search result: a stored document, with both stages' opinion of it."""
+
+    # The caller's own external identity, unchanged from ingestion. Echoing the
+    # stored value rather than anything computed here means a caller can join
+    # results back onto their own index without a second lookup.
+    document_id: str
+
+    # The partition this result came from. It is redundant — every result in one
+    # response shares the searched collection — and it is here anyway, because a
+    # result whose provenance is inferred rather than stated cannot be checked,
+    # and "why did this come back from a search I scoped elsewhere" is the
+    # question an operator asks first when a filter is suspected.
+    collection: str
+
+    # The stored text, verbatim. Returned whole rather than as a snippet because
+    # the caller supplied it, this service did not write it, and truncating it
+    # here would save nothing they cannot save themselves.
+    content: str
+
+    # The caller's metadata from ingestion. Returned because a search result that
+    # omits the fields a caller attached is not actionable: they would have to
+    # fetch every hit individually to filter, sort or display it.
+    metadata: dict[str, Any]
+
+    # ── STAGE 2 — THE SCORE TO TRUST ───────────────────────────────────────────
+    # The cross-encoder's logit. Higher is more relevant, and the values are
+    # comparable to each other WITHIN one response. They are not percentages, not
+    # probabilities, and not comparable across models or across versions of one —
+    # a reranker swap silently changes what "good" means, which is why the model
+    # alias is echoed at the top level too.
+    relevance_score: float
+
+    # ── STAGE 1 — THE SCORE THAT DECIDED WHO WAS CONSIDERED AT ALL ─────────────
+    # The vector distance that put this document in the candidate set, lower is
+    # better.
+    #
+    # WHY BOTH SCORES ARE RETURNED, since `relevance_score` is the meaningful one
+    # and this could be dropped:
+    #
+    # The two numbers answer different questions and are only interpretable
+    # together. `distance` is what stage 1 thought, and it is the answer to "why
+    # was this document considered at all" — a result with a good
+    # `relevance_score` and an awful `distance` means stage 1 had to reach deep
+    # to find it, which is exactly the signal that the candidate count is too
+    # small for this corpus. Conversely a result with a wonderful `distance` and a
+    # poor `relevance_score` means the vector space and the cross-encoder
+    # disagree about that document, which is a model or a chunking problem.
+    #
+    # A retrieval system that returns only one score cannot be debugged at all:
+    # it cannot distinguish "the reranker got it wrong" from "stage 1 never gave
+    # it a chance", and those two have completely different fixes. Returning both
+    # costs one float per result and makes bad answers explainable.
+    distance: float
+
+
+class SearchResponse(BaseModel):
+    """Body of a successful POST /search."""
+
+    # The results, best first. Truncated to the resolved `top_k`. An empty list is
+    # a SUCCESSFUL response meaning "nothing in this collection matched" — see
+    # the empty-collection decision in the route's docstring.
+    results: list[SearchResultDocument]
+
+    # The collection that was searched, echoed from what was ASKED for rather than
+    # derived from the results. On an empty response these are the only two facts
+    # a caller has, and "I searched the wrong collection" is the first thing to
+    # rule out when a search returns nothing.
+    collection: str
+
+    # How many candidates stage 1 actually returned and stage 2 actually scored.
+    # This is the number that makes an empty result set explainable: 0 means the
+    # collection held nothing (or nothing matched), and 5 with 0 results means
+    # the funnel was cut somewhere else entirely. Without it, "no results" is a
+    # shrug; with it, it is a fact about a specific stage.
+    candidates_considered: int
+
+    # The reranker alias, echoed for the same reason `EmbedResponse.model` and
+    # `RerankResponse.model` echo theirs: scores from two different rerankers are
+    # not comparable, and without the alias the substitution is invisible.
+    model: str
+
+
+@app.post(
+    "/search",
+    response_model=SearchResponse,
+    summary="Retrieve, rerank and return the best documents in a collection",
+)
+async def search(request: Request, body: SearchRequest) -> SearchResponse:
+    """Find the documents most relevant to a query, within one collection.
+
+    ── STAGE 2: THE QUERY IS PREFIXED. THE DOCUMENTS ARE NOT. ───────────────────
+    This is the line the entire route exists to get right, so it is stated once
+    more here where the code is:
+
+        embed(QUERY_PREFIX + body.query)   ← the QUERY, prefixed
+        embed(D.content)                   ← every document, BARE, forever
+
+    bge-small-en-v1.5 was trained with that instruction string attached to search
+    QUERIES only, and only the DOCUMENT vectors are stored. See `embed`'s
+    docstring for the full argument. The short version: prefixing a document
+    moves its vector off the manifold the other documents live on, so it becomes
+    much harder to match, permanently, in whatever database holds it, and no
+    response ever says it happened.
+
+    Note what this route does NOT do with the prefix: it does not re-embed the
+    candidates. Stage 1 returned rows whose embeddings were computed at ingestion
+    and are sitting in the column. Re-embedding them here — even "just to be
+    consistent" — would write a different vector than the one that was stored,
+    and would do it with the same silent permanence. The documents are read, and
+    the prefix is applied to exactly one string in this function.
+
+    There is deliberately no `kind` parameter and no parameterised prefix here
+    either. Both were considered when `/embed` was written and both rejected; see
+    `embed`'s docstring. This route does not know the difference between a query
+    and a document because it is never given a document to embed.
+
+    ── THE INDEX MAPPING. THIS IS THE CORRECTNESS TRAP. ────────────────────────
+    The reranker returns `index` = the caller's position in the array THE
+    CALLER SENT. This route sends `[candidate.content for candidate in
+    candidates]`, in stage-1 distance order. Two rules follow from that, and
+    breaking either attaches every score to the wrong document — silently, with a
+    200 and entirely plausible-looking numbers:
+
+    * The list SENT and the list MAPPED must be the same list, in the same
+      order. Re-sorting between sending and mapping (e.g. "sorted by distance,
+      nicer to read") moves every index by an unknown amount. That is why the
+      comprehension below builds `sent_contents` ONCE and both the request
+      payload and the mapping index into that one list, and why nothing between
+      the send and the mapping is allowed to reorder or filter it.
+    * The results must be MAPPED before they are TRUNCATED. `results[:top_k]`
+      is a list of reranker positions in reranker score order; slicing it and
+      only then looking up each `index` works, but slicing AFTER mapping is the
+      same operation with the failure impossible to see. The mapping below
+      happens first and the truncation second, so the number of scores that are
+      looked up is the number that will be returned.
+
+    `api/tests/test_integration.py::test_rerank_preserves_original_document_indices`
+    (Milestone 1) guards the same property at the `/rerank` layer: the worker's
+    `index` is passed through untouched rather than re-derived from the sorted
+    position. This route consumes that value rather than re-deriving it, which is
+    the whole reason it is worth preserving there.
+
+    ── AN EMPTY COLLECTION RETURNS 200 WITH AN EMPTY LIST. THIS IS A CHOICE. ────
+    Searching a collection that holds no documents returns HTTP 200 and
+    `results: []`, `candidates_considered: 0`.
+
+    The alternative was 404 "collection not found", and it was rejected for three
+    reasons, in descending order of how much they matter:
+
+    1. It requires an existence query before the search — a second round trip
+       against the database, on the one request in this service whose whole job
+       is to be fast, to answer a question the search itself can answer for free
+       by returning nothing.
+    2. It introduces a TOCTOU race. Collections are not a table here; they are a
+       value in a column, and a document can be ingested into a collection
+       between the existence check and the search. Under 404 the correct answer
+       ("it exists") would then be reported for a request that found it empty,
+       and vice versa. The check cannot be made atomic against a free-text
+       partition key, so it can only be made less wrong.
+    3. 404-on-search is not what any HTTP client expects. Generic clients treat
+       404 as "wrong URL", and a search endpoint is exactly the place where an
+       empty result is a completely normal outcome — the query was bad, the
+       corpus is small, the document has not been ingested yet. Overwhelming a
+       legitimate answer with an error status makes the distinction harder to
+       express than it needs to be, and a caller who wants the distinction can
+       already compute it: `results == [] and candidates_considered == 0` says
+       "the collection produced no candidates", which is the fact.
+
+    STATED PLAINLY, because it is a real trade-off and not an oversight: a
+    TYPO'D collection name returns an empty result set rather than an error. A
+    caller who misspells `infrastrucure` gets 200 and no documents, and if they
+    do not check `candidates_considered` they may read that as "nothing matched"
+    when the truth is "nothing was searched". That is accepted here in exchange
+    for one round trip, no race, and conventional semantics. The mitigations are
+    the echoed `collection` (a typo is visible in the response) and
+    `candidates_considered` (zero is visible and distinguishable from "the funnel
+    found things and none were relevant"). Callers who need strict existence
+    should add an explicit `require_collection` flag; that is a product decision
+    for a milestone that has a caller asking for it, not something to guess at
+    here.
+
+    ── ZERO CANDIDATES DOES NOT REACH THE RERANKER ────────────────────────────
+    An empty candidate list goes back to `/rerank` as a 422 — it has no scores to
+    return, and the only answer it could produce is an empty result set that looks
+    like a successful ranking of nothing. So `/search` checks first and returns
+    its own empty result. That is not politeness: the reranker is a cross-encoder
+    on a CPU-only box, and calling it with an empty list would spend a real HTTP
+    round trip to a worker doing real inference work, on every search of an empty
+    collection, to produce a rejection.
+
+    ── FAILURE HANDLING ────────────────────────────────────────────────────────
+    * Database unavailable or erroring → 503, the same meaning `/health/ready`
+      gives the same word: this process cannot serve this request now.
+    * Embedder or reranker unreachable → 502; either of them slower than
+      `INFERENCE_TIMEOUT_SECONDS` → 504. Both inherited from `_post_upstream` by
+      calling `embed()` and `rerank()` as ordinary functions rather than
+      reimplementing either, which is the same reasoning `create_document` gives
+      for calling `embed()`.
+    """
+    database: db.Database | None = getattr(request.app.state, "database", None)
+    engine = getattr(database, "engine", None)
+    if engine is None:
+        # Same policy as /health/ready and /documents, same reason: the
+        # database is a real dependency of this route, and a request that cannot
+        # be served must say so in the status line rather than return 200 with an
+        # empty result that the caller cannot distinguish from a real one.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="the database is not available",
+        )
+
+    # Resolved once, here, so every number this route uses comes from the same
+    # read of the same configuration. `clamped` applies the configured maxima;
+    # its docstring covers why a caller may ask for less but never for more.
+    funnel = config.funnel_from_environment()
+    candidate_limit, top_k = funnel.clamped(
+        candidates=body.candidates, top_k=body.top_k
+    )
+
+    # ── THE PREFIX. ON THE QUERY. HERE. AND NOWHERE ELSE IN THIS FUNCTION. ─────
+    embedded = await embed(EmbedRequest(text=QUERY_PREFIX + body.query))
+
+    # Checked against the schema's width for the same reason /documents checks
+    # it, and the failure it prevents is worse here: a wrong-width query vector
+    # reaches `CAST(:query AS vector)` in the store layer, where the mismatch
+    # surfaces as a driver-level complaint about a query argument — a message
+    # that blames the database for a model swap that happened in a worker.
+    if embedded.dimensions != SCHEMA_EMBEDDING_DIM:
+        logger.error(
+            "embedder returned %d dimensions for a search query but documents.embedding is vector(%d)",
+            embedded.dimensions,
+            SCHEMA_EMBEDDING_DIM,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"embedder returned {embedded.dimensions} dimensions, but the "
+                f"documents table stores vector({SCHEMA_EMBEDDING_DIM}). Documents "
+                "already in the table were embedded at the schema's width, so this "
+                "model cannot be compared against them."
+            ),
+        )
+
+    try:
+        candidates = await store.retrieve(
+            engine,
+            collection=body.collection,
+            query_embedding=embedded.embedding,
+            limit=candidate_limit,
+        )
+    except SQLAlchemyError as exc:
+        # 503, and specifically not 502. The API is fine and reachable; the
+        # DATABASE is what failed while serving one request, and `/health/ready`
+        # means exactly this by 503. The log line carries the class and the
+        # SQLSTATE for the reasons spelled out in `create_document`: the message
+        # is not logged because asyncpg's DETAIL lines carry row contents, and
+        # the query parameters here include the caller's query vector.
+        logger.error(
+            "retrieval for collection %r failed: %s (SQLSTATE %s)",
+            body.collection,
+            type(exc).__name__,
+            getattr(getattr(exc, "orig", None), "sqlstate", "<unknown>"),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="the document store could not be searched",
+        ) from None
+
+    # ── NO CANDIDATES → EMPTY RESULT, NO RERANKER CALL. See the docstring. ─────
+    if not candidates:
+        # The collection is echoed and NOT logged at INFO with the query: a
+        # search query is user data, exactly as document content is, and the same
+        # rule that keeps `/documents` from logging content keeps this from
+        # logging the thing it was searching for.
+        logger.info(
+            "search returned 0 results: collection %r has no candidates for this query",
+            body.collection,
+        )
+        return SearchResponse(
+            results=[],
+            collection=body.collection,
+            candidates_considered=0,
+            model=RERANKER_MODEL_ALIAS,
+        )
+
+    # ── STAGE 2 ────────────────────────────────────────────────────────────────
+    # Built ONCE, in stage-1 distance order, and used for both the payload and the
+    # mapping below. Do not sort, slice or otherwise disturb this list between
+    # those two uses — see "THE INDEX MAPPING" in the docstring. Every failure
+    # that costs real debugging time on this route starts with a second,
+    # differently-ordered list appearing here.
+    sent_contents = [candidate.content for candidate in candidates]
+
+    # `rerank()` is called rather than `_post_upstream` being reimplemented, for
+    # the same reason `create_document` calls `embed()`: it inherits the worker's
+    # exact failure semantics (502/504) and its response validation by
+    # construction, and a second copy of that code would be free to drift from
+    # the first.
+    ranked = await rerank(
+        RerankRequest(query=body.query, documents=sent_contents, top_n=None)
+    )
+
+    # ── MAP FIRST, TRUNCATE SECOND. See the docstring for why the order matters. ─
+    # Each result's `index` is a position in `sent_contents`, which is the same
+    # list `candidates` was built from in the same order — so the lookup below is
+    # into the stage-1 list by the reranker's own index. `relevance_score` is
+    # read from the SAME result object that supplied the index, so a score can
+    # never be detached from the document it was computed for.
+    mapped: list[tuple[store.Candidate, RankedDocument]] = []
+    for result in ranked.results:
+        # An out-of-range index would raise IndexError here and become a 500.
+        # It cannot happen with a well-behaved worker, but the consequence of it
+        # happening would be a crash on the one code path every search goes
+        # through, so it is skipped with a loud log rather than allowed to
+        # propagate: a missing result is visible, a 500 on every search is not.
+        if not 0 <= result.index < len(candidates):
+            logger.error(
+                "reranker returned index %d for a request carrying %d document(s)",
+                result.index,
+                len(candidates),
+            )
+            continue
+        mapped.append((candidates[result.index], result))
+
+    # Re-sorted here rather than trusted from the worker, and the comment above
+    # says why that is not redundant: `RerankResponse.results` is documented as
+    # "in the worker's order", which is a property of the worker, not a contract
+    # this route may rely on — a worker that changed its sort, or a proxy that
+    # reordered a JSON array, would silently change what this API promises its
+    # callers. Sorting AFTER mapping is safe in a way sorting the response list
+    # would not be: the score travels inside `pair`, so nothing that moves can
+    # become detached from the document it was computed for.
+    mapped.sort(key=lambda pair: pair[1].relevance_score, reverse=True)
+    results = [
+        SearchResultDocument(
+            document_id=candidate.document_id,
+            collection=candidate.collection,
+            content=candidate.content,
+            metadata=candidate.metadata,
+            relevance_score=result.relevance_score,
+            # Stage 1's opinion, carried from the candidate. Both scores, because
+            # a result showing only stage 2 cannot explain why it was considered.
+            distance=candidate.distance,
+        )
+        for candidate, result in mapped[:top_k]
+    ]
+
+    # Metadata only: the collection, the two funnel numbers and the counts. NOT
+    # the query, NOT the document contents, NOT the scores. See the log note
+    # above — a search query is user data and is handled like document content.
+    logger.info(
+        "searched collection %r: %d candidate(s) considered, %d returned (funnel %d/%d)",
+        body.collection,
+        len(candidates),
+        len(results),
+        funnel.retrieval_candidates,
+        funnel.rerank_top_k,
+    )
+
+    return SearchResponse(
+        results=results,
+        collection=body.collection,
+        # What stage 1 ACTUALLY returned, not `candidate_limit`. A collection
+        # holding three documents with a limit of ten yields 3, and reporting 10
+        # would claim work that never happened and make the empty-result case
+        # indistinguishable from the truncated one.
+        candidates_considered=len(candidates),
+        model=RERANKER_MODEL_ALIAS,
     )
