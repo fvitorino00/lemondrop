@@ -449,16 +449,26 @@ def test_a_dsn_with_an_empty_password_is_rejected_and_leaks_nothing():
     """`postgresql+asyncpg://user@127.0.0.1:5432/db` must fail at construction.
 
     ── WHAT BREAKS WITHOUT THIS TEST ──────────────────────────────────────────
-    `docker-compose.yml` builds the container's DSN by interpolation from
-    `DEV_DB_USER` / `DEV_DB_PASSWORD` / `DEV_DB_NAME`. On EC2, where those are
-    not defined, Compose substitutes empty strings and the container receives
-    `postgresql+asyncpg://:@postgres:5432/`.
+    `docker-compose.yml` PASSES THROUGH the container's DSN rather than
+    composing it: the `api` service declares `DATABASE_URL: "${DEV_DATABASE_URL:-}"`,
+    so whatever the host's `.env` puts in `DEV_DATABASE_URL` is what the container
+    receives. `.env.example` ships that key EMPTY, so a production host whose
+    `.env` came from the template hands `api` an empty `DATABASE_URL` and the
+    resolver in `api/app/config.py` falls through to the SSM + Secrets Manager
+    path.
 
-    That value is NOT blank, so `resolve_database_url_from_environment` returns
-    it, `get_settings()` succeeds, `db.startup` builds a pool, and the failure
+    This test guards the branch of that contract on the near side of the
+    fall-through. A DSN that arrives with nothing where the password belongs is
+    exactly what the empty-value discipline is NOT meant to produce: an empty
+    `DATABASE_URL` is treated as unset (`raw is None or not raw.strip()`) and
+    never reaches `Settings` at all, whereas a malformed-but-non-blank DSN does.
+    If such a value were ever constructed again — by an interpolation that
+    substitutes empty strings rather than one that substitutes nothing — it is
+    NOT blank, so `resolve_database_url_from_environment` returns it,
+    `get_settings()` succeeds, `db.startup` builds a pool, and the failure
     arrives at the first real connection as an opaque driver error about a server
     refusing credentials. The operator ends up reading asyncpg internals to
-    discover that a shell variable was never exported.
+    discover that a variable was never filled in.
 
     This test is the regression guard for that: it is the assertion that a DSN
     with nothing where the password belongs cannot reach a live connection.
