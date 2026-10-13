@@ -20,8 +20,9 @@
 # from ./api rather than pulled.
 #
 # ── One published port, on `api` ──────────────────────────────────────────────
-# This file contains exactly ONE `ports:` key, and it is on `api`. The workers
-# do not publish one, which is a design decision rather than an oversight:
+# Of the three RUNTIME services, this file publishes exactly ONE `ports:` key,
+# and it is on `api`. The workers do not publish one, which is a design decision
+# rather than an oversight:
 #   * The workers are internal. They exist to be called by the API over the
 #     compose network, not by anything on the host.
 #   * A published port is a public door. Every door is attack surface, and the
@@ -35,6 +36,13 @@
 #     their own network namespaces, so the two are different sockets and nothing
 #     collides; the DNS name — not the port number — is what tells them apart
 #     from the API's side.
+#
+# The one other `ports:` key in this file belongs to the profile-gated `postgres`
+# dev database at the bottom, and it is bound to 127.0.0.1 only. Loopback is not
+# a published door: nothing off this host can reach it, so it does not weaken the
+# claim above. It exists purely so `psql` on the workstation can attach. That
+# distinction is why the same rule that produced "exactly one door" still holds —
+# see the postgres block for the full argument.
 #
 # ── depends_on and container naming ───────────────────────────────────────────
 # `api` declares `depends_on` on both workers with `condition: service_healthy`.
@@ -242,7 +250,128 @@ services:
     ports:
       - "${API_HOST_PORT}:${API_INTERNAL_PORT}"
 
+    # ── WHY THIS BLOCK EXISTS ─────────────────────────────────────────────────
+    # Without it the container receives NO DATABASE_URL at all. Compose reads
+    # `.env` to interpolate the `${...}` in THIS file — it does not hand the
+    # variables to the container as a side effect. The only `environment:` key
+    # in this file used to be the one inside `postgres`, which configures that
+    # container and nothing else. So `api` booted, found no DSN, logged
+    # "database is not configured", and answered 503 on /health/ready — correct
+    # degraded behaviour, and useless for anyone expecting a working local stack.
+    # A rebuild does not fix this. Only this block does.
+    #
+    # ── WHY postgres:5432 AND NOT 127.0.0.1:5432 ──────────────────────────────
+    # Both of those hosts are correct — for DIFFERENT consumers, and using the
+    # wrong one fails in the most confusing way available:
+    #
+    #   alembic / pytest on the workstation -> 127.0.0.1:5432 (the published
+    #     loopback port on THIS machine, see the postgres block)
+    #   this container                    -> postgres:5432 (the service name,
+    #     resolved by Docker's embedded DNS on the compose network)
+    #
+    # `127.0.0.1` inside a container is that container's own loopback. Nothing
+    # listens on 5432 there, so a DSN copied verbatim from the host `.env` gets
+    # `connection refused` from inside `api` while `psql` on the workstation
+    # connects perfectly — a bug that reads as a broken database and is actually
+    # a broken address. Hence the host is spelled `postgres` in DEV_DATABASE_URL
+    # below — never the `127.0.0.1` that the host-side DATABASE_URL above and
+    # ALEMBIC_DATABASE_URL both carry, because that address is correct for the
+    # processes that read it and wrong for this one.
+    #
+    # ── PASSED THROUGH, NOT COMPOSED — `${DEV_DATABASE_URL:-}` ─────────────────
+    # The container's DATABASE_URL is exactly what the operator's `.env` puts in
+    # DEV_DATABASE_URL, and nothing else. Locally that value names the `postgres`
+    # service on this compose network. The three DEV_DB_* keys below still
+    # configure that postgres container and are NOT read by the api container, so
+    # there is no second copy of a dev password to keep in sync, and this file
+    # still contains no credential of its own — "this repo holds no database
+    # credentials" stays a checkable property rather than a promise.
+    #
+    # The `:-` is load-bearing, and it is why the key is passed through instead of
+    # being composed. A host that never sets DEV_DATABASE_URL — which is every
+    # production host, because scripts/boot.sh copies this repo's .env.example over
+    # .env and the template ships DEV_DATABASE_URL EMPTY — interpolates to an
+    # empty string rather than to a plausible-looking DSN. That emptiness is what
+    # lets the resolver in api/app/config.py fall THROUGH. `resolve_database_url`
+    # returns DATABASE_URL unchanged whenever it is set AND non-blank, and
+    # constructs no boto3 client at all when it is. Composing the DSN here meant
+    # that on EC2 — where DEV_DB_USER/DEV_DB_PASSWORD/DEV_DB_NAME exist, because
+    # that .env came from the same template — the container was handed a
+    # well-formed, wrong DSN pointing at a `postgres` host that does not exist
+    # there, the environment branch returned it unchanged, and the AWS branch was
+    # unreachable dead code in the one environment that needs it. An EMPTY value
+    # is not a fallback here; it is the only thing that makes the branch
+    # reachable.
+    #
+    # Empty deliberately beats absent. The resolver treats an empty DATABASE_URL
+    # as unset (`raw is None or not raw.strip()`), so the key is PRESENT in every
+    # environment and simply means "nothing here" on EC2. The alternative —
+    # omitting the key entirely when the variable is unset — yields an `api`
+    # container whose environment differs between local and production with
+    # nothing in this file to explain the difference, and no assertion anyone can
+    # make about it. Explicitly empty is the version of that idea which can be
+    # read, reviewed, and checked with one test.
+    #
+    # ── THE CREDENTIAL IS NOW VISIBLE TO `docker inspect` ─────────────────────
+    # Once interpolated — locally, once DEV_DATABASE_URL is set — this DSN is a
+    # plain environment entry on the container, so `docker inspect
+    # lemondrop-<project>-api-1` prints the password in full to anyone who can
+    # read the docker socket — and read/write access to that
+    # socket is already root-equivalent on the host, so this discloses nothing
+    # they did not already have. That is what makes it ACCEPTABLE HERE: the
+    # credential guards a throwaway local database holding test documents on a
+    # developer's own machine. The same line in front of a real secret would be
+    # unacceptable — an RDS master password readable by any user in the `docker`
+    # group is a production credential leak, and no argument about socket access
+    # rescues it. Production therefore does not use this path at all.
+    #
+    # ── FOR THE DSN, THIS BLOCK IS DEVELOPMENT-ONLY ────────────────────────────
+    # On EC2 the API resolves host and port from SSM
+    # (`/lemondrop/dev/db/{host,port}`) and the credential from Secrets Manager,
+    # through the instance role, so the password exists only in process memory.
+    # That path IS implemented — in api/app/config.py, as
+    # `resolve_database_url_from_aws` behind the `DatabaseUrlResolver` seam. It
+    # is NOT implemented here. So the only thing this block owes production is
+    # the empty DATABASE_URL below, which is what lets that function run instead
+    # of short-circuiting on a local-shaped DSN it was never meant to see.
+    #
+    # Production therefore sets `DB_DSN_SOURCE` to `aws` in
+    # /opt/lemondrop/.env after boot, and the `:-environment` default below is the
+    # LOCAL choice: the DSN comes from the environment, or there is no DSN and the
+    # API reports the database as unconfigured rather than guessing at one.
+    # Production still does not work through this block; it works through the
+    # resolver that this block exists to step out of the way for. And an EC2
+    # container carrying this key is not evidence the DSN came from here — there it
+    # is empty, which is exactly what the resolver needs to hear.
+    #
+    # ── WHY THERE IS NO `depends_on: postgres` HERE, DELIBERATELY ─────────────
+    # The obvious thing to add next to a database URL is a dependency on the
+    # database. On this service that would break production. The postgres service
+    # is gated behind `profiles: [devdb]` (see its block), and
+    # scripts/boot.sh:267 runs a bare `docker compose up -d --remove-orphans` on
+    # EC2. A profile-gated service does not exist on that host, so
+    # `depends_on: postgres` makes every compose call there fail with an
+    # undefined-service error — taking down the verified Milestone 2 deployment
+    # over a database EC2 is not running. So it is absent, on purpose.
+    #
+    # The operator starts the dev database explicitly, with the profile named:
+    #     docker compose --profile devdb up -d postgres
+    # and only then does /health/ready report the database as ok. Until then the
+    # API serves and reports degraded, which is the honest answer.
+    environment:
+      DATABASE_URL: "${DEV_DATABASE_URL:-}"
+      DB_DSN_SOURCE: "${DB_DSN_SOURCE:-environment}"
+      # The embedding width, passed through so the container validates against
+      # the schema's vector(384) with the real configured value rather than the
+      # compiled-in default. `:-384` is a fallback, not a second source of truth:
+      # app/config.py rejects any width that disagrees with the migration.
+      EMBEDDING_DIM: "${EMBEDDING_DIM:-384}"
+
     depends_on:
+      # NOTE: `postgres` is deliberately NOT in this list. It is profile-gated and
+      # does not exist in production, where this block's absence would fail every
+      # compose call — see the block above. Start it yourself:
+      #     docker compose --profile devdb up -d postgres
       embedder:
         condition: service_healthy
       reranker:
@@ -284,3 +413,128 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ── postgres (DEVELOPMENT ONLY — profile: devdb) ────────────────────────────
+  # Milestone 3 needs real persistence: documents with 384-dim vectors, queried
+  # by pgvector's exact `<=>` operator. So we need PostgreSQL 16 with the
+  # vector extension, locally.
+  #
+  # ── WHY `profiles: [devdb]` IS NOT OPTIONAL ──────────────────────────────────
+  # scripts/boot.sh:267 runs a bare `docker compose up -d --remove-orphans` on
+  # the EC2 PRODUCTION host. Compose only starts services that either have no
+  # profile or whose profile was explicitly enabled. A profile-gated service is
+  # therefore invisible to that command: it is not started, not created, and
+  # nothing on EC2 knows this block exists. Without the profile, production would
+  # boot a second database nobody asked for, and on a db.t3.micro-adjacent host
+  # it would quietly eat memory the inference workers need.
+  # Start it explicitly, always with the profile named:
+  #     docker compose --profile devdb up -d postgres
+  # or `docker compose --profile devdb up -d` to run it alongside everything.
+  #
+  # ── WHY THE VARIABLES BELOW ARE `${VAR}` AND NOT `${VAR:?message}` ───────────
+  # Compose interpolates the WHOLE file before it decides what to start — profile
+  # membership is not an interpolation guard. So `${DEV_DB_PASSWORD:?...}` would
+  # abort EVERY `docker compose` call in this directory, including the
+  # profile-less production boot on EC2, whenever that variable is unset. That is
+  # a hard error on the exact command the EC2 boot depends on, caused by a
+  # database that EC2 is not even running. Plain `${VAR}` it is: the production
+  # path is unaffected by variables it has no use for, and if someone DOES start
+  # this profile without setting a password, the postgres image refuses to
+  # initialise on its own — which is the loud failure we actually want, from the
+  # component that owns the rule.
+  #
+  # ── WHY THE PASSWORD IS NOT IN THIS FILE ────────────────────────────────────
+  # A credential written here is a credential in git: this file is tracked, so
+  # an inline POSTGRES_PASSWORD would live in history permanently, and the exact
+  # same mistake in production would be an RDS master password on the public
+  # internet. The dev password therefore lives in .env (gitignored) as
+  # DEV_DB_PASSWORD. The cost is one extra file to remember; the benefit is that
+  # "this repo contains no database credentials" stays a checkable property
+  # rather than a promise. See .env.example.
+  postgres:
+    image: pgvector/pgvector:pg16
+
+    # The gate. This single line is what keeps the production boot untouched;
+    # everything else in this block is detail. See above for why.
+    profiles:
+      - devdb
+
+    # PostgreSQL 16 to match `var.db_engine_version = "16"` on the RDS instance.
+    # Matching the major version locally is deliberate: pgvector behaviour,
+    # planner choices and index semantics are version-sensitive, so a local
+    # PostgreSQL 15 would let a migration pass here and fail against
+    # production. This is a dev-only container; production is RDS, not this.
+    #
+    # No `build:` — pgvector/pgvector is a published third-party artifact, same
+    # category as llama.cpp:server, and is consumed as published rather than
+    # rebuilt.
+
+    # ── WHY LOOPBACK AND NOT 0.0.0.0 ──────────────────────────────────────────
+    # Publishing to 0.0.0.0 binds every interface the host has, including the
+    # public one. On EC2 that is an internet-facing PostgreSQL with a
+    # guessable user, a weak password and no TLS — a remote compromise, not a
+    # debugging convenience. Binding 127.0.0.1 makes the port reachable from this
+    # machine and from nothing else, which is the entire requirement here:
+    # `psql` on the workstation needs a socket, and no other client does.
+    # This is also why the "one published door" rule above still holds — the
+    # API's door is the only one reachable from off-host.
+    ports:
+      - "127.0.0.1:${DEV_DB_HOST_PORT:-5432}:5432"
+
+    environment:
+      # The three POSTGRES_* names are the image's own contract, not ours: the
+      # official entrypoint creates this user and this database on first boot
+      # of an empty volume, which is what makes the named volume below
+      # self-provisioning on a fresh machine.
+      POSTGRES_USER: "${DEV_DB_USER}"
+      POSTGRES_PASSWORD: "${DEV_DB_PASSWORD}"
+      POSTGRES_DB: "${DEV_DB_NAME}"
+      # Scrypt password hashing (PostgreSQL 10+). Not security theatre: it is
+      # what stops a leaked pgdata directory from yielding plaintext passwords,
+      # and it is the default, so stating it makes the guarantee deliberate
+      # rather than accidental.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+
+    # A NAMED VOLUME, not a bind mount and not an anonymous volume. It has to
+    # outlive `docker compose down`: migrations run, you take the stack down,
+    # you bring it back up, and the schema and your documents must still be
+    # there. A named volume is also not a git object and not something that
+    # `rm -rf` in the project directory destroys.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+    # pg_isready is the image's own liveness tool: it does a real connection
+    # check against the named user and database, so it fails not merely because
+    # the process is up but because the database is actually accepting queries.
+    # It exits 0 on "accepting connections", non-zero while initdb is still
+    # running. This is the probe a future
+    # `depends_on: {postgres: {condition: service_healthy}}` will use — written
+    # now so the wiring is a one-line addition in a later commit rather than a
+    # design change.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      # initdb on a cold, empty volume takes a while; a probe that times out
+      # during it would restart the container mid-initialisation, which is the
+      # failure mode start_period exists to prevent.
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    restart: unless-stopped
+
+    # Identical log bounding to every other service, for the identical reason.
+    # A database is a long-lived process and json-file logs grow without limit.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ── Named volumes ───────────────────────────────────────────────────────────
+# Declared at the top level so `pgdata` is a real project-scoped volume rather
+# than an anonymous one compose invents a random name for. Declaring it is also
+# what makes `docker compose down -v` able to delete it deliberately, instead of
+# it leaking on every machine that ever ran the devdb profile.
+volumes:
+  pgdata:

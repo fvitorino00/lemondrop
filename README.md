@@ -325,14 +325,16 @@ All values come from `.env`, created by copying `.env.example`.
 | `RERANKER_INTERNAL_PORT` | `8080` | compose | Same constraint as the embedder. |
 | `EMBEDDER_MODEL_ALIAS` | `bge-small-en-v1.5` | compose, `api` | The name the worker registers the model under (`--alias`), and the name the API requests it by. |
 | `RERANKER_MODEL_ALIAS` | `bge-reranker-base` | compose, `api` | Same, for the reranker. |
-| `EMBEDDING_DIM` | `384` | nothing yet | **Currently unused by the code.** Declared for sizing the future vector store index; reserved for a `/search` route that does not exist yet. |
-| `QUERY_PREFIX` | `Represent this sentence for searching relevant passages: ` | nothing yet | **Currently unused by the code.** Reserved for the future `/search` route, which does not exist yet; `/embed` deliberately does not apply it. |
-| `RETRIEVAL_CANDIDATES` | `50` | nothing yet | **Currently unused by the code.** Stage-1 funnel size, reserved for the future `/search` route. |
-| `RERANK_TOP_K` | `5` | nothing yet | **Currently unused by the code.** Stage-2 result count, reserved for the future `/search` route. |
+| `EMBEDDING_DIM` | `384` | compose, `api` | The width the embedder produces, cross-checked against the `vector(384)` column that migration 0001 created. Read by `api/app/config.py` (`get_settings`); a value that disagrees with the schema is rejected at construction, not at the INSERT. |
+| `QUERY_PREFIX` | `Represent this sentence for searching relevant passages: ` | `api` | bge-small-en-v1.5's instruction string, prepended to the QUERY by `POST /search` and to nothing else — `/embed` and `POST /documents` forward text bare. Read by `api/app/config.py`. Not a per-request setting, and `SearchRequest` has no field through which a caller could change it. |
+| `RETRIEVAL_CANDIDATES` | `10` | `api` | Stage-1 funnel size: how many candidates the vector store returns before reranking. Read by `api/app/config.py` (`funnel_from_environment`) and clamped by `Funnel.clamped` — a caller may ask for fewer, never more. Sized at 10 rather than the 50 this table previously documented, because the reranker is a CPU cross-encoder that scores every candidate; see the constant's comment for the reasoning. |
+| `RERANK_TOP_K` | `5` | `api` | Stage-2 result count: how many reranked documents the caller receives. Read by `api/app/config.py`, and validated against `RETRIEVAL_CANDIDATES` — a `top_k` above the candidate count is refused at startup rather than silently returning a shorter list. |
 
-The four variables marked "unused" above are declared but no code reads them.
-They are placeholders for a `/search` route that does not exist in this
-milestone. Changing them has no effect on the running system today.
+All four of `EMBEDDING_DIM`, `QUERY_PREFIX`, `RETRIEVAL_CANDIDATES` and
+`RERANK_TOP_K` are read by the code. `docker-compose.yml` passes only
+`EMBEDDING_DIM` into the `api` container, so in the default compose setup the
+other three resolve to the defaults in the table above regardless of what a
+local `.env` says.
 
 Three more variables are read by the code but are **not** in `.env.example`,
 because the compose-network defaults are already correct and no override is
@@ -342,7 +344,7 @@ needed in normal use:
 |---|---|---|
 | `EMBEDDER_URL` | `http://embedder:8080` | `api/app/main.py` |
 | `RERANKER_URL` | `http://reranker:8080` | `api/app/main.py` |
-| `API_URL` | `http://localhost:8000` | `api/tests/test_integration.py` |
+| `API_URL` | `http://localhost:8000` | `api/tests/test_db.py`, `test_documents.py`, `test_search.py`, `test_integration.py`; `scripts/load_corpus.py` |
 
 `.env` is gitignored and must never be committed. `.env.example` is safe to
 commit and contains no secrets.

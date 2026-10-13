@@ -259,39 +259,96 @@ variable "enable_load_balancer" {
 variable "app_instance_type" {
   description = "EC2 instance type for the application host that runs all three Compose services."
   type        = string
-  default     = "t3.small"
+  default     = "t3.micro"
 
-  # ⚠️  THIS DEFAULT HAS NOT BEEN BENCHMARKED. READ THIS BEFORE TRUSTING IT. ⚠️
+  # ⚠️  THE DEFAULT NOW MATCHES THE INSTANCE THAT IS ACTUALLY RUNNING.  ⚠️
   #
-  # The host runs THREE services and must hold two models resident in RAM at
-  # the same time:
+  # This default WAS t3.small. The deployed instance is t3.micro, created
+  # with an explicit -var app_instance_type=t3.micro that exists NOWHERE in
+  # this config — it survives only in RUNBOOK.md and in shell history. A
+  # default that disagrees with what is deployed is not a paper
+  # inconsistency; it is a live hazard. Every terraform plan and terraform
+  # apply run WITHOUT that flag proposed t3.micro → t3.small, i.e. the
+  # replacement of a healthy running instance, produced by forgetting a flag
+  # rather than by anyone intending a resize. Aligning the default with
+  # reality removes that hazard permanently, and makes a fresh clone
+  # reproduce what is actually running.
+  #
+  # ── WHY t3.micro IS DEFENSIBLE — IT WAS MEASURED ─────────────────────────
+  #
+  # The host runs THREE services and holds TWO models resident at the same
+  # time:
   #   * bge-small-en-v1.5 Q8_0  — ~130MB on disk, plus llama.cpp runtime
   #   * bge-reranker-base Q8_0 — ~278MB on disk, plus llama.cpp runtime
   #   * the FastAPI process and its pinned Python dependencies
   # GGUF file size is NOT peak RSS. Loading a Q8_0 model allocates the mapped
-  # weights plus the KV/context buffers plus the server's own process overhead.
-  # Two models loaded concurrently is the real constraint, and the honest
-  # statement is that nobody has measured it yet on this instance type.
+  # weights plus the KV/context buffers plus the server's own process
+  # overhead, and the two models overlap in time. That is precisely why this
+  # had to be measured rather than reasoned about, and it is why the previous
+  # version of this comment, which reasoned about it, got it wrong.
   #
-  # What IS true, and is the reason this is not t3.micro:
-  #   t3.micro has 1 GiB of RAM. Loading a single reranker into it, alongside
-  #   the API, is very unlikely to fit. Choosing it as the default would be
-  #   claiming a sufficiency that has not been tested, and it would fail as an
-  #   OOM kill on boot — which, given the ALB grace-period discussion in
-  #   load_balancer.tf, is exactly the kind of failure that gets misdiagnosed
-  #   as "the app is slow".
+  # M2 measured it. On t3.micro, with both models resident and all three
+  # containers healthy: 913Mi total, roughly 280Mi available. Boot completed:
   #
-  # t3.small (2 GiB) is a STARTING POINT, not a recommendation. If the boot log
-  # shows an OOM kill, or the api never becomes healthy, raise this before
-  # investigating anything else. t3.medium (4 GiB) is the next step.
+  #   === lemondrop boot: SUCCESS — api healthy after 10s ===
   #
-  # Measure it rather than guessing:
+  # The earlier pessimism — that 1 GiB is "very unlikely to fit" two models
+  # and would fail as an OOM kill on boot — was an UNMEASURED guess, and the
+  # measurement contradicts it. t3.small was chosen over t3.micro on the
+  # strength of a hypothesis; the hypothesis did not survive contact with
+  # the box. The default now says what was shown to work.
+  #
+  # ⚠️  WHAT IS NOT VERIFIED — M3 ON THIS INSTANCE IS UNKNOWN.  ⚠️
+  #
+  # The 280Mi figure proves t3.micro can hold the models and boot. It does
+  # NOT prove t3.micro can serve retrieval traffic. Stated plainly, without
+  # softening:
+  #
+  #   * M3 memory and search performance on EC2 are UNVERIFIED. The rerank
+  #     latency that motivates the 10-candidate funnel — ~11-12.5s median
+  #     over ten documents, i.e. ~1.1-1.25s per candidate — was measured on
+  #     the developer's workstation, NOT on this instance. It is the number
+  #     that would decide whether the ALB lb_idle_timeout needs raising, and
+  #     it has still not been taken on EC2.
+  #   * The host HAS been exercised: liveness, readiness, embedding,
+  #     reranking and search against the 40-document corpus, all of it
+  #     passing. That is FUNCTIONAL exercise, not a SUSTAINED-LOAD
+  #     measurement, and it says nothing about behaviour under concurrent
+  #     searches — each of which holds both models busy and burns on the
+  #     order of a second per candidate on the CPU.
+  #   * The ~280Mi of headroom was observed AT REST. How much of it is
+  #     actually available DURING a rerank is an explicit unknown, not
+  #     something to be assumed away in either direction: a cross-encoder
+  #     scoring every (query, passage) pair allocates working buffers on top
+  #     of the resident weights.
+  #
+  # Read this default as "the smallest instance shown to work", not as "the
+  # instance to run production-shaped traffic on".
+  #
+  # ── IF IT BREAKS ─────────────────────────────────────────────────────────
+  #
+  # If the boot log shows an OOM kill, or the api never becomes healthy,
+  # raise this before investigating anything else. t3.medium (4 GiB) is the
+  # next step — it is the cheap answer; the correct answer is the family
+  # below. Measure it rather than guessing:
   #   ssh/ssm →  docker stats --no-stream
   #             docker compose logs embedder reranker | grep -i 'memory\|error'
   #
-  # If this becomes a multi-AZ or production deployment, t3 is also the wrong
-  # FAMILY: t3 is burstable, and inference is a sustained load. m6i/m7i is the
-  # right family. Out of scope for a single dev host.
+  # t3 is also the wrong FAMILY for anything sustained: t3 is burstable and
+  # inference is a sustained load, so sustained reranking on t3 will spend
+  # its life in CPU credit exhaustion. m6i/m7i is the right family for
+  # anything production-shaped. Out of scope for a single dev host, and
+  # unchanged by this default either way.
+  #
+  # ── WHY THIS CHANGE SHOULD PRODUCE NO RESOURCE DIFF ──────────────────────
+  #
+  # t3.small → t3.micro here is a documentation-and-safety correction, not a
+  # resize. Terraform state already records t3.micro for the running
+  # instance, so moving the default to the value state already holds should
+  # yield an empty plan rather than a replacement. That reasoning is NOT
+  # verified here: this change was made deliberately WITHOUT running
+  # terraform. Confirm it is diff-free on the operator's next plan review
+  # rather than taking this comment's word for it.
 }
 
 variable "app_root_volume_size" {

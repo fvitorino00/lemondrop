@@ -28,3 +28,109 @@ uvicorn[standard]==0.54.0
 # routes identical timeout policy and identical 502/504 failure semantics rather
 # than letting them drift apart.
 httpx==0.28.1
+
+# ── Persistence ───────────────────────────────────────────────────────────────
+# The database access layer, and the reason it is SQLAlchemy rather than raw
+# asyncpg: we use Core (text() and explicit SQL), NOT the ORM. Retrieval here is
+# one parameterised SELECT with a `<=>` ordering and a collection predicate, and
+# an ORM would contribute a declarative model, a session lifecycle and an identity
+# map that buy nothing for that query. Core still earns its place: it is the
+# dialect-aware layer that knows how to parameterise pgvector and jsonb correctly
+# and how to pool an async connection, which is the part hand-rolling gets wrong.
+# The [asyncio] extra pulls greenlet (a compiled extension with a cp312
+# manylinux x86_64 wheel) — without it `await engine.connect()` does not work.
+SQLAlchemy[asyncio]==2.0.54
+
+# The async PostgreSQL driver. It is the fast one (it is a C extension speaking
+# the protocol natively rather than going through libpq), and it is async, which
+# matters because the retrieval path holds a connection while the caller waits —
+# a blocking driver would stall the whole event loop, including the /health
+# probe, on every search. psycopg2 was the alternative and loses: it is either
+# sync-only or needs an async wrapper that is slower than this anyway.
+asyncpg==0.32.0
+
+# pgvector-python. This is the ONLY reason it is here, and it is a narrow one:
+# `documents.embedding` is `vector(384)`, and asyncpg cannot send or receive a
+# value of a type it has no codec for. This package supplies `register_vector`,
+# which installs that codec — per connection, which is why `app/store.py` hooks
+# it onto the pool's `connect` event rather than calling it once somewhere
+# convenient. See `prepare_database` there; the failure mode of getting that
+# wrong is intermittent and invisible to a single-query test.
+#
+# NOT used for its `sqlalchemy.VECTOR` type. Measured on SQLAlchemy 2.0.54,
+# `'vector' in d.colspecs` is False for the asyncpg dialect, so that type cannot
+# be used as a column type here at all, and the store writes raw SQL through
+# `text()` regardless. Taking this dependency for the codec is a smaller ask
+# than taking it for the type and finding it does not work.
+#
+# ABOUT THE WHEELS, since the Dockerfile installs no compiler toolchain: this
+# package is PURE PYTHON. The published artifact is a single
+# `pgvector-0.5.1-py3-none-any.whl` (`Root-Is-Purelib: true`, `Tag: py3-none-any`)
+# and there is no cp312 or cp314 specific build, no sdist-only release and no
+# compiled extension anywhere in it. One wheel therefore satisfies every
+# interpreter in this project — the container's CPython 3.12 and the host venv's
+# CPython 3.14 alike — so `pip install` never invokes a compiler in either place.
+# The constraint is satisfied by the package's shape rather than by a build.
+#
+# Exact pin like everything else here. 0.5.1 is the current release and requires
+# Python >= 3.10, which both interpreters clear.
+pgvector==0.5.1
+
+# ── AWS ───────────────────────────────────────────────────────────────────────
+# The credential path. Used ONLY when `DB_DSN_SOURCE=aws`, which the EC2
+# instance role sets and no local or compose deployment does. Everything the API
+# does about the database — the pool, the probes, `SELECT 1`, the retrieval
+# query — is unchanged; this one package is what lets the DSN stop being a
+# literal in an environment file and become something the instance fetches
+# through its role.
+#
+# WHY IT IS NOT A HARDER DEPENDENCY THAN IT LOOKS. The obvious AWS SDKs are
+# `aws-sdk` (v2) and a hand-rolled SigV4 client over `httpx`, and both were
+# considered. boto3 wins because the credential chain is the whole job: signing a
+# SigV4 request correctly, refreshing a temporary session token before it
+# expires, following the instance-metadata credential provider, and reading the
+# region from the environment are all things that must be RIGHT, and none of
+# them are things this service should be writing. `httpx` alone cannot do them;
+# boto3 does them for free, and `config.py` deliberately passes no credential
+# arguments so that boto3's default provider chain is the only path in.
+#
+# Note the lazy import in `config._boto3_client`: this package is 16MB of
+# botocore's JSON service models, and a developer running the local devdb pays
+# that import cost only if they have asked for the AWS path. It is NOT a hard
+# dependency of `app.config`, `app.db` or `app.main` at import time.
+#
+# ABOUT THE WHEELS, since the Dockerfile installs no compiler toolchain (the same
+# question answered for pgvector above): this one and its whole dependency tree
+# are PURE PYTHON, and every artifact is a single `py3-none-any` wheel —
+#
+#     boto3-1.43.112-py3-none-any.whl     (140 kB)
+#     botocore-1.43.112-py3-none-any.whl  (16.1 MB)
+#     jmespath-1.1.0-py3-none-any.whl
+#     s3transfer-0.19.2-py3-none-any.whl   (pulled in but never used by this app)
+#     python-dateutil-2.9.0.post0-py2.py3-none-any.whl
+#     six-1.17.0-py2.py3-none-any.whl
+#
+# No cp312 build, no cp314 build, no sdist-only release, no compiled extension —
+# so one wheel satisfies the container's CPython 3.12 and the host venv's CPython
+# 3.14 alike, and `pip install` never invokes a compiler in either place. The
+# constraint is satisfied by the package's shape rather than by a build. Nothing
+# else has to be added to the image.
+#
+# `s3transfer` is in that list because boto3 requires it. This application
+# touches no S3 bucket, and nothing in `api/app/` imports it.
+#
+# Verified against the live PyPI JSON API rather than assumed: on 2026-10-13
+# `boto3`'s `info.version` was 1.43.112, `info.yanked` false, and
+# `info.requires_python` ">=3.10" — which the container's 3.12 and the host's
+# 3.14 both clear.
+boto3==1.43.112
+
+# ── No migrations here, on purpose ────────────────────────────────────────────
+# Alembic used to sit in this file. It has moved to requirements-dev.txt, and
+# the reason is worth stating so nobody "helpfully" puts it back: alembic is a
+# schema-migration tool, and the API container never runs migrations. Migrations
+# run out-of-band, as a separate privileged step — CREATE EXTENSION vector needs
+# a role the application deliberately does not have (see api/alembic/README.md).
+# Shipping the tool anyway is image bloat plus unused attack surface: a
+# credentialed database driver and a DDL executor sitting in a production image
+# where no code path can reach them.

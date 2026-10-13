@@ -1,5 +1,38 @@
 # LemonDrop — development/test dependencies
-# Separate from runtime dependencies used inside Docker.
+# This is what the LOCAL venv installs. The Docker image installs
+# requirements.txt and nothing else.
+#
+# WHY `-r requirements.txt` INSTEAD OF RE-PINNING SQLAlchemy AND asyncpg HERE
+# It would be shorter to write out the two database packages again in this file.
+# It would also be wrong. Two files pinning the same dependency is two
+# definitions of the same version, and two definitions drift — one gets bumped
+# and the other is missed. That drift is precisely what this repo's "exact pins,
+# no ranges" rule exists to prevent, and re-pinning here would reintroduce the
+# failure the rule is aimed at from the one direction it does not currently
+# guard: a migration that passes locally against SQLAlchemy 2.0.54 and then
+# fails inside a container running a different one. `-r` makes the drift
+# structurally impossible instead of merely discouraged — there is only ever one
+# place to edit.
+#
+# THE TRADE-OFF WE ARE ACCEPTING
+# `-r` pulls in fastapi, uvicorn and httpx as well, and the host does not
+# strictly need them to run a migration. Accepted, because the Docker image
+# installs ONLY requirements.txt: a runtime dependency missing from the image
+# fails loudly at image build time, where it is cheap and obvious, and the local
+# over-install masks nothing. The failure this could hide does not exist.
+#
+# Everything below is pinned with `==` for the same reason as in
+# requirements.txt — no ranges, ever.
+
+-r requirements.txt
+
+# Schema migrations. Alembic rather than raw DDL files because the schema has to
+# be repeatable and reviewable, and because it gives us an ordered, versioned
+# history plus a recorded alembic_version row — so "what schema is this
+# database actually on" is a query rather than a memory. It is a pure-Python
+# wheel and it depends on SQLAlchemy, which is pinned above via the -r line.
+# Deliberately absent from requirements.txt: the API container never migrates.
+alembic==1.20.0
 
 # Test runner
 pytest==9.1.1
