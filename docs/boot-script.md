@@ -6,9 +6,15 @@ application host.
 
 It exists as a separate file for a hard, mechanical reason: **EC2 rejects
 `user_data` longer than 16,384 bytes.** The rationale used to live inside the
-heredoc in `infra/compute.tf`, where it was measured at **24,994 bytes**
-rendered — 8,610 bytes over the ceiling, 71% of it comment prose. See
-[The 16KB ceiling](#the-16kb-ceiling-and-this-split) below.
+heredoc in `infra/compute.tf`, where **the pre-split script** was measured at
+**24,994 bytes** rendered — 8,610 bytes over the ceiling, 71% of it comment
+prose. See [The 16KB ceiling](#the-16kb-ceiling-and-this-split) below.
+
+24,994 is a **historical** figure describing the script *before* this split. The
+script that exists today is **15,068 bytes**, and its rendered heredoc — the
+number EC2 validates — is **16,180 bytes**. Do not confuse the two, and read
+[the note on the stale comment in `compute.tf`](#the-24994-in-computetf-is-wrong-on-purpose--do-not-fix-it)
+before editing anything in the heredoc.
 
 The script keeps the comments that are needed at 3am to diagnose something.
 Everything moved here.
@@ -443,7 +449,9 @@ Error: expected length of user_data to be in the range (0 - 16384), got #!/usr/b
 
 `infra/compute.tf` was 39,834 bytes, 71% of it comment prose describing a failure
 the static checks could not catch. The rendered heredoc body measured **24,994
-bytes** — 8,610 bytes over the limit.
+bytes** — 8,610 bytes over the limit. *(24,994 is the **pre-split** measurement,
+reproduced below from `d70b49a^`. It is not a current figure. The current ones are
+16,180 and 15,068.)*
 
 Note what the limit actually applies to: the rendered `user_data` string, the
 content between `<<-EOF` and `EOF`, including every byte of indentation.
@@ -467,6 +475,45 @@ Current state, measured:
 | De-indented `scripts/boot.sh` | 15,068 |
 | Ceiling | 16,384 |
 | **Headroom** | **204** |
+
+### ⚠️ The 24,994 in `compute.tf` is wrong on purpose — DO NOT "FIX" IT
+
+`infra/compute.tf:259` carries this line **inside the `user_data` heredoc**:
+
+```bash
+    # script was measured at 24,994. Measure any addition against that ceiling.
+```
+
+**That number is stale, and it is being left stale deliberately.** It describes
+the *pre-split* script — the one that still had this entire rationale inline. It
+is not the size of the script you are editing today. Here are all three figures,
+and how each was measured:
+
+| Figure | Bytes | How it was measured |
+|---|---|---|
+| `scripts/boot.sh` — the de-indented, editable copy | **15,068** | `wc -c scripts/boot.sh` |
+| Rendered heredoc — what EC2 validates | **16,180** | `sed -n "$((S+1)),$((E-1))p" infra/compute.tf \| wc -c` |
+| Pre-split script, rendered — **historical, not current** | 24,994 | `git show d70b49a^:infra/compute.tf`, render its heredoc and count |
+
+**Why it must not be "corrected".** `aws_instance.app` sets
+`user_data_replace_on_change = true` (`:185`), so `user_data` is a **hash input**.
+Editing a single byte of that heredoc — *including this comment* — changes the
+hash and makes the next `terraform apply` **destroy and replace a healthy,
+running production instance**, re-cloning the repository and re-downloading
+~340MB of model weights from scratch.
+
+**This has already happened once.** Commit `f13e4c0` corrected the comment from
+24,994 to 15,068. That made the number accurate and, in the same commit, armed
+the replacement of a working instance. The correction was reverted; the accurate
+figure was recorded here instead, in documentation — which no Terraform hash
+reads.
+
+**If you have read this far because you believe that comment is a bug, you are
+right about the arithmetic and wrong about the fix.** The right place for the true
+number is this file. Changing the heredoc to fix a number is a **deliberate
+instance replacement**, and it needs the operator to accept that replacement
+first. If that is genuinely the intent, say so out loud before touching the file —
+do not discover it in the plan output after the fact.
 
 ### For whoever adds to this script next
 

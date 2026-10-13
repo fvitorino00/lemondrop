@@ -489,6 +489,25 @@ Row 4 stays **UNTESTED**. It is the next task.
 §8 against the live stack. Rows 6 and 7 remain infrastructure the retrieval layer depends
 on rather than evidence about it. Row 1's remaining caveat is row 4, above.
 
+### 6.3 §6 row 4 and §6.2 are SUPERSEDED — read §9.8, not these
+
+> **⚠️ SUPERSEDE NOTE — row 4, persistence across restart, is now VERIFIED (local).**
+>
+> The §6 table above records row 4 as **UNTESTED**, and §6.2 above ends with "Row 4 stays
+> **UNTESTED**. It is the next task." **That is no longer the current answer.**
+>
+> Both passages were true **when written** and are left **exactly as written**. A
+> verification record's history is evidence: the change in verdict is itself the finding,
+> and silently editing an `UNTESTED` into a `VERIFIED` would destroy the only trace that the
+> question was ever open.
+>
+> **The current, superseding record is §9.8** — row 4 there reads
+> **VERIFIED (local) — §9.2**, with the test and its limits in §9.1–§9.7. §9.8 also carries
+> its own supersede banner naming §6 and §6.2.
+>
+> **A reader who consults §6 first gets the wrong answer.** Nothing was read wrong on the
+> page; the answer moved, and this note is the signpost.
+
 ---
 
 ## 7. Re-check this record
@@ -1024,6 +1043,35 @@ DATABASE_URL: "postgresql+asyncpg://${DEV_DB_USER}:${DEV_DB_PASSWORD}@postgres:5
 `docker-compose.yml:304` comment asserting these resolve to empty strings is **inaccurate**
 for the same reason, and is flagged here rather than edited — implementing nothing.)
 
+> **⚠️ CORRECTION — commit `7e1deab`'s message carries the wrong mechanism, and history
+> cannot be amended.**
+>
+> Commit `7e1deab` ("record local Milestone 3 acceptance…") states in its **commit message**:
+>
+> > *boot.sh generates EC2's .env FROM .env.example. There the DEV_DB_* variables are unset,
+> > so compose interpolates DATABASE_URL to `postgresql+asyncpg://:@postgres:5432/` — empty
+> > credentials. The Phase 2 DSN validation deliberately REJECTS an empty username or
+> > password, so Settings construction fails…*
+>
+> **That mechanism is wrong.** The `DEV_DB_*` variables **are** set — `.env.example:105,117,122`
+> defines them and `boot.sh` copies the file verbatim. The interpolated DSN is therefore
+> **well-formed**, the empty-credential validator **does not fire**, `Settings` construction
+> **succeeds**, and the failure happens **later and elsewhere**: at the **socket**, because the
+> `postgres` service is gated behind the `devdb` compose profile and does not exist on EC2.
+>
+> History is not being rewritten; a commit message is immutable, so this note is the only
+> place the correction can live.
+>
+> **The CONCLUSION of `7e1deab` is unaffected — it was right, and only the mechanism was
+> wrong.** M3 code **cannot reach RDS**, and the AWS credential resolver
+> (`DatabaseUrlResolver`, §10.4) **is required** to change that. The two are independent:
+> the wrong mechanism makes the blocker sound *more* dramatic (a loud startup crash) than it
+> is (a quiet 503 from a syntactically valid DSN aimed at a host that is not there).
+>
+> **So: keep the conclusion. Discard only the explanation.** Do not let a reader "correct"
+> a correct verdict because the reason attached to it does not survive — that would trade a
+> true blocking finding for a false one.
+
 | | On `main` as it stands | On `feat/retrieval-m3` as it stands |
 |---|---|---|
 | `.env.example` `DEV_DB_*` keys | **absent** — 62 lines, **zero** `DEV_DB` matches | **present** — `:105`, `:117`, `:122` |
@@ -1151,3 +1199,91 @@ against exactly a role whose privileges have never been demonstrated.
 §1. No conclusion drawn from it is a conclusion about real-world documentation quality. It
 does mean every measurement above is a measurement *on a corpus of known shape*, not on
 anything a real user would search.
+---
+
+## 11. Decisions taken for the AWS phase — NOT YET EXECUTED
+
+**Nothing in this section has been built, applied, deployed or verified.** It records
+operator decisions so they survive outside conversation. Every item below is a
+**commitment, not an achievement**. Read it as "this is the plan and the reasoning behind
+it", and treat any claim of completion as unproven until it appears as a VERIFIED row
+elsewhere in this document.
+
+### 11.1 Deployment is in-place through SSM, not Terraform replacement
+
+Application code is deployed to the running instance **over SSM**, not by Terraform
+replacement. **No `terraform apply` is required to deploy application code**, so the
+`user_data_replace_on_change = true` trigger (§10.6) **never arises during an application
+deploy**.
+
+This does **not** resolve §10.6 — the trigger is still armed for any future *Terraform*
+change. It means the chosen deployment path does not walk into it. That distinction is the
+whole point of the decision.
+
+### 11.2 Rollback requires `git fetch --unshallow` — mandatory, not advisory
+
+`scripts/boot.sh:196` clones with `--depth 1`. The clone on EC2 is therefore **shallow and
+holds no history**, so a previous version cannot be checked out or reverted to from it as it
+stands.
+
+**`git fetch --unshallow` is MANDATORY before deploying.** Without it there is **no
+rollback path at all** — not a slow one, none. This is the step most likely to be skipped,
+because skipping it succeeds right up to the exact moment it is needed.
+
+The deploy procedure is therefore, in order: **unshallow → build the new image under a
+unique tag → verify it → only then switch to it.** The previous image must still exist under
+its own named tag so there is something to return to. **A tag overwritten in place is not a
+rollback point** — it is the same failure mode as having no rollback at all, only harder to
+notice.
+
+### 11.3 Database access: a dedicated least-privilege application role
+
+**`lemondrop_app`** — proposed, not created. Intended privileges:
+
+| Grant | On |
+|---|---|
+| `SELECT`, `INSERT`, `UPDATE` | `documents` |
+| `USAGE ON TYPE vector` | the `vector` type |
+| `USAGE ON SCHEMA public` | `public` schema |
+
+**No `DELETE`. No DDL.**
+
+The **master credential stays for migrations only** (`ALEMBIC_DATABASE_URL`). That is also
+what §10.5 requires of it: `rds_superuser` is needed for `CREATE EXTENSION vector`, so the
+migration cannot be applied by the application role — which is the entire point of the
+`DATABASE_URL` / `ALEMBIC_DATABASE_URL` split.
+
+This addresses §10.10 **in principle only**. Until the role is applied and its privileges
+are read back from the live database, "least privilege" in this repository remains an
+**assertion**, exactly as §10.10 says it is today.
+
+### 11.4 The instance role must be narrowed so it cannot read the master secret
+
+**The instance profile must not be able to read the master secret.**
+
+The reason is stated without softening, because the alternative is a false sense of control:
+**instance-profile credentials are reachable by any process on the instance**, through the
+metadata endpoint (`169.254.169.254`) — and SSM Session Manager, the chosen deployment
+channel in §11.1, itself runs on the instance as a process.
+
+So for as long as the role **can** read the master secret, *"the app uses the app
+credential"* is a **convention, not a control**. Nothing enforces it. Any code execution on
+that host has the master secret regardless of which DSN the application was handed, which
+makes the least-privilege role of §11.3 advisory rather than binding. **Narrowing the
+instance role is what turns §11.3 from a convention into an actual control**, and the two
+decisions are therefore one decision, not two.
+
+### 11.5 Status: proposed and awaiting approval — nothing below is done
+
+| Item | Status |
+|---|---|
+| SSM in-place deployment path | **DECIDED. Not executed.** |
+| `git fetch --unshallow` before every deploy | **REQUIRED. Not performed.** |
+| Unique image tag, verify, then switch | **REQUIRED. Not performed.** |
+| `lemondrop_app` role and its grants | **PROPOSED. Not created, not applied, not verified.** |
+| Instance-role narrowing | **PROPOSED. Not applied.** |
+| Application deployment to EC2 | **NOT DONE.** |
+
+**No AWS resource has been created, changed or verified by any of the above.** §10 stands
+in full, and its qualifier row — *no criterion in this document is cloud-accepted* — is
+unaffected by these decisions.
