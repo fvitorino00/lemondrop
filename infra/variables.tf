@@ -259,96 +259,264 @@ variable "enable_load_balancer" {
 variable "app_instance_type" {
   description = "EC2 instance type for the application host that runs all three Compose services."
   type        = string
-  default     = "t3.micro"
+  default     = "t3.small"
 
-  # ⚠️  THE DEFAULT NOW MATCHES THE INSTANCE THAT IS ACTUALLY RUNNING.  ⚠️
+  # ⚠️  READ THE REVIEWED-PLAN SECTION BELOW BEFORE RUNNING ANY terraform apply.  ⚠️
   #
-  # This default WAS t3.small. The deployed instance is t3.micro, created
-  # with an explicit -var app_instance_type=t3.micro that exists NOWHERE in
-  # this config — it survives only in RUNBOOK.md and in shell history. A
-  # default that disagrees with what is deployed is not a paper
-  # inconsistency; it is a live hazard. Every terraform plan and terraform
-  # apply run WITHOUT that flag proposed t3.micro → t3.small, i.e. the
-  # replacement of a healthy running instance, produced by forgetting a flag
-  # rather than by anyone intending a resize. Aligning the default with
-  # reality removes that hazard permanently, and makes a fresh clone
-  # reproduce what is actually running.
+  # ── WHAT IS PROVEN — TWO SEPARATE CLAIMS, AND THEY MUST NOT BE BLURRED ───
   #
-  # ── WHY t3.micro IS DEFENSIBLE — IT WAS MEASURED ─────────────────────────
-  #
-  # The host runs THREE services and holds TWO models resident at the same
-  # time:
-  #   * bge-small-en-v1.5 Q8_0  — ~130MB on disk, plus llama.cpp runtime
-  #   * bge-reranker-base Q8_0 — ~278MB on disk, plus llama.cpp runtime
-  #   * the FastAPI process and its pinned Python dependencies
-  # GGUF file size is NOT peak RSS. Loading a Q8_0 model allocates the mapped
-  # weights plus the KV/context buffers plus the server's own process
-  # overhead, and the two models overlap in time. That is precisely why this
-  # had to be measured rather than reasoned about, and it is why the previous
-  # version of this comment, which reasoned about it, got it wrong.
-  #
-  # M2 measured it. On t3.micro, with both models resident and all three
-  # containers healthy: 913Mi total, roughly 280Mi available. Boot completed:
+  # PROVEN (M2) — t3.micro BOOTS THIS STACK. On t3.micro, with both models
+  # resident and all three containers healthy: 913Mi total, roughly 280Mi
+  # available, and the boot completed:
   #
   #   === lemondrop boot: SUCCESS — api healthy after 10s ===
   #
-  # The earlier pessimism — that 1 GiB is "very unlikely to fit" two models
-  # and would fail as an OOM kill on boot — was an UNMEASURED guess, and the
-  # measurement contradicts it. t3.small was chosen over t3.micro on the
-  # strength of a hypothesis; the hypothesis did not survive contact with
-  # the box. The default now says what was shown to work.
+  # This remains true. It was measured, it was not guessed, and nothing in
+  # M3 erases it. The earlier pessimism — that 1 GiB is "very unlikely to
+  # fit" two models and would OOM on boot — was an UNMEASURED guess, and the
+  # measurement contradicted it.
   #
-  # ⚠️  WHAT IS NOT VERIFIED — M3 ON THIS INSTANCE IS UNKNOWN.  ⚠️
+  # PROVEN (M3) — t3.micro CANNOT SERVE RETRIEVAL. Three kernel OOM kills of
+  # llama-server in the reranker's cgroup, AFTER the reranker had already
+  # been reduced to a single inference slot:
   #
-  # The 280Mi figure proves t3.micro can hold the models and boot. It does
-  # NOT prove t3.micro can serve retrieval traffic. Stated plainly, without
-  # softening:
+  #   18:18:16  killed llama-server  anon-rss 425504 kB
+  #   18:20:21  killed llama-server  anon-rss 428608 kB
+  #   18:40:13  killed llama-server  anon-rss 437408 kB   ← AFTER --parallel 1
   #
-  #   * M3 memory and search performance on EC2 are UNVERIFIED. The rerank
-  #     latency that motivates the 10-candidate funnel — ~11-12.5s median
-  #     over ten documents, i.e. ~1.1-1.25s per candidate — was measured on
-  #     the developer's workstation, NOT on this instance. It is the number
-  #     that would decide whether the ALB lb_idle_timeout needs raising, and
-  #     it has still not been taken on EC2.
-  #   * The host HAS been exercised: liveness, readiness, embedding,
-  #     reranking and search against the 40-document corpus, all of it
-  #     passing. That is FUNCTIONAL exercise, not a SUSTAINED-LOAD
-  #     measurement, and it says nothing about behaviour under concurrent
-  #     searches — each of which holds both models busy and burns on the
-  #     order of a second per candidate on the CPU.
-  #   * The ~280Mi of headroom was observed AT REST. How much of it is
-  #     actually available DURING a rerank is an explicit unknown, not
-  #     something to be assumed away in either direction: a cross-encoder
-  #     scoring every (query, passage) pair allocates working buffers on top
-  #     of the resident weights.
+  # The host at the time: 913Mi total, ~194Mi available, zero swap. The
+  # reranker weights ALONE are 289.8 MiB — larger than the entire available
+  # memory before a single byte of KV cache. Whole-stack local RSS measured
+  # at 832 MiB.
   #
-  # Read this default as "the smallest instance shown to work", not as "the
-  # instance to run production-shaped traffic on".
+  # The decisive detail is the LAST line of that table: peak RSS did not fall
+  # with one slot, it rose slightly. That establishes the memory is dominated
+  # by fixed model weights and llama.cpp runtime, NOT by KV cache — which is
+  # why tuning concurrency could never have been the fix.
   #
-  # ── IF IT BREAKS ─────────────────────────────────────────────────────────
+  # THE DISTINCTION IS THE POINT. "It boots" and "it serves" are different
+  # properties of an instance, and only the second one has now failed. A host
+  # can pass a healthcheck, hold its models resident, and answer /healthz
+  # perfectly while being killed by the kernel every time a real query is
+  # scored. Recording both claims honestly is more useful than either claim
+  # alone: the boot result is why the stack is trusted to deploy at all, and
+  # the serve result is why the hardware underneath it has to change.
+  #
+  # ── WHY t3.small (2 GiB) ────────────────────────────────────────────────
+  #
+  # It roughly DOUBLES memory. That is what it buys, and it is the whole of
+  # what it buys.
+  #
+  # Stated plainly so it cannot be over-read: THIS IS NOT A BENCHMARK OF
+  # t3.small. The SIZING REASONING below was written BEFORE the resize and is
+  # preserved as it was written, because the reasoning is what the choice
+  # rested on: t3.small is the next step up from an instance with a
+  # MEASURED, REPRODUCED failure, chosen because it is the SMALLEST instance
+  # that plausibly clears a ~290MiB-weight-plus-runtime model on a host that
+  # had ~194MiB to give. It was a hypothesis with a size attached, chosen
+  # against a measured floor — not a verified sufficiency.
+  #
+  # THAT HYPOTHESIS HAS NOW BEEN EXERCISED. The instance was resized, and
+  # retrieval ran on it and WORKED: 40 of 40 documents ingested, /search
+  # returned 10 candidates and 5 results with the correct top documents,
+  # collection isolation passed, the search survived an API container
+  # restart, and no new kernel OOM occurred within the verified search
+  # window. The public ALB returned HTTP 200 for /search in 15.55 seconds —
+  # a SINGLE OBSERVATION, not a latency distribution, and nothing here may be
+  # quoted as a latency figure. See `docs/verification-milestone-3.md` §12.1
+  # for the row-by-row record, §12.3 for the failures that preceded it, and
+  # §12.4 for what the green rows do NOT mean.
+  #
+  # So the sufficiency question this default was set up to answer has been
+  # answered by measurement, as it said it would have to be. Read the next
+  # section for what remains open — latency distribution, headroom, and
+  # sustained load are not answered by a single successful search.
+  #
+  # ── WHY NOT BIGGER ──────────────────────────────────────────────────────
+  #
+  # t3.medium (4 GiB) is available, as is the m-family, and both are the right
+  # answer for anything sustained. They are declined HERE, not on principle:
+  # buying more than the minimum to fix a measured failure is a decision that
+  # should be made ON evidence, and the evidence available says take the
+  # smallest step that plausibly works, MEASURE, then decide. t3.medium would
+  # have been chosen on the assumption that 2 GiB is not enough — an
+  # assumption with nothing behind it, purchased in advance of a measurement
+  # that has not happened.
+  #
+  # If t3.small proves insufficient, that is not a setback. That is NEW
+  # EVIDENCE, and the next decision is informed by it instead of guessed.
+  # (It has not proved insufficient: it has served retrieval successfully.
+  # Whether 2 GiB is enough for a SUSTAINED workload is a different question
+  # and is answered below, under the family limitation, not here.)
+  #
+  # ── ⚠️  THE KNOWN LIMITATION — t3 IS THE WRONG FAMILY, AT ANY SIZE  ⚠️ ───
+  #
+  # This is a real limitation and it is not fixed by this change. t3 is
+  # BURSTABLE. Cross-encoder scoring is a SUSTAINED CPU load, not a burst:
+  # every query runs the reranker over a candidate set for seconds at a time.
+  # Sustained load spends CPU credits, credits deplete, and once depleted the
+  # instance is THROTTLED — baseline CPU is held to a fraction of normal and
+  # rerank latency degrades accordingly. A t3.small that survives the memory
+  # gap can still spend its working life throttled, and the symptom then
+  # looks like "search got slow" rather than "search is broken", which is a
+  # harder failure to diagnose later.
+  #
+  # So: t3.small should make retrieval WORK. It does not make the ARCHITECTURE
+  # RIGHT. m6i/m7i remains the correct family for sustained inference, and
+  # this default is a capacity fix, not a family endorsement. See the family
+  # note in compute.tf, which points here for the other half of that trade.
+  #
+  # ── WHY `--parallel 1` STAYS ────────────────────────────────────────────
+  #
+  # It did not, by itself, fix the OOM. It is being kept anyway, and the
+  # reason it is NOT being reverted in the same breath as the resize is
+  # deliberate:
+  #
+  #   * It removed a MEASURED 71.5 MiB of avoidable KV-cache overhead. That
+  #     is real memory returned, and on a host that was 194Mi short, every
+  #     MiB of avoidable overhead is a MiB that does not have to come out of
+  #     headroom.
+  #   * It costs ~13% median latency locally. On a 2 GiB host, trading 13%
+  #     latency for 71.5 MiB of headroom is a trade worth making; the memory
+  #     is the scarcer resource.
+  #   * Reverting it now would buy NOTHING. The OOM was caused by weights and
+  #     runtime, which --parallel never controlled — that is precisely what
+  #     the rising RSS under one slot demonstrated. Removing the flag would
+  #     put 71.5 MiB back and fix none of the 437 MiB that actually died.
+  #
+  # Keep the flag. Change the hardware. Those are independent decisions and
+  # they resolve in opposite directions from the previous milestone, which is
+  # exactly why the previous note ("if it breaks, raise the instance") and
+  # this one must both be read together.
+  #
+  # ── WHAT WAS CONSIDERED AND REJECTED — DO NOT RE-LITIGATE ───────────────
+  #
+  #   * TIGHTENING `--ctx-size`. REJECTED. llama.cpp TRUNCATES over-long input
+  #     rather than raising an error. An undersized context therefore
+  #     silently degrades relevance scores, with no failure surfacing ANYWHERE
+  #     — no crash, no log line, no non-200, just quietly worse search results
+  #     that look like a model problem. That is strictly WORSE than the loud
+  #     kernel OOM this configuration is now fixing, and it was rejected on
+  #     those grounds BEFORE the instance size was touched. It is recorded
+  #     here because it is the change most likely to be proposed again by
+  #     someone who has only seen the memory number.
+  #   * A SMALLER QUANTIZED RERANKER. REJECTED. A model change means a
+  #     re-download, a re-measurement of rerank quality and latency, and a
+  #     new relevance baseline — a substantially larger intervention than the
+  #     failure warrants, and one that changes what the system ANSWERS rather
+  #     than what it costs to answer.
+  #   * A BLIND `terraform apply` THAT CHANGES `instance_type`. EXPLICITLY
+  #     REJECTED BY THE OPERATOR, and it is not a close call — see below. The
+  #     resize was NOT run that way: a Terraform plan was REVIEWED first, and
+  #     the apply was executed against that reviewed plan.
+  #
+  # ── ⚠️  HOW THE RESIZE WAS ACTUALLY CARRIED OUT  ⚠️ ──────────────────────
+  #
+  # THIS IS THE MOST IMPORTANT THING IN THIS COMMENT.
+  #
+  # An EARLIER VERSION OF THIS COMMENT said something different, and it was
+  # WRONG. It claimed that `instance_type` on `aws_instance` is ForceNew in
+  # the AWS provider, that a plan carrying the change would therefore propose
+  # DESTROY + CREATE rather than an in-place resize, and that the only path
+  # preserving the instance was a MANUAL stop → modify → start on the AWS
+  # side with `terraform apply` forbidden.
+  #
+  # THE OPERATOR'S ACCOUNT OF WHAT WAS EXECUTED GOVERNS, and it is this:
+  #
+  #   THE RESIZE WAS CARRIED OUT THROUGH A REVIEWED TERRAFORM PLAN AND A
+  #   TERRAFORM APPLY. The plan was READ before it was applied, and the apply
+  #   PRESERVED THE EC2 INSTANCE ID — which the operator has INDEPENDENTLY
+  #   CONFIRMED. See `docs/verification-milestone-3.md` §12.1 row 1 and §12.2.
+  #
+  # THE OBSERVED OUTCOME IS THE EVIDENCE. An instance ID that survived the
+  # apply is not consistent with a destroy-and-recreate having been executed.
+  # This comment therefore does NOT re-assert ForceNew, and the ForceNew
+  # inference that motivated the manual-resize story is withdrawn. The risk
+  # that motivated it — a replacement losing the instance ID, the root volume,
+  # the models, the checkout and the images — is REAL and is still worth
+  # respecting; what is withdrawn is the claim about how Terraform behaves and
+  # the claim that apply could not be used.
+  #
+  # THE LESSON IS UNCHANGED AND IS THE REASON TO KEEP THIS BLOCK. The action
+  # that loses the instance ID, the volume, the models, the checkout and the
+  # images is an UNREVIEWED apply of a plan that proposes replacement. The
+  # thing that prevents it is READING THE PLAN FIRST — which is exactly what
+  # was done. If you remember one thing from this block, remember that the
+  # plan is read before it is applied, not after.
+  #
+  # ── THE RECONCILING CHANGE ───────────────────────────────────────────────
+  #
+  # The default in THIS file declares the same steady state the instance now
+  # runs. That is a RECONCILING change: it exists so that every subsequent
+  # plan proposes reverting the capacity upgrade. Without it, a later plan
+  # would propose shrinking a box that was just enlarged — produced by nothing
+  # more than forgetting a flag, which is the same hazard class this milestone
+  # has been removing since M2.
+  #
+  # ── WHAT THIS CHANGE IS NOT ─────────────────────────────────────────────
+  #
+  # THE CHANGE IN THIS FILE ALONE DOES NOT RESIZE ANYTHING. Nothing here
+  # touches a live AWS resource, and nothing here will. It reconciles the
+  # DECLARED DEFAULT with the STEADY STATE THE INSTANCE NOW RUNS. The capacity
+  # change itself was already carried out, through a reviewed Terraform plan
+  # and a Terraform apply — see the section above.
+  #
+  # Do not describe this change as an upgrade, and do not let a plan run
+  # from it be treated as approval to apply. It is documentation and drift
+  # correction, exactly as the previous change at this variable was.
+  #
+  # ── IF t3.small BREAKS ──────────────────────────────────────────────────
   #
   # If the boot log shows an OOM kill, or the api never becomes healthy,
   # raise this before investigating anything else. t3.medium (4 GiB) is the
-  # next step — it is the cheap answer; the correct answer is the family
-  # below. Measure it rather than guessing:
+  # next step up; the correct answer is the FAMILY below. Measure it rather
+  # than guessing:
   #   ssh/ssm →  docker stats --no-stream
   #             docker compose logs embedder reranker | grep -i 'memory\|error'
   #
-  # t3 is also the wrong FAMILY for anything sustained: t3 is burstable and
-  # inference is a sustained load, so sustained reranking on t3 will spend
-  # its life in CPU credit exhaustion. m6i/m7i is the right family for
-  # anything production-shaped. Out of scope for a single dev host, and
-  # unchanged by this default either way.
+  # ── WHAT IS STILL UNVERIFIED ON t3.small ─────────────────────────────────
+  #
+  #   * NOTHING about whether retrieval works. That WAS unproven when this
+  #     default was written, and it has since been exercised: ingestion,
+  #     search, ranking, isolation and survival across an API container
+  #     restart all passed on this instance. `docs/verification-milestone-3.md`
+  #     §12.1 is the row-by-row record. Do not re-open it.
+  #   * M3 rerank latency ON EC2 remains untaken as a DISTRIBUTION. The rerank
+  #     latency that motivates the 10-candidate funnel — ~11-12.5s median
+  #     over ten documents, i.e. ~1.1-1.25s per candidate — was measured on
+  #     the developer's workstation, NOT on any EC2 instance. The cloud run
+  #     produced ONE /search observation of 15.55s, which is not a latency
+  #     distribution and does not answer this. It is the number that decides
+  #     whether the ALB lb_idle_timeout needs raising.
+  #   * Sustained-load behaviour, and therefore the CPU-credit throttling
+  #     described above, is unmeasured at every size. A working single search
+  #     says nothing about how t3.small behaves over hours.
+  #   * Terraform state HAS NOW been confirmed to agree with reality. A
+  #     read-only `terraform plan -detailed-exitcode` reported NO CHANGES and
+  #     exit 0, independently verified by the operator. This is an
+  #     OBSERVATION, not the argument the block below used to make.
+  #     See §12.1 row 20 and §12.4 item 1 — RESOLVED.
   #
   # ── WHY THIS CHANGE SHOULD PRODUCE NO RESOURCE DIFF ──────────────────────
   #
-  # t3.small → t3.micro here is a documentation-and-safety correction, not a
-  # resize. Terraform state already records t3.micro for the running
-  # instance, so moving the default to the value state already holds should
-  # yield an empty plan rather than a replacement. That reasoning is NOT
-  # verified here: this change was made deliberately WITHOUT running
-  # terraform. Confirm it is diff-free on the operator's next plan review
-  # rather than taking this comment's word for it.
+  # The resize has been carried out and this file now declares the instance
+  # type the instance runs, so the reasoning for an empty plan is that state
+  # records t3.small, this file declares t3.small, and there is nothing left
+  # to plan.
+  #
+  # THAT REASONING HAS NOW BEEN CONFIRMED BY OBSERVATION. This comment block
+  # itself still runs NO terraform — no plan, no init, no validate was ever
+  # executed to write it, and none was executed to correct it. The correction
+  # is to the PROSE, not to the reasoning it criticized: the check that was
+  # missing has been run by the operator, independently, and reported as
+  # NO CHANGES with exit 0.
+  #
+  # The distinction is kept deliberately. `terraform plan -detailed-exitcode`
+  # returns 0 for no changes and 2 for changes present, so the EXIT STATUS is
+  # the result and must be quoted, not eyeballed. What is now quoted is 0.
+  # NO APPLY WAS RUN to produce it, and none should be — this is a read-only
+  # reconciliation, and running an apply to make a verification row look
+  # complete would invalidate the very row it was meant to support.
 }
 
 variable "app_root_volume_size" {
