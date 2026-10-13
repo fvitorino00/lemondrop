@@ -977,6 +977,25 @@ as it currently stands. Five green rows are not a deployed system.
 The supporting infrastructure criteria verified in Phase 2 (§6 rows 6 and 7) are unchanged
 and remain local-only for the same reason.
 
+### 9.9 §9.8's qualifier row is SUPERSEDED — read §12, not this
+
+> **⚠ SUPERSEDE NOTE — §9.8's qualifier row 6 is no longer the current answer.**
+>
+> It reads *"Cloud / AWS acceptance of any kind — **NOT VERIFIED. NOTHING.** No criterion
+> above has been tested on AWS."*
+>
+> **That was true when written and is left exactly as written**, for the reason §6.3 gives:
+> a verification record's history is evidence, and silently editing a `NOT VERIFIED` into a
+> `VERIFIED` destroys the only trace that the question was ever open.
+>
+> **The five `(local)` verdicts in this table are NOT superseded** — the local environment
+> still produced them, and §12 does not replace that evidence, it adds to it.
+>
+> **What IS superseded is the qualifier row.** All five criteria have since been verified in
+> the **cloud** environment, on a live `t3.small` behind a public ALB. **§12.5 is the current
+> acceptance-criteria table**, with the local and cloud columns side by side and the
+> row-level qualifications preserved. See also §12.6 for the full list of superseded claims.
+
 ---
 
 ## 10. Not proven, and what is next
@@ -990,6 +1009,19 @@ at the bottom is not a verification record.
 container stack. Milestone 3 is **accepted locally and not accepted in the cloud.**
 
 ### 10.1 Nothing has been verified on AWS
+
+> **⚠ SUPERSEDED BY §12 — recorded here rather than rewritten, per §3's own convention.**
+>
+> The heading above and the paragraph below state that nothing has been verified on AWS.
+> **Both were true when written and are left exactly as written.** The AWS environment has
+> since been exercised and accepted: **all five criteria are VERIFIED on the cloud
+> environment** (§12.1, §12.5).
+>
+> **The items below are NOT thereby all closed**, and §12.4 is the current list. In
+> particular: **§10.5** (the RDS migration) is covered by §12.1 row 4; **§10.7** is only
+> partially answered by a single 15.55s observation and its risk is carried forward; **§10.8**
+> and **§10.10** remain open, and §12.4 adds four items that did not exist when this section
+> was written. Read §12.4, not this section, for what is still unproven.
 
 Plainly, because it is the easiest thing for a reader to skip past: **every VERIFIED row in
 this document is local.** No SSM, no Secrets Manager, no boto3, no RDS, no EC2, no ALB, no
@@ -1287,3 +1319,330 @@ decisions are therefore one decision, not two.
 **No AWS resource has been created, changed or verified by any of the above.** §10 stands
 in full, and its qualifier row — *no criterion in this document is cloud-accepted* — is
 unaffected by these decisions.
+
+> ### ⚠ SUPERSEDED BY §12 — this section was true when written and is not true now.
+>
+> §11.5's status table reads *"Nothing below is done"*, and the closing paragraph reads
+> *"No AWS resource has been created, changed or verified by any of the above."*
+>
+> **Both are left exactly as written.** The deployment, the `lemondrop_app` role and the
+> least-privilege split have since been carried out on AWS and verified by the operator.
+> **§12 is the current record**; see §12.6 for the full list of claims in this document
+> that §12 supersedes.
+
+---
+
+## 12. Milestone 3 — cloud acceptance on AWS
+
+**Status: VERIFIED ON AWS. All five acceptance criteria, on a live `t3.small` behind a public
+ALB. This section supersedes §9.8 row 6 and §10.1.**
+
+Everything in this section was executed and reported by the **operator**, against the live
+AWS deployment and observed through the public ALB. **The agent did not run any of it, ran
+no AWS command, and is not claiming to.** There are no CEO rows in this section: every item
+below is a runtime observation reported by the operator, and every row says so.
+
+**The whole of §12 is the operator's report.** Where the operator supplied a result rather
+than a transcript, the row says so — the same convention as §2 and §9. Nothing here is an
+independent reproduction, and §12 must not be read as one.
+
+**Read §12.3 and §12.4 with §12.1.** A cloud acceptance section that recorded only the green
+rows would be worse than no section at all: four failures preceded this one, three of them
+kernel OOM kills, and the most of them are still open. §12.3 preserves them; §12.4 is the
+list of what §12.1 does not mean.
+
+### 12.1 Cloud acceptance — verified by the operator
+
+| # | Item | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | Instance size and identity after the resize | **`t3.small` is running, and the EC2 instance ID is UNCHANGED from before the resize.** The preservation requirement held: same instance, same root volume. | **operator** (result reported) | **VERIFIED** |
+| 2 | Container health | **All three containers healthy.** | **operator** (result reported) | **VERIFIED** |
+| 3 | Reranker serving state | The reranker reports **`n_slots = 1`** — consistent with the one-slot configuration kept from the local phase. | **operator** (result reported) | **VERIFIED** |
+| 4 | Ingestion of the corpus on RDS | **40 of 40 corpus documents ingested, zero failures reported.** | **operator** (result reported) | **VERIFIED** |
+| 5 | Cloud `POST /search` | **10 candidates returned, 5 results.** The funnel shape of §8.2 is unchanged. | **operator** (result reported) | **VERIFIED** |
+| 6 | Ranking, `infrastructure` collection | **An `infrastructure` search returns the correct top documents.** | **operator** (result reported) | **VERIFIED** |
+| 7 | Ranking, `it-support` collection | **An `it-support` search returns the correct top documents.** | **operator** (result reported) | **VERIFIED** |
+| 8 | Collection isolation **on the response** | **Isolation passes for both collections**, judged on what the caller receives. | **operator** (result reported) | **VERIFIED** |
+| 9 | Persistence across restart | **Search survived an API container restart.** | **operator** (result reported) | **VERIFIED** — with the qualification in §12.5 row 4 |
+| 10 | No new OOM | **No new kernel OOM event within the verified search window.** | **operator** (result reported) | **VERIFIED (bounded)** — see below |
+| 11 | Public ALB `GET /health/ready` | **HTTP 200.** | **operator** (result reported) | **VERIFIED** |
+| 12 | Public ALB `POST /search` | **HTTP 200 in 15.55 seconds.** | **operator** (result reported) | **VERIFIED** — see below |
+
+**On row 12, stated the way it has to be stated: 15.55s is a SINGLE OBSERVATION, not a
+latency distribution.** One request, one result, on a shared host that was not under
+concurrent load. It is not a mean, not a median, not a p95, not an SLO, and it must not be
+quoted as one. §8.6's measured distribution came from two runs of five samples; this is one
+sample. **It is also not a margin measurement** — §12.4 item 4 is where that question is
+answered, and the answer there is "not answered".
+
+**On row 10, the word doing the work is *window*.** The operator reported no new kernel OOM
+event **within the verified search window**, and **the length of that window was not
+reported**. This row therefore bounds the claim to the searches that were actually run. It
+is not a claim that the memory problem is closed, and §12.3.3 records why that distinction
+is load-bearing rather than pedantic.
+
+**On rows 6, 7 and 8, note *correct*.** The operator reported that the searches return the
+correct top documents and that isolation passes for both collections. **The specific
+document ids ranked first on AWS were not reported**, so they are not recorded here. §8.4
+names them for the local run; those are local results and are not restated as cloud results.
+
+### 12.2 The resize was performed by hand — and why Terraform was not allowed to do it
+
+**This is recorded because the mechanism is load-bearing, not because the resize is
+interesting.** A reader who finds §12.1 row 1 and thinks "so Terraform resized it" has the
+process backwards in a way that produces the wrong action next time.
+
+**The resize was performed manually on the AWS side — stop, modify instance type, start.**
+It was **not** performed through Terraform, and it **could not** have been.
+
+`aws_instance.instance_type` is **ForceNew** in the AWS provider. A Terraform apply carrying
+that change plans **destroy + create**, not an in-place resize. That would have produced:
+
+- a **new instance ID** — every CloudTrail reference, SSM command history entry and runbook
+  address naming this instance becomes wrong;
+- a **new EBS root volume** — and with it the **downloaded model weights, the Docker images
+  and the `/opt/lemondrop` checkout**, none of which are in the AMI and all of which would
+  have to be rebuilt;
+- a **fresh boot** that must re-clone the repository and re-download every model before it
+  can serve a request.
+
+Stop/modify/start is not a cheaper version of that. **It is the only path that preserves the
+instance ID and the root volume**, and therefore everything resident on them. §12.1 row 1 is
+the check that the chosen path delivered what it was chosen for: the instance ID did not
+change.
+
+**The Terraform default was reconciled AFTERWARDS, in a separate commit** — commit
+`fix(infra): reconcile the app_instance_type default with the running instance`, which moves
+`infra/variables.tf`'s `app_instance_type` default from `t3.micro` to `t3.small` and nothing
+else. It reconciles the **declared default** with the intended steady state; **it resizes
+nothing**. The separation is deliberate and should not be collapsed: the capacity change was
+an AWS-side action, the drift correction is a Git commit, and no `terraform apply` was
+involved in either.
+
+**That reconciliation has NOT been checked against real Terraform state. See §12.4 item 1 —
+it is the first thing on that list.**
+
+### 12.3 The M3 cloud failure history — preserved, with its timeline
+
+**A verification record that hides its failures is worse than one without any results.** The
+four failures below are the reason §12.1 exists in this shape rather than as a claim that
+the cloud simply works. They are recorded in the order they happened.
+
+#### The AWS credential resolver raised `RuntimeError` — the container had no region
+
+| # | Item | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | Symptom | The AWS credential resolver raised **`RuntimeError`** inside the container. | **operator** | **RESOLVED** |
+| 2 | Root cause | **`api/app/config.py` reads a region from `AWS_REGION` / `AWS_DEFAULT_REGION`, and `docker-compose.yml` passed neither.** The container therefore had no region to construct a client with. | **operator** | **DEFECT CONFIRMED** |
+| 3 | Why the variable is genuinely required | Verified **empirically**: botocore resolves a region **at client-construction time**, from config or environment only. `placement/remote` appears **nowhere in botocore**. So the omission was in **Compose**, not in the resolver. | **operator** | **VERIFIED** |
+| 4 | Fix | **Pass-through of the region into the compose `api` service.** | **operator** | **RESOLVED** |
+
+Row 3 is the part worth keeping. The tempting repair is to make the resolver more
+permissive — to invent a default region inside the code. That would have moved a Compose
+omission into the application and hidden it behind a working-looking fallback. The finding
+is the opposite: **the resolver was correct and the caller was incomplete**, and that was
+established by checking botocore's actual resolution order rather than by arguing about it.
+
+#### The `IMDSv2` hop limit was 1 — too strict for a container
+
+| # | Item | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | Symptom | The **`IMDSv2` hop limit was `1`**, which is too strict for a container. | **operator** | **DEFECT CONFIRMED** |
+| 2 | Fix | **Corrected to `2`.** | **operator** | **RESOLVED** |
+| 3 | Security posture preserved | **`http_tokens` is still `required`.** | **operator** | **VERIFIED** |
+
+Row 3 is the one that matters. The hop limit was raised; the IMDSv2 requirement was **not**
+relaxed. Those are different settings and only one of them was traded.
+
+#### The OOM — three kernel kills of `llama-server`, and a misclassification
+
+**Three kernel OOM kills of `llama-server` in the reranker's cgroup:**
+
+| # | Time | Killed process | anon-rss | Executed by | Verdict |
+|---|---|---|---|---|---|
+| 1 | `18:18:16` | `llama-server` | **425504 kB** | **operator** | **DEFECT CONFIRMED** |
+| 2 | `18:20:21` | `llama-server` | **428608 kB** | **operator** | **DEFECT CONFIRMED** |
+| 3 | `18:40:13` | `llama-server` | **437408 kB** | **operator** | **DEFECT CONFIRMED** — *after* the reranker was reduced to one inference slot |
+
+**The host at the time had ~194Mi available and no swap**, against reranker weights of
+**289.8 MiB** — larger than the entire available memory before a single byte of KV cache.
+
+**The misclassification, recorded honestly because it is the most instructive thing in this
+subsection.** The container's **`OOMKilled` flag read `false`**, and that reading was
+initially treated as ruling out a kernel OOM. **It was wrong, and here is exactly why:** the
+reading was taken **after the container had already restarted**, so it described a *different
+container* than the one that died. **`RestartCount = 2` was the corroborating evidence, and it
+was under-weighted** in favour of a single flag that was answering a question about the wrong
+object.
+
+The operator-visible symptom was **`httpx.RemoteProtocolError`** — and it is worth being
+precise about what that is, because its name invites misreading in both directions:
+**TCP was established, and the connection was then reset mid-response.** It is neither a
+refused connection (nothing was listening-false; the port was open and accepted) nor a
+timeout (nothing waited and gave up). A mid-response reset is what a process dying under
+memory pressure looks like from the client side, and a reader who treated the exception name
+as the diagnosis would have looked in the wrong place.
+
+**The general lesson, and the reason this is recorded rather than summarised: a diagnostic
+read from a restarted process describes the new process.** The observation was not wrong and
+was not fabricated; it was **taken against the wrong subject**, which is a different and more
+dangerous failure than a bad measurement, because a bad measurement invites distrust of the
+number while a well-formed reading of the wrong object invites full trust.
+
+#### `--parallel 1` was the first attempted correction — and it did NOT fix the OOM
+
+**This is recorded as a negative result, and it is the result that identified the real
+cause.** It is the most valuable thing in the failure history, precisely because it failed.
+
+| # | Item | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | First attempted correction | **`--parallel 1`** — reranker reduced to a single inference slot. | **operator** | **APPLIED** |
+| 2 | What it achieved | Removed a **measured 71.5 MiB of avoidable KV overhead**: local RSS **720.1 → 648.6 MiB**, slots **4 → 1**. | **operator** | **VERIFIED** |
+| 3 | What it cost | Roughly **13% median latency.** | **operator** | **VERIFIED** |
+| 4 | Whether it fixed the OOM | **NO. Peak RSS ROSE instead** — the third kill in the table above (`18:40:13`, 437408 kB) happened *after* the change. | **operator** | **NEGATIVE RESULT** |
+
+Row 4 is the load-bearing row. Reducing concurrency removed 71.5 MiB of KV cache and the
+memory **still** went up, which establishes that the dominant term is **fixed model weights
+and llama.cpp runtime**, not KV cache. **Tuning could never have been the fix**, and this is
+what said so — not reasoning, a measurement that contradicted the hypothesis it came from.
+
+**This is why the correction that worked was capacity, not configuration.** `--parallel 1`
+is still in place (§12.1 row 3), and it is kept deliberately despite not having fixed the
+OOM by itself: the 71.5 MiB is real memory returned, the ~13% latency is affordable on a
+2 GiB host, and reverting it would put 71.5 MiB back while fixing none of the several
+hundred kB of resident weights that actually died.
+
+#### The isolation test that was BLIND — carried forward, not re-litigated
+
+**The original collection-isolation test passed against a broken implementation.** It used a
+query vector sharing a seed with a fixture, so a fetch-then-filter returned all three rows
+and the test **PASSED**. It was **proven by mutation, not by argument** — the implementation
+was rewritten into fetch-then-filter and the test watched to fail.
+
+**This is §8.5 and it is recorded there in full, with the mutation results and the control
+assertion now in the test.** It is named here for one reason: it is the same class of failure
+as the `OOMKilled` misclassification above — **a check that passed, or a check that read
+cleanly, while the thing it claimed to cover was broken.** §8.5's general lesson applies to
+both: *a test whose discrimination depends on incidental properties must assert those
+properties on every run.* Nothing in §12.1 is credited to a check that does not prove itself
+armed.
+
+#### The pgvector version gap
+
+| | Local devdb | RDS | Executed by |
+|---|---|---|---|
+| pgvector version | **0.8.7** | **0.8.1** | **operator** |
+
+**Compatible for everything this milestone uses:** exact search, `vector(384)`, the three
+distance operators, `vector_dims`. **No ANN index is in use** — search is exact, which is
+why a minor version skew is not a risk today.
+
+**Revisit before any index work.** This is the portability caveat §3 and §5.4 raised when the
+version was local-only, and it is now a **real skew between two environments the system
+actually runs on** rather than an unknown. It is recorded here rather than closed because
+nothing has closed it.
+
+### 12.4 What is still NOT verified on AWS — unsoftened
+
+**§12.1 is eleven green rows. This is the list of what they do not mean.** It is placed
+immediately after the failure history and referenced from §12's own second paragraph,
+because the two belong together and separating them is how a verification record starts
+lying.
+
+1. **Terraform state has NOT been reconciled against the manual resize. Until it is, it is
+   ASSUMED reconciled.** The instance was resized on the AWS side (§12.2); **no
+   `terraform plan` has confirmed that state now agrees with reality, and that the plan is
+   empty.** The `t3.small` default committed alongside this section is a reconciliation of
+   the **declared config** with the **intended steady state** — it is an argument about what
+   a plan *would* produce, not an observation of what a plan *did* produce. **This is the
+   first item on the list and it is the one most likely to be assumed done.**
+
+2. **Sustained and concurrent load are untested.** Every latency number in this document is
+   **a small number of single requests on a shared host** — §8.6's ten samples and §12.1's
+   single 15.55s observation alike. Nothing here characterises behaviour under concurrent
+   searches, each of which holds both models busy.
+
+3. **CPU credit exhaustion on the `t3` family is UNMEASURED, at any size.** `t3` is
+   burstable; sustained cross-encoder scoring is a sustained load. §12.1's searches do not
+   establish how much credit was spent, and the failure mode when credits deplete —
+   throttling, degraded rerank latency — looks like "search got slow" rather than "search is
+   broken", which is a harder failure to diagnose later. **`t3.small` should make retrieval
+   WORK; it does not make the architecture right.**
+
+4. **ALB headroom is unquantified.** One observation at **15.55s** against a **60s**
+   `lb_idle_timeout` is **not a margin measurement** — it is one data point with no
+   distribution around it. Worse, the underlying mismatch is unchanged: the API's own
+   **`INFERENCE_TIMEOUT_SECONDS = 120`** is a **per-inference-call** budget, and `/search`
+   makes **two sequential calls** (embed, then rerank), so **worst-case request time is
+   roughly 240s against a 60s ALB idle timeout.** The ALB gives up first. **This remains
+   unaddressed and is a known configuration defect** — §10.8 deferred the fix pending a
+   latency measurement, and §12.1's single observation is not that measurement.
+
+5. **Clean destroy/rebuild reproducibility remains untested**, carried forward from Milestone
+   2. Deployment is in-place through SSM (§11.1), which means the rebuild path has never
+   been exercised end to end on this instance.
+
+6. **The corpus is synthetic**, generated for this milestone because no dataset was supplied
+   (§1, §10.11). §12.1 rows 4–8 are measurements on a corpus of known shape, not on
+   anything a real user would search.
+
+7. **Least privilege is now demonstrated on AWS — but the negative control was NOT run.**
+   Unlike §10.10's local position, the deployed path has been exercised against RDS with
+   the split credential. **However:** the check that the **instance role cannot read the RDS
+   master secret** (§11.4 — the control that turns §11.3 from a convention into an actual
+   control) **was not reported as run, and is recorded here as OUTSTANDING.** Until it is,
+   "the app uses the app credential" remains a convention rather than an enforced control,
+   for exactly the reason §11.4 gives: instance-profile credentials are reachable by any
+   process on the host.
+
+8. **Python version skew, unchanged.** Local tests run on **Python 3.14.4** while the image
+   is **3.12** (§10.9). Every local result in this document ran on 3.14.4.
+
+### 12.5 M3 acceptance criteria — current state (CLOUD)
+
+**This table supersedes §9.8, which is left as written.** §9.8 verified all five criteria
+**in the local environment only** and carried a qualifier row reading *"Cloud / AWS
+acceptance of any kind — NOT VERIFIED. NOTHING."* **That row is no longer the current answer.**
+§9.9 is the signpost.
+
+| # | Criterion | Status (local) | Status (**CLOUD**) |
+|---|---|---|---|
+| 1 | Ingestion of the corpus | **VERIFIED (local)** — §5.2, §6.1 | **VERIFIED (cloud)** — §12.1 row 4. *40 of 40 ingested against RDS, zero failures reported. The local-only qualification in §2 row 8 is **retained**: the schema work itself was applied to the local devdb, and the RDS side is what row 4 covers.* |
+| 2 | Semantic search returns relevant results | **VERIFIED (local)** — §8.2, §9.2 | **VERIFIED (cloud)** — §12.1 rows 5, 6, 7. *10 candidates in, 5 results out; both collections return the correct top documents.* |
+| 3 | Reranking applied | **VERIFIED (local)** — §8.2, §9.2 | **VERIFIED (cloud)** — §12.1 rows 3, 5. *The funnel shape holds on the cloud path (10 → 5), and the reranker reports `n_slots = 1`. **The cross-encoder scores themselves were not reported** and are not claimed.* |
+| 4 | Persistence across restart | **VERIFIED (local)** — §9.2 | **VERIFIED (cloud)** — §12.1 row 9. ⚠ **Verified via an API CONTAINER restart, not an EC2 reboot.** The local §9.2 test restarted the API and PostgreSQL separately; the cloud test restarted the API container. **Neither is an instance reboot**, and the distinction matters: a reboot is what would exercise the boot path (§12.4 item 5). |
+| 5 | Collection isolation (canary pairs never cross) | **VERIFIED (local)** — §8.4, §8.5, §9.2 row 4 | **VERIFIED (cloud)** — §12.1 rows 6, 7, 8. ⚠ **Verified at the RESPONSE level on AWS — the SQL-level mechanism was proven LOCALLY.** §8.5's mutation proof — rewriting `store.retrieve` into fetch-then-filter and watching the test fail — is a **local** result and is **not restated as a cloud result.** On AWS, isolation is verified on what the caller receives; the predicate's mechanism underneath it is carried on the local proof. |
+
+| # | Qualifier | Status |
+|---|---|---|
+| 6 | **Terraform state reconciled against the manual resize** | **NOT VERIFIED.** No `terraform plan` has been run against the resized instance. State is **ASSUMED** reconciled. **§12.4 item 1.** |
+| 7 | **Sustained / concurrent load, CPU credits, ALB headroom** | **NOT VERIFIED.** **§12.4 items 2, 3, 4.** |
+| 8 | **Negative control on the instance role** (§11.4) | **NOT RUN. OUTSTANDING.** **§12.4 item 7.** |
+
+**What the table now says, stated once and plainly.** All five acceptance criteria are
+verified **in the cloud environment**, on a live `t3.small` behind a public ALB, against RDS.
+The local results in §5–§9 are **not** superseded by this and remain their own evidence:
+they prove the retrieval layer against a corpus whose first-ranked documents are named,
+which the cloud run does not. **The cloud rows and the local rows are different evidence
+about the same five criteria, and this document now holds both.**
+
+**What this table is not.** It is not a statement that M3 is production-shaped. §12.4 is
+the list of what would have to be true for that claim, and four of its eight items are open.
+
+### 12.6 Claims elsewhere in this document that §12 supersedes
+
+Recorded explicitly, because a supersede note that lists only some of what it supersedes is
+a signpost that sends readers to the wrong place.
+
+| Superseded claim | Where | What §12 says now |
+|---|---|---|
+| *"Cloud / AWS acceptance of any kind — NOT VERIFIED. NOTHING."* | §9.8 qualifier row 6 | **All five criteria VERIFIED on the cloud environment** — §12.1, §12.5 |
+| *"The headline: nothing has been verified on AWS."* / §10.1 | §10 | **The AWS environment has been exercised and accepted** — §12.1. §10.2–§10.6 were **code and Terraform** blockers that have since been resolved by the SSM deployment path (§11.1); §10.5's RDS migration is covered by §12.1 row 4 |
+| *"Rerank latency on EC2 is unmeasured — and it decides the ALB timeout"* | §10.7 | **Partially superseded.** One cloud latency observation exists — **15.55s, a single sample** (§12.1 row 12). **It does not answer the question §10.7 poses**, which needs a distribution. §10.7's underlying risk is **carried forward** in §12.4 item 4 |
+| *"Least privilege is asserted, not demonstrated"* | §10.10 | **Superseded on AWS.** Demonstrated against RDS on the deployed path — **with the §11.4 negative control still outstanding** (§12.4 item 7). The local SUPERUSER position is unchanged |
+| *§11.5 status table: "Nothing below is done"* | §11.5 | **Superseded.** Deployment and the `lemondrop_app` role were carried out; see §12.1 and §12.4 item 7. **§11.1–§11.4's decisions and reasoning are not superseded — they were followed** |
+| *"Persistence across container restart — UNTESTED"* | §6 row 4, §6.2 | **Superseded twice over** — already superseded by §9.8 (local); §12.1 row 9 carries it into the cloud environment, **with the container-restart-not-reboot qualification in §12.5 row 4** |
+
+**And one claim in §12 is NOT superseded by anything, because it was never verified in the
+first place: the pgvector version skew between local devdb (0.8.7) and RDS (0.8.1).** §12.3
+records it as open, and it is open.
