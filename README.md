@@ -25,7 +25,8 @@ authority.
 
 ## Architecture
 
-Three services, defined in `docker-compose.yml`:
+Four services are defined in `docker-compose.yml`: three that run by default,
+and one development database behind an optional profile.
 
 1. **`embedder`** — `llama.cpp` serving `bge-small-en-v1.5` (Q8_0 GGUF).
    Produces 384-dimension embeddings with CLS pooling. Endpoint `/v1/embeddings`.
@@ -34,48 +35,103 @@ Three services, defined in `docker-compose.yml`:
    Cross-encoder relevance scoring with rank pooling. Endpoint `/v1/rerank`.
    Same image.
 3. **`api`** — FastAPI orchestrator, built from `./api` rather than pulled.
-   Routes `GET /health`, `POST /embed`, `POST /rerank`. It is the only service
-   with a published port.
+   It serves every route in [API routes](#api-routes) — `GET /health`,
+   `GET /health/live`, `GET /health/ready`, `POST /embed`, `POST /rerank`,
+   `POST /documents` and `POST /search` — and it is the only service with a
+   published port.
+4. **`postgres`** — PostgreSQL 16 with pgvector, image `pgvector/pgvector:pg16`.
+   Holds the `documents` table, whose `embedding` column is `vector(384)`.
+   **Development only:** it sits behind the optional `devdb` profile and is not
+   started by a plain `docker compose up`. See
+   [Two database deployments](#two-database-deployments) below.
 
 ```
-                    host
-                      │
-              :8000   │   the only published port
-                      ▼
-             ┌────────────────┐
-             │      api       │   FastAPI, built from ./api
-             └───────┬────────┘
-                     │  http://embedder:8080
-                     │  http://reranker:8080
-            ┌────────┴────────┐
-            ▼                 ▼
-     ┌────────────┐    ┌────────────┐
-     │  embedder  │    │  reranker  │
-     │  :8080     │    │  :8080     │
-     └────────────┘    └────────────┘
-            ▲                 ▲
-            └────────┬────────┘
-                 ./models:/models
+                        host
+                          │
+                  :8000   │   the only published port
+                          ▼
+                  ┌───────────────┐
+                  │      api      │   FastAPI, built from ./api
+                  └──┬────────┬───┘
+                     │        │
+       ┌─────────────┴┐       └────────────┴
+       ▼              ▼                    ▼
+ ┌───────────┐  ┌───────────┐  ┌───────────────────────┐
+ │ embedder  │  │ reranker  │  │ postgres  pgvector    │
+ │ :8080     │  │ :8080     │  │ profile: devdb         │
+ │ llama.cpp │  │ llama.cpp │  │ volume: pgdata        │
+ └───────────┘  └───────────┘  └───────────┬───────────┘
+       ▲              ▲                    │
+       └──────┬───────┘                    │
+          ./models:/models                 ▼  psql on this host only
 ```
 
-Port topology. The compose file contains exactly one `ports:` key, and it is on
-`api`:
+What the arrows in that diagram are, in words, since a picture can be read
+loosely:
+
+- **`api` → `embedder`, `api` → `reranker`** — plain HTTP over the compose
+  network, to `http://embedder:8080` and `http://reranker:8080`. By service
+  name, resolved by Docker's embedded DNS. No published port is involved.
+- **`api` → `postgres`** — the `postgresql+asyncpg` DSN in `DATABASE_URL`, over
+  the compose network, to `postgres:5432`. That service name resolves to the
+  devdb container locally; on AWS the same variable is empty and the DSN comes
+  from the resolver instead.
+- **`./models:/models`** — a bind mount onto both workers, not a connection.
+  `./models:/models` is how the two workers get their weights.
+- **`postgres` → `127.0.0.1:5432`** — a published port bound to loopback, and
+  the only reason it exists is so `psql` on the workstation can attach.
+
+Port topology. `docker-compose.yml` contains two `ports:` keys: one on `api`,
+and one on `postgres` bound to loopback.
 
 | Service    | Reachable from the host at   |
 |------------|------------------------------|
-| `api`      | `localhost:8000`             |
+| `api`      | `localhost:8000` (`${API_HOST_PORT}:${API_INTERNAL_PORT}`) |
 | `embedder` | not published — `http://embedder:8080` only, inside the compose network |
 | `reranker` | not published — `http://reranker:8080` only, inside the compose network |
+| `postgres` | `127.0.0.1:${DEV_DB_HOST_PORT:-5432}` — loopback only, and only when started with `--profile devdb`. Nothing off this host can reach it. |
 
-Both workers listen on 8080 inside their own network namespaces. That is not a
-conflict: separate containers have separate namespaces, so the two sockets are
-different. What distinguishes the services is the name, not the port — Docker's
-embedded DNS resolves `embedder` and `reranker` on the default network.
+That the workers have no published port is why `api` is the only reachable
+surface, not an oversight: `api` reaches them by service name over the compose
+network, through Docker's embedded DNS, and no publishing is involved on that
+path. Both workers listen on 8080 inside their own network namespaces — separate
+containers, separate namespaces, so the two sockets do not collide. What
+distinguishes the services is the name, not the port.
 
 `api` depends on both workers with `condition: service_healthy`, so it starts
 only once each worker has passed its healthcheck. `llama.cpp` answers `/health`
 with 503 while it is still reading the GGUF off disk, so a plain `depends_on`
-would start the API against two unready dependencies.
+would start the API against two unready dependencies. There is deliberately **no
+`depends_on` on `postgres`**: it is profile-gated and does not exist on the
+production host, where `scripts/boot.sh` runs a bare `docker compose up -d`, so
+declaring it there would fail every compose call on a database that host is not
+running.
+
+### Two database deployments
+
+These are two different things, and the difference matters when you are reading
+this to work out how a running system found its database.
+
+- **Local Compose PostgreSQL** — the `postgres` service, behind the optional
+  `devdb` profile. A development convenience, not the default: start it
+  explicitly with `docker compose --profile devdb up -d postgres`. The `api`
+  container's DSN comes from `DEV_DATABASE_URL` in `.env`, which names the
+  `postgres` service on the compose network. Until it is started, the API serves
+  and reports degraded on `/health/ready`, which is the honest answer.
+- **AWS RDS PostgreSQL** — the deployed target. Reached through the AWS
+  credential resolver, not an environment file: `DB_DSN_SOURCE=aws` selects it,
+  `AWS_REGION` supplies the region (there is deliberately no default, because
+  the AWS SDK does not discover one), host and port come from SSM Parameter
+  Store and the credential from Secrets Manager, both through the EC2 instance
+  role. The DSN exists only in process memory, for the life of the process.
+
+The selection is explicit and never inferred. `api/app/config.py`'s
+`resolve_database_url` returns `DATABASE_URL` whenever it is set and non-blank,
+and only otherwise consults `DB_DSN_SOURCE` — so a local `DEV_DATABASE_URL`
+short-circuits the AWS path entirely, and it is a production host with an empty
+`DATABASE_URL` and `DB_DSN_SOURCE=aws` that reaches RDS. There is no
+autodetect: a host that forgot the variable would otherwise silently connect to
+production from a laptop.
 
 ## Prerequisites
 
@@ -215,11 +271,12 @@ full teardown and are still there after the next `docker compose up`.
 
 ## API routes
 
-All three routes documented below are served by the `api` service on
-`localhost:8000`. **Milestone 3 added further routes to that service —
-`POST /documents` and `POST /search` — which are not documented here**; the
-sections below cover the retrieval-free surface. Their behaviour and evidence
-are recorded in `docs/verification-milestone-3.md`.
+All seven routes below are served by the `api` service on `localhost:8000`, and
+they are the complete list — `api/app/main.py` registers no others. Three came
+from the retrieval-free milestone (`/health`, `/embed`, `/rerank`); the other
+four arrived with the database phase. `POST /documents` and `POST /search` are
+the two that use the store; their behaviour and cloud evidence are recorded in
+`docs/verification-milestone-3.md`.
 
 ### `GET /health`
 
@@ -237,6 +294,39 @@ On failure, `status` is `degraded`, and the failing dependency carries a short
 description instead of `ok` — for example `unhealthy: HTTP 503`,
 `unreachable: ConnectError`, or `timeout after 5.0s`. The HTTP status code is
 503 at the same time.
+
+### `GET /health/live`
+
+Answers one question: **is this process so broken that restarting it is the only
+way forward?** It checks nothing at all and always returns 200:
+
+```json
+{"status": "ok"}
+```
+
+That is the contract, not an oversight. A dependency cannot break the process,
+so a liveness probe that consulted the embedder, the reranker or the database
+would report 503 during a transient blip and the orchestrator would kill a
+healthy container — turning a five-second blip into a restart loop.
+
+### `GET /health/ready`
+
+Answers the opposite question: **can this process serve a request right now?**
+It probes both workers and the database, and returns 503 when any of the three
+is unavailable — the correct response, because a load balancer takes the instance
+out of rotation and puts it back when it recovers. Both can therefore be true at
+once: with the database down, `/health/live` returns 200 and `/health/ready`
+returns 503.
+
+```json
+{"status": "ok", "embedder": "ok", "reranker": "ok", "database": "ok"}
+```
+
+Same shape and same 200/503 semantics as `GET /health`, plus the `database`
+verdict — `"ok"`, or a short description of why it could not be reached, such as
+`timeout after 2.0s`. That field is credential-free by construction. `GET
+/health` is unchanged and remains the workers-only check that compose,
+`scripts/boot.sh` and the ALB depend on.
 
 ### `POST /embed`
 
@@ -306,7 +396,86 @@ higher is more relevant, and values are comparable within one response but not
 across models or model versions.
 
 This route does not filter and does not truncate. Deciding which candidates are
-worth scoring is retrieval's job, and that does not exist yet.
+worth scoring is retrieval's job, and that is `POST /search` below.
+
+### `POST /documents`
+
+Embeds one document and writes it to the `documents` table, returning **201**.
+This is the first route that mutates anything.
+
+Request — `document_id`, `collection` and `content` are required and must not be
+blank; `metadata` is optional and defaults to `{}`:
+
+```json
+{
+  "document_id": "runbook-reset-password",
+  "collection": "runbooks",
+  "content": "To reset your password click Forgot Password.",
+  "metadata": {"source": "runbook-v3"}
+}
+```
+
+Re-posting a `document_id` that already exists **updates** that row rather than
+creating a second one — content, metadata, embedding and collection — so
+ingestion is idempotent by id and there is no 409. Because `id` is the global
+primary key, re-posting under a different `collection` moves the document rather
+than copying it.
+
+The embedding is never accepted from the caller: the route embeds `content`
+itself, through the `POST /embed` handler, and therefore inherits that route's
+behaviour — including the fact that the text goes to the embedder **bare**,
+with no query prefix. See [Design notes](#design-notes).
+
+The response reports what the database now holds, not what was asked for:
+`document_id` and `collection` as stored, `outcome` as `"inserted"` or
+`"updated"`, and `dimensions` as the width PostgreSQL accepted — read back from
+the stored vector, not the width the embedder claimed. If the model and the
+schema disagree about that width, the request fails with 502 naming both
+numbers, rather than producing a write that cannot be retrieved later.
+
+### `POST /search`
+
+Finds the documents most relevant to a query within one collection, and returns
+the top few. This is the route that composes both workers and reads the store.
+
+Request — `collection` and `query` are required and must not be blank;
+`candidates` and `top_k` are optional:
+
+```json
+{
+  "collection": "runbooks",
+  "query": "how do I reset my password",
+  "candidates": 10,
+  "top_k": 5
+}
+```
+
+When `candidates` or `top_k` is omitted, the configured funnel sizes in
+[Configuration](#configuration) apply. A caller may ask for **fewer** and never
+for more: both numbers are clamped to the configured maximum, and `top_k` is
+additionally capped at the resolved candidate count, because the reranker can
+only re-order documents stage 1 actually returned.
+
+The stages run in a fixed order: embed the query, filter by collection in SQL
+and take the nearest candidates by pgvector distance, then rerank those
+candidates and return the best `top_k`. If stage 1 returns nothing, the route
+returns 200 with an empty result and **does not call the reranker** at all.
+
+This is the only route that applies `QUERY_PREFIX`, and it applies it to the
+query and to nothing else. Stage-1 candidates are not re-embedded — their
+vectors were computed at ingestion and are read from the column — so the stored
+document vectors stay exactly as they were written.
+
+The response carries `results`, `collection` echoed back from what was asked
+for, `candidates_considered` (how many candidates stage 1 actually returned —
+the number that distinguishes an empty collection from a funnel that found
+nothing relevant), and `model`, the reranker alias. Each entry in `results`
+carries `document_id`, `collection`, `content`, `metadata`, the stage-2
+`relevance_score`, and the stage-1 `distance`.
+
+Searching a collection that holds no documents is a **200 with an empty result
+set**, not a 404. `candidates_considered: 0` is how a caller distinguishes
+"nothing was searched" from "nothing matched".
 
 ### Upstream failures
 
@@ -320,13 +489,18 @@ worth scoring is retrieval's job, and that does not exist yet.
 The full upstream detail goes to the server log. The client receives a short
 sentence, not a traceback.
 
+`POST /documents` and `POST /search` inherit those same 504 and 502 behaviours
+by calling the two proxy handlers rather than reimplementing them. A **503** on
+either route means the database is unavailable, which is the same claim
+`/health/ready` makes with the same status code.
+
 ## Configuration
 
 All values come from `.env`, created by copying `.env.example`.
 
 | Key | Default | Consumed by | Meaning |
 |---|---|---|---|
-| `API_HOST_PORT` | `8000` | compose | Host-side port for `api`. The only published port. |
+| `API_HOST_PORT` | `8000` | compose | Host-side port for `api`. The only published port reachable from off-host; `postgres` publishes one too, but bound to loopback. |
 | `API_INTERNAL_PORT` | `8000` | compose | Port `api` listens on inside the network. Must stay `8000`: `api/Dockerfile` binds it as a literal in an exec-form `CMD`, where no shell expands anything. |
 | `EMBEDDER_INTERNAL_PORT` | `8080` | compose | Port the embedder listens on. Must stay `8080` — see [Design notes](#design-notes). |
 | `RERANKER_INTERNAL_PORT` | `8080` | compose | Same constraint as the embedder. |
@@ -339,8 +513,11 @@ All values come from `.env`, created by copying `.env.example`.
 
 All four of `EMBEDDING_DIM`, `QUERY_PREFIX`, `RETRIEVAL_CANDIDATES` and
 `RERANK_TOP_K` are read by the code. `docker-compose.yml` passes only
-`EMBEDDING_DIM` into the `api` container, so in the default compose setup the
-other three resolve to the defaults in the table above regardless of what a
+`EMBEDDING_DIM` of the four into the `api` container — along with
+`DATABASE_URL`, `DB_DSN_SOURCE` and `AWS_REGION`, which select the database and
+are covered under [Two database deployments](#two-database-deployments) — so in
+the default compose setup `QUERY_PREFIX`, `RETRIEVAL_CANDIDATES` and
+`RERANK_TOP_K` resolve to the defaults in the table above regardless of what a
 local `.env` says.
 
 Three more variables are read by the code but are **not** in `.env.example`,
@@ -494,23 +671,25 @@ and what the results do not establish — is `docs/verification-milestone-3.md`;
 **§12 is the authority** and §12.5 is the acceptance table. What does **not**
 exist yet, so nobody goes looking for it:
 
-- **No authentication.** The one published port is open to anything that can
-  reach the host. On AWS the ALB restricts access by source CIDR, which is a
-  network-level restriction and **not** authentication.
+- **No authentication.** The API's published port — the only one reachable from
+  off-host — is open to anything that can reach the host. On AWS the ALB restricts
+  access by source CIDR, which is a network-level restriction and **not**
+  authentication.
 - **CPU-only.** GPU acceleration is possible — the development host has an
   RTX 5070 Ti with CUDA 13.4 — and was deliberately deferred.
 
 What exists, verified on AWS against a live `t3.small` behind a public ALB and
 against RDS: the database (**PostgreSQL with pgvector**, holding stored document
 vectors), document **ingestion**, and **collection-scoped retrieval and
-reranking** through `POST /search`, which reads the query prefix, the candidate
-count and the top-K value declared in `.env`. All five M3 acceptance criteria are
-verified in the cloud environment. Also verified there: `GET /health/ready` HTTP
-200, `POST /search` HTTP 200, the connection authenticating as `lemondrop_app`
-rather than the RDS master, the EC2 instance role being **denied** the RDS master
-secret, 10 of 10 adversarial isolation canaries passing in both directions, and
-search surviving an API container restart. **The evidence, and the boundaries of
-that evidence — a container restart rather than an EC2 reboot, isolation at the
-response boundary, a single latency observation rather than a distribution, and
-a synthetic corpus — are in `docs/verification-milestone-3.md`, not restated
-here.** §12.4 there lists what is still outstanding.
+reranking** through `POST /search`, which applies the query prefix and the funnel
+sizes documented in [Configuration](#configuration). All five M3 acceptance
+criteria are verified in the cloud environment. Also verified there: `GET
+/health/ready` HTTP 200, `POST /search` HTTP 200, the connection authenticating
+as `lemondrop_app` rather than the RDS master, the EC2 instance role being
+**denied** the RDS master secret, 10 of 10 adversarial isolation canaries passing
+in both directions, and search surviving an API container restart. **The
+evidence, and the boundaries of that evidence — a container restart rather than an
+EC2 reboot, isolation at the response boundary, a single latency observation
+rather than a distribution, and a synthetic corpus — are in
+`docs/verification-milestone-3.md`, not restated here.** §12.4 there lists what is
+still outstanding.
