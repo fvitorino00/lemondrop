@@ -5,24 +5,25 @@ servers that are NOT published to the host. They are reachable only from other
 containers on the compose network, by service name. This API is the single door
 to the outside world, and its job is to stand in front of them.
 
-Four routes, in the order they were earned: ``GET /health`` reports the truth
+Five routes, in the order they were earned: ``GET /health`` reports the truth
 about the two workers beneath it; ``POST /embed`` and ``POST /rerank`` are thin
-proxies that actually call them. Two more arrived with the database phase:
-``GET /health/live`` and ``GET /health/ready``, which probe the database as well
-as the workers.
+proxies that actually call them; ``GET /health/live`` and ``GET /health/ready``
+came with the database phase, which probes the database as well as the workers.
+The sixth arrived with this one: ``POST /documents``, the first route that
+writes anything. It embeds a document through the same worker proxy ``/embed``
+uses and hands the vector to ``app/store.py``.
 
-What is still absent is the part that matters most: there is no ``/documents``
-and no ``/search``, so nothing is stored and nothing is retrieved. This API
-forwards, and it now has a pool it does not yet use — ``app/db.py`` builds and
-probes a database connection, and no query in this file touches it.
+What is still absent is retrieval: there is no ``/search``. The database now
+holds embedded documents, and nothing reads them back through the API yet.
 
 A NOTE ON THE bge QUERY PREFIX, recorded here because it is the single most
 misreadable decision in this file. bge-small-en-v1.5 was trained with the fixed
 instruction string ``Represent this sentence for searching relevant passages: ``
 attached to SEARCH QUERIES ONLY. Documents must never carry it — prefixing a
 document corrupts that document's vector for every future retrieval. So
-``/embed`` forwards its text BARE, deliberately. The prefix belongs on
-``/search``, which does not exist yet, and nowhere else.
+``/embed`` forwards its text BARE, deliberately, and so does ``/documents``,
+which embeds through ``/embed`` and therefore inherits the same invariant. The
+prefix belongs on ``/search``, which does not exist yet, and nowhere else.
 """
 
 from __future__ import annotations
@@ -37,8 +38,10 @@ from typing import Annotated, Any
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, StringConstraints
+from sqlalchemy.exc import SQLAlchemyError
 
-from app import db
+from app import db, store
+from app.config import SCHEMA_EMBEDDING_DIM
 
 # ── Downstream endpoints ──────────────────────────────────────────────────────
 # Read from the environment with compose-network defaults, so the SAME image runs
@@ -166,6 +169,19 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # apps in one process (which is what a test harness creates) cannot share a
     # pool bound to the wrong loop. See db.startup's docstring.
     application.state.database = database
+
+    # Arms the pool for vector writes. This is not an optional extra: without it
+    # every vector INSERT fails, intermittently, on whichever pooled connection
+    # was created before this line ran. `store.prepare_database` explains the
+    # mechanism, and `api/tests/test_documents.py` proves both directions.
+    #
+    # Called here rather than inside `db.startup` so that `db.py` keeps owning
+    # only the engine's lifecycle and knows nothing about pgvector. It is
+    # deliberately NOT in a `try/except`: a failure to register a codec means
+    # the store layer cannot work, and a process that serves 200 from /health
+    # while every write fails is worse than one that says so loudly at startup.
+    await store.prepare_database(database)
+
     try:
         yield
     finally:
@@ -833,3 +849,251 @@ async def rerank(request: RerankRequest) -> RerankResponse:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="reranker returned an unexpected response shape",
         ) from exc
+
+
+# ── Ingestion ─────────────────────────────────────────────────────────────────
+#
+# `POST /documents` is the first route in this file that MUTATES anything, and
+# that changes what has to be defended. Everything above is a proxy: it can be
+# wrong about a worker's shape or a worker's availability, and the worst outcome
+# is a wrong answer to one request. This route writes a row that outlives the
+# request, and a wrong vector written here is wrong permanently — there is no
+# response that can tell the caller their stored document is subtly off, which
+# is why the invariants below are stated as invariants rather than as features.
+
+
+class DocumentRequest(BaseModel):
+    """Body of POST /documents — one document, its collection, and its metadata.
+
+    ── WHY THESE FOUR FIELDS AND NO MORE ───────────────────────────────────────
+    The caller supplies an EXTERNAL identity (`document_id`), the partition it
+    belongs in (`collection`), the text itself (`content`), and whatever
+    arbitrary JSON they want to keep alongside it (`metadata`).
+
+    Notably absent: the embedding. A caller cannot hand one in, and cannot
+    supply an `id` for the database to generate. Both exclusions are load-
+    bearing. Accepting a caller-supplied vector would let a document be stored
+    that this service never embedded, which is precisely the class of row the
+    retrieval path cannot detect — it would simply be unmatchable, forever,
+    with no error. And a generated id would introduce a second identity for a
+    document, which is the thing migration 0001 explicitly refused when it chose
+    `id TEXT PRIMARY KEY` over a generated column.
+    """
+
+    # The caller's own identifier, and the upsert key. NonBlankText (strip, then
+    # reject blank) for the same reason as everything else: a blank id is not a
+    # usable primary key, and it is exactly the kind of bad row that is
+    # invisible in a UI and permanent in the database.
+    document_id: NonBlankText
+
+    # The partition every retrieval query filters on. NonBlankText rather than
+    # NonBlankItem: unlike a reranker document, a collection name is compared
+    # for equality by the caller (they will pass the same string to /search
+    # later), so silently rewriting it with `strip()` would create a collection
+    # the caller cannot name. It is also belt-and-braces with the database's own
+    # `documents_collection_not_blank` CHECK — validated here so the caller gets
+    # a 422 naming the field instead of a constraint violation.
+    collection: NonBlankText
+
+    # The text to embed and store. NonBlankText: stripping is safe here because
+    # the caller's intent is "this document", not "this exact byte sequence", and
+    # the vector is computed from whatever is finally stored, so they agree.
+    content: NonBlankText
+
+    # Optional, defaults to `{}` — NOT to `None`. The migration's column is
+    # `JSONB NOT NULL DEFAULT '{}'` with a CHECK of
+    # `jsonb_typeof(metadata) = 'object'`, and it deliberately rules out a JSON
+    # null: absent metadata is an empty object, never a null. A `None` default
+    # would put `null` on the wire and be rejected by the database on a write
+    # the caller had no reason to think was malformed.
+    #
+    # ── WHY THE TYPE IS `dict` AND NOT `Any` ──────────────────────────────────
+    # The database already enforces that metadata is a JSON OBJECT; this is that
+    # rule enforced at the EDGE instead, one layer earlier, where the caller can
+    # still do something about it. `dict[str, Any]` makes FastAPI reject
+    # `"metadata": [1, 2, 3]` — or a string, or a number — with a 422 that NAMES
+    # the field, instead of letting it travel all the way to an
+    # `IntegrityError` on a CHECK constraint. That matters for the same reason
+    # the comment on `RerankRequest.documents` matters: the database constraint
+    # turns a silent corruption into a loud failure, but a loud failure at INSERT
+    # is only half the job — the other half is telling the caller WHICH field of
+    # THEIR request was wrong. A `dict` type buys the second half for free, in
+    # the generated OpenAPI schema as well as in the response.
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DocumentResponse(BaseModel):
+    """Body of a successful POST /documents.
+
+    Reports what HAPPENED, not just what was asked for. Three fields, and each
+    one exists because its absence would leave a real failure invisible:
+
+    * `document_id` and `collection` echo the row as the DATABASE now holds it.
+      Echoing the request instead would report what the caller asked for, which
+      is not the same claim, and `collection` in particular can differ from what
+      was sent when the id already existed in another collection — see
+      `store.upsert_document`.
+    * `dimensions` is `vector_dims(embedding)` — the width PostgreSQL ACCEPTED.
+      Not the width the embedder claimed. Those are two systems answering two
+      different questions, and this is the one that describes the stored bytes.
+      If a model swap ever changes the width, the mismatch appears in this field
+      on the very first write that could not store it, instead of weeks later as
+      retrieval that has quietly stopped working.
+    * `outcome` is `"inserted"` or `"updated"`, so an upsert's second arm is
+      visible to the caller instead of being a silent overwrite.
+    """
+
+    document_id: str
+    collection: str
+    #: The width actually stored, as the database reports it.
+    dimensions: int
+    #: `"inserted"` for a new row, `"updated"` when the id already existed.
+    outcome: str
+
+
+@app.post(
+    "/documents",
+    response_model=DocumentResponse,
+    summary="Embed a document and store it",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_document(request: Request, body: DocumentRequest) -> DocumentResponse:
+    """Embed one document and write it to `documents`, upserting by id.
+
+    ── UPSERT SEMANTICS, STATED PLAINLY ────────────────────────────────────────
+    Re-posting a `document_id` that already exists UPDATES that row — content,
+    metadata, embedding, and collection — rather than creating a second one.
+    There is no 409 and no "already exists": ingestion is idempotent by id, so
+    re-running the corpus loader is safe, and a caller correcting a document
+    re-posts it the same way. The response's `outcome` field says which arm ran.
+
+    A consequence worth knowing before relying on it: because `id` is the GLOBAL
+    primary key, re-posting under a different `collection` MOVES the document
+    rather than copying it. That is the only behaviour the schema permits, and
+    `store.upsert_document` explains why.
+
+    ── THE bge QUERY PREFIX IS NOT APPLIED HERE. THIS IS THE POINT. ────────────
+    This route embeds `body.content` by calling the `/embed` handler directly,
+    and `/embed` forwards its text BARE. See its docstring for the full
+    reasoning; the one-line version is that bge-small-en-v1.5's instruction
+    string was trained onto SEARCH QUERIES ONLY, and prefixing a document moves
+    its vector off the manifold the other documents live on — permanently,
+    invisibly, and with nothing in any response ever saying so.
+
+    So the invariant, stated as an invariant: **the only string that reaches the
+    embedder from this route is the caller's own `content`, unmodified.** There
+    is no `kind` parameter here, no prefix constant, and no code path that could
+    add one without rewriting this sentence and `main.embed`'s docstring
+    together. The prefix belongs on `/search`, which does not exist yet.
+
+    Calling `embed()` directly rather than reimplementing its body is
+    deliberate. FastAPI's route decorators register a handler and return the
+    function UNCHANGED, so `embed` is still an ordinary async function here —
+    and calling it means this route inherits the worker's exact failure
+    semantics (504 on timeout, 502 on unreachable or on an unexpected body shape)
+    and its exact bfloat16-to-float conversion, by construction. A second copy of
+    that code would be free to drift from the first, and the drift would be
+    invisible until the two routes disagreed about what a bad worker looks like.
+    """
+    database: db.Database | None = getattr(request.app.state, "database", None)
+    engine = getattr(database, "engine", None)
+    if engine is None:
+        # Same policy as /health/ready, same reason: a request that cannot be
+        # served must say so in the status line, not with a 200 and a sad body.
+        # `db.startup` never raises, so this is a reachable state on a host where
+        # the database is unconfigured or down — not a defensive branch.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="the database is not available",
+        )
+
+    # BARE. See the invariant above. Do not add the bge query prefix here.
+    embedded = await embed(EmbedRequest(text=body.content))
+
+    # The model's answer checked against the schema's, BEFORE the write. This is
+    # the cheap half of "surface a mismatch immediately": it produces a 502 that
+    # names both numbers, on the request that caused it, instead of a constraint
+    # violation naming a column. The expensive half — the width the database
+    # ACTUALLY stored — comes back in the response as `dimensions`, and the test
+    # suite asserts against the stored value rather than this one.
+    if embedded.dimensions != SCHEMA_EMBEDDING_DIM:
+        logger.error(
+            "embedder returned %d dimensions but documents.embedding is vector(%d)",
+            embedded.dimensions,
+            SCHEMA_EMBEDDING_DIM,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"embedder returned {embedded.dimensions} dimensions, but the "
+                f"documents table stores vector({SCHEMA_EMBEDDING_DIM}). The model "
+                "and the schema disagree; changing the embedding width is a "
+                "migration, not a configuration change."
+            ),
+        )
+
+    try:
+        written = await store.upsert_document(
+            engine,
+            document_id=body.document_id,
+            collection=body.collection,
+            content=body.content,
+            metadata=body.metadata,
+            embedding=embedded.embedding,
+        )
+    except SQLAlchemyError as exc:
+        # ── WHAT IS LOGGED, AND WHY SO LITTLE ─────────────────────────────────
+        # The exception CLASS and its SQLSTATE. Not the message, and not the
+        # traceback, and this is deliberate rather than terse: asyncpg's
+        # CheckViolationError carries a DETAIL line containing THE FAILING ROW,
+        # and the failing row is `id, collection, content, metadata`. Measured on
+        # pgvector/asyncpg 0.32.0 + PostgreSQL 16.15, a rejected metadata write
+        # produces:
+        #
+        #     DETAIL:  Failing row contains (metaarr, probe, <the content>, [1, ...
+        #
+        # So `logger.exception(...)` — which is the reflex, and which this route
+        # would otherwise be expected to do — writes the caller's document body
+        # into the server log. `hide_parameters=True` in `config.engine_kwargs`
+        # already stops the OTHER half of that leak (SQLAlchemy's bound-parameter
+        # echo); this line is what stops the remaining half.
+        #
+        # SQLSTATE is enough to diagnose: 23505 unique violation, 23514 check
+        # violation, 23502 not-null, 08xxx connection. It is a code, not data,
+        # and it cannot carry a document.
+        logger.error(
+            "storing document %r failed: %s (SQLSTATE %s)",
+            body.document_id,
+            type(exc).__name__,
+            getattr(getattr(exc, "orig", None), "sqlstate", "<unknown>"),
+        )
+        # No `from exc`: the chained traceback would render that DETAIL line
+        # above into whatever renders it — an error handler, a log aggregator, a
+        # bug report. The response detail is a fixed sentence for the same
+        # reason: it names the failure without quoting data back to a caller who
+        # sent it.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="the document could not be stored",
+        ) from None
+
+    # The document_id and collection are logged. The CONTENT is not, and never
+    # will be: `hide_parameters=True` in `config.engine_kwargs` stops SQLAlchemy
+    # echoing bound parameters, and this line is the other half of that. A
+    # document body is the user's data, it can be arbitrarily large, and nothing
+    # about diagnosing a write failure needs it.
+    logger.info(
+        "stored document %r in collection %r at %d dimensions (%s)",
+        written.document_id,
+        written.collection,
+        written.dimensions,
+        "inserted" if written.inserted else "updated",
+    )
+
+    return DocumentResponse(
+        document_id=written.document_id,
+        collection=written.collection,
+        # From `vector_dims(embedding)` — the stored width, not the model's claim.
+        dimensions=written.dimensions,
+        outcome="inserted" if written.inserted else "updated",
+    )

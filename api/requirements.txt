@@ -49,6 +49,33 @@ SQLAlchemy[asyncio]==2.0.54
 # sync-only or needs an async wrapper that is slower than this anyway.
 asyncpg==0.32.0
 
+# pgvector-python. This is the ONLY reason it is here, and it is a narrow one:
+# `documents.embedding` is `vector(384)`, and asyncpg cannot send or receive a
+# value of a type it has no codec for. This package supplies `register_vector`,
+# which installs that codec — per connection, which is why `app/store.py` hooks
+# it onto the pool's `connect` event rather than calling it once somewhere
+# convenient. See `prepare_database` there; the failure mode of getting that
+# wrong is intermittent and invisible to a single-query test.
+#
+# NOT used for its `sqlalchemy.VECTOR` type. Measured on SQLAlchemy 2.0.54,
+# `'vector' in d.colspecs` is False for the asyncpg dialect, so that type cannot
+# be used as a column type here at all, and the store writes raw SQL through
+# `text()` regardless. Taking this dependency for the codec is a smaller ask
+# than taking it for the type and finding it does not work.
+#
+# ABOUT THE WHEELS, since the Dockerfile installs no compiler toolchain: this
+# package is PURE PYTHON. The published artifact is a single
+# `pgvector-0.5.1-py3-none-any.whl` (`Root-Is-Purelib: true`, `Tag: py3-none-any`)
+# and there is no cp312 or cp314 specific build, no sdist-only release and no
+# compiled extension anywhere in it. One wheel therefore satisfies every
+# interpreter in this project — the container's CPython 3.12 and the host venv's
+# CPython 3.14 alike — so `pip install` never invokes a compiler in either place.
+# The constraint is satisfied by the package's shape rather than by a build.
+#
+# Exact pin like everything else here. 0.5.1 is the current release and requires
+# Python >= 3.10, which both interpreters clear.
+pgvector==0.5.1
+
 # ── No migrations here, on purpose ────────────────────────────────────────────
 # Alembic used to sit in this file. It has moved to requirements-dev.txt, and
 # the reason is worth stating so nobody "helpfully" puts it back: alembic is a
