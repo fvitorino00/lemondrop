@@ -755,3 +755,399 @@ the code that no runtime test in §8.1 would exercise. A test suite that passes 
 consistent with a second application site of `QUERY_PREFIX`; this reading is what says there
 isn't one. Neither substitutes for the other, and neither is a substitute for the untested
 row 4 in §6.2.
+
+---
+
+> ### ⚠ READ §9.8 AND §10 BEFORE §6.
+>
+> **§6's table and §6.2 still read `UNTESTED` for row 4, and §6.2 still says row 4 "is the
+> next task". Both are left exactly as written — a verification record is not rewritten,
+> it is appended to — and both are now SUPERSEDED.**
+>
+> **§9.8 is the current acceptance-criteria table: all five criteria VERIFIED, for the
+> LOCAL environment only.** **§10 is the standing list of what is not proven, and the
+> blocking gap to AWS.**
+
+---
+
+## 9. Phase 5 — local acceptance: persistence across restart
+
+**Status: VERIFIED LOCALLY — 62/62, and row 4 exercised. Nothing AWS was touched.**
+
+Everything in this section was executed and reported by the **operator**, who ran the
+commands against the real local PostgreSQL and the real llama.cpp inference workers. The
+agent did not run these and is not claiming to. There are no CEO rows in this section:
+every item below is a runtime observation, and every row says so.
+
+**Read this section together with §10.** Row 4 of §6 is now verified, and §9 changes no
+AWS fact whatsoever. Milestone 3 is accepted **locally**. It is not accepted on AWS, and
+§10 item 4 names the single blocking gap between the two.
+
+### 9.1 Test suite
+
+| # | Item | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | Full suite, one clean run | **62/62 passing.** Real local PostgreSQL and the real `embedder` / `reranker` llama.cpp workers. No mocks, no in-process client. | **operator** (terminal output pasted) | **VERIFIED** |
+
+This is the suite already recorded in §8.1 row 1, re-confirmed as a single clean run for the
+final local acceptance rather than restated as new evidence. The count is unchanged: 62,
+`pytest --collect-only` still agrees without Docker (§8.1 row 2), so the suite size did not
+drift between the Phase 4 record and this one.
+
+### 9.2 Persistence across restart — what was actually done
+
+The **operator** restarted the API and PostgreSQL **separately**, waiting for a healthy
+status at each step, rather than tearing the whole stack down. Two independent restarts,
+not one `docker compose restart`, so the API's restart could not have been what carried the
+database through.
+
+| # | Item | Result as reported | Executed by | Verdict |
+|---|---|---|---|---|
+| 1 | All documents survived the restarts | **40 documents present** — 20 `infrastructure`, 20 `it-support`. | **operator** (terminal output pasted) | **VERIFIED** |
+| 2 | A real `POST /search` after the restarts | **10 candidates considered, 5 results returned.** | **operator** (terminal output pasted) | **VERIFIED** |
+| 3 | Ranking after the restart | `support-recycle-bin-file-recovery` ranked **first** — the same document §8.2 recorded. | **operator** (terminal output pasted) | **VERIFIED** |
+| 4 | Collection predicate after the restart | **Every result was in `it-support`.** No `infra-*` document appeared. | **operator** (terminal output pasted) | **VERIFIED** |
+| 5 | The first attempt after the database restart | **The search succeeded on the FIRST attempt.** | **operator** (terminal output pasted) | **VERIFIED (as an observation only — see §9.3)** |
+
+Row 1 is the acceptance criterion itself. Rows 2–4 are deliberately not a weaker claim than
+§8.2's: this is a real HTTP search, over the real route, against the real database, ranked
+by the real cross-encoder, after the process and the database had both been restarted.
+
+**Row 5 is recorded as an observation and is deliberately not promoted into a claim about
+*why* it worked.** §9.3 is the whole of that reasoning and it is short on purpose.
+
+### 9.3 What the first-attempt success does NOT establish
+
+The search succeeded on the first attempt after the database restart. The obvious reading
+is that `pool_pre_ping=True` discarded a stale pooled connection and opened a fresh one.
+
+**That is consistent with the observation. It is not established by it, and this record
+does not claim it as the mechanism.**
+
+A single observation cannot distinguish between at least three explanations, all of which
+fit:
+
+1. `pool_pre_ping=True` detected the stale connection, discarded it, and handed back a
+   fresh one.
+2. The pool happened to hold **no checked-in connection at that moment** — idle connections
+   can be reaped — so the very first checkout was already a new one and `pre_ping` had
+   nothing to do.
+3. Simple timing. The search was issued late enough after the restart that the pool had
+   already cycled, or the connection had not yet gone stale when it was checked out.
+
+**What would settle it, and was NOT done:** a **negative control** — disable
+`pool_pre_ping`, restart the database, and observe the difference. With `pre_ping` off, a
+stale pooled connection should surface as an error on first use; if first-attempt success
+persists with `pre_ping` disabled, the flag is not what rescued it. **No such control was
+run.** Until one is, `pool_pre_ping` remains the *intended* mechanism and this test is
+*consistent with* it, which is a weaker statement and the only one the evidence carries.
+
+The distinction matters because §5.3 already recorded one mechanism in this codebase that
+looked fine and was not the thing doing the work. The lesson there was that a passing check
+is not a discriminating check. It applies here unchanged.
+
+### 9.4 The case this test did NOT exercise — and it is a different phenomenon
+
+**No transaction was in flight when the database was restarted.** So the case where a
+request is **aborted mid-transaction** by a database outage was **NOT exercised**. It must
+be kept separate from §9.3, because the two have different properties and only one of them
+is something a pre-ping can address:
+
+| | Stale pooled connection | Transaction aborted mid-flight |
+|---|---|---|
+| What is wrong | A connection the pool believes is good and the server has since closed. | A unit of work the database rolled back when it went away. |
+| Can `pool_pre_ping` help? | **Yes** — discarding the connection is sufficient; the caller's work is still pending and can be retried on a fresh connection. | **No** — the transaction is **gone, not stale**. There is nothing to re-acquire. Reconnecting yields an empty transaction, not the interrupted one. |
+| What this test showed | First-attempt success was observed. Consistent with recovery; mechanism unproven (§9.3). | **Nothing.** Not tested. |
+
+**The honest reading of the restart evidence is therefore narrower than "persistence across
+restart is handled."** What is verified: documents survived, and a subsequent search
+succeeded on the first attempt. What is **not** verified: that an in-flight request
+survives a database outage. `pool_pre_ping` genuinely cannot deliver that, and no
+amount of passing this test would show it does. A verification record that blurred these
+two would be worse than one that admits the gap, because the second one is not a defect and
+the first one is a class of data loss.
+
+### 9.5 Why the data survived — and what was deliberately not done
+
+Data lives in the **named `pgdata` volume**, and in RDS, **not in a container filesystem**.
+A container restart re-creates the container's writable layer; it does not touch a named
+volume's contents. That is why the restart preserved the 40 documents.
+
+**The compose `down -v` path was deliberately NOT used.** `-v` removes named volumes
+attached to the services it stops. Had it been used, it would have destroyed the `pgdata`
+volume along with the data, and the test would have measured volume deletion rather than
+persistence. Recording this because "we restarted and the data was still there" is a very
+different claim depending on which of those two commands was run, and the command matters
+as much as the outcome.
+
+### 9.6 Schema after the restart — what was confirmed and what was not
+
+**This subsection exists because the temptation is to write "the schema survived too", and
+that sentence is not supported by the evidence as reported.**
+
+**What the operator reported:** all 40 documents were present after the restarts (row 1 of
+§9.2), and a real `POST /search` succeeded afterwards (rows 2–5). Those are the reported
+observations.
+
+**What that observation does and does not establish.** 40 rows readable through a query
+means the **`documents` table and its `vector` column were present and readable** after the
+restart. That much follows from the observation itself.
+
+**The operator did NOT separately report re-confirming these four items after the
+PostgreSQL restart**, and this record does not claim they were confirmed:
+
+| Item | Verified **before** the restart | Re-confirmed **after** the restart? |
+|---|---|---|
+| pgvector extension present (`CREATE EXTENSION vector`) | **VERIFIED** — §2 row 1, local container | **NOT REPORTED.** The operator did not state it was re-checked. |
+| `documents` table present | **VERIFIED** — §2 row 2 | **Implicitly**, and this one is genuinely implied: 40 rows were read back through it. |
+| `documents_collection_idx` present | **VERIFIED** — §2 row 3 | **NOT REPORTED.** |
+| `documents_set_updated_at` trigger present | **VERIFIED** — §2 row 5 | **NOT REPORTED.** |
+
+It is **tempting** to infer all four from Docker's named-volume semantics: nothing inside
+the `pgdata` volume can disappear without the volume being removed, and no removal
+happened. **That inference is sound but it is an argument, not an observation, and it is
+not what this record is for.** The distinction is that §2 rows 1, 3 and 5 were verified
+*before* a restart and are unverified *after* one. A restart that silently dropped an index
+would not have been detected by anything in §9 — the queries in evidence are small enough
+to return correct answers with or without a collection index, and an `UPDATE` was not part
+of this test.
+
+**So: three of the four are unconfirmed post-restart, and closing that is a `psql` session
+away.** It is recorded as a gap rather than glossed, and it is cheap to close.
+
+### 9.7 Collection isolation — not restated
+
+The adversarial isolation control is **already recorded in §8.4 (the measurement) and §8.5
+(the mutation proof)**, against the same 40-document corpus with the same `isolation_canary`
+twin pairs: scoped to `infrastructure`, 10 candidates all in `infrastructure` with the
+`it-support` twin absent; unscoped, that twin ranks **#2 overall** and only 7 of the global
+top 10 are `infrastructure`. §8.5 additionally proves the isolation test **discriminates**
+rather than merely passing, by mutating `store.retrieve` into fetch-then-filter and watching
+it fail (`assert 2 == 3`).
+
+**Those rows are not repeated here and are not re-run.** Row 4 of §9.2 additionally shows
+the collection predicate still holding *after* the restarts, which is a genuine addition;
+it is not a replacement for §8.4 and does not restate it.
+
+### 9.8 M3 acceptance criteria — current state
+
+**This table supersedes the §6 table and §6.2, both of which are left as written.**
+
+| # | Criterion | Status |
+|---|---|---|
+| 1 | Ingestion of the corpus | **VERIFIED (local)** — §5.2, §6.1 |
+| 2 | Semantic search returns relevant results | **VERIFIED (local)** — §8.2, §9.2 |
+| 3 | Reranking applied | **VERIFIED (local)** — §8.2, §9.2 |
+| 4 | Persistence across restart | **VERIFIED (local)** — §9.2. *Supersedes `UNTESTED` at §6 row 4 and §6.2.* |
+| 5 | Collection isolation (canary pairs never cross) | **VERIFIED (local)** — §8.4, §8.5, §9.2 row 4 |
+
+| # | Qualifier | Status |
+|---|---|---|
+| 6 | **Cloud / AWS acceptance of any kind** | **NOT VERIFIED. NOTHING.** No criterion above has been tested on AWS. See §10. |
+
+**That qualifier row is not a formality — it is the reason the table cannot be read the way
+a reader in a hurry will want to read it.**
+
+All five criteria are verified **in the local environment**: real local PostgreSQL in a
+named `pgdata` volume, real llama.cpp inference workers, real HTTP against the running API
+container, a synthetic corpus (§1). **None of it was executed on AWS.** Local success is
+not cloud acceptance, and the difference between the two is not a formality here — §10 item
+4 names a specific, unimplemented code path that makes M3 code **unable to reach RDS at all**
+as it currently stands. Five green rows are not a deployed system.
+
+The supporting infrastructure criteria verified in Phase 2 (§6 rows 6 and 7) are unchanged
+and remain local-only for the same reason.
+
+---
+
+## 10. Not proven, and what is next
+
+**This section is the most important one in the document.** §9 is five green rows; this is
+the list of what they do not mean. It is placed immediately after §9 and referenced from
+its own first line in §9's banner, because a verification record that buries its caveats
+at the bottom is not a verification record.
+
+**The headline: nothing has been verified on AWS.** Everything above ran against a local
+container stack. Milestone 3 is **accepted locally and not accepted in the cloud.**
+
+### 10.1 Nothing has been verified on AWS
+
+Plainly, because it is the easiest thing for a reader to skip past: **every VERIFIED row in
+this document is local.** No SSM, no Secrets Manager, no boto3, no RDS, no EC2, no ALB, no
+Terraform run was involved in any of it. Local success is not cloud acceptance. §9.8's
+qualifier row exists for exactly this reason, and items 2–5 below are the specific
+mechanisms by which the local result fails to transfer.
+
+### 10.2 The M3 code cannot reach EC2 — it is not on `main`
+
+**`scripts/boot.sh:196` runs `git clone --depth 1 "$APP_URL"` with NO ref.**
+
+```bash
+  log "  cloning $APP_URL"
+  git clone --depth 1 "$APP_URL" "$APP_DIR"
+```
+
+With no `--branch`, git checks out the remote's **default branch — `main`.** All Milestone
+3 work is on **`feat/retrieval-m3`, unpushed and unmerged.** (`main`'s `boot.sh:196` is
+byte-identical, so this is not a Milestone 3 regression — it is a pre-existing property that
+only becomes load-bearing now.)
+
+**The M3 code cannot reach EC2 until it is on `main`.** Until it is merged and pushed, a
+boot — or an EC2 instance replacement, see item 6 — clones a tree that contains none of the
+retrieval work. Everything in §9 would be true of code that EC2 never runs.
+
+### 10.3 EC2's `.env` is generated from `.env.example`, and the DSN it produces is wrong
+
+**`scripts/boot.sh:209-210` generates EC2's `.env` by copying `.env.example`:**
+
+```bash
+log "step 4/6: generating .env from .env.example"
+cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+```
+
+Only `API_HOST_PORT` is rewritten by `sed` (`:211`). Nothing else is touched, and the boot
+script says so itself at `:226-229`: *"For whoever adds database support to the api: do NOT
+add a DATABASE_URL line here. There is no password for one and the hostname is not knowable
+here — both are fetched at runtime from SSM and Secrets Manager via the instance role."*
+
+`docker-compose.yml:325` builds the `api` service's DSN by interpolation:
+
+```yaml
+DATABASE_URL: "postgresql+asyncpg://${DEV_DB_USER}:${DEV_DB_PASSWORD}@postgres:5432/${DEV_DB_NAME}"
+```
+
+**A correction to how this has been described, recorded here rather than propagated.** The
+`DEV_DB_*` variables are **NOT** unset on EC2, and the interpolated DSN is therefore **not**
+`postgresql+asyncpg://:@postgres:5432/` with empty credentials. `.env.example:105,117,122`
+**does** define them — `DEV_DB_USER=lemondrop`, `DEV_DB_PASSWORD=change-me`,
+`DEV_DB_NAME=lemondrop` — and `boot.sh` copies that file verbatim. (The
+`docker-compose.yml:304` comment asserting these resolve to empty strings is **inaccurate**
+for the same reason, and is flagged here rather than edited — implementing nothing.)
+
+| | On `main` as it stands | On `feat/retrieval-m3` as it stands |
+|---|---|---|
+| `.env.example` `DEV_DB_*` keys | **absent** — 62 lines, **zero** `DEV_DB` matches | **present** — `:105`, `:117`, `:122` |
+| `docker-compose.yml` `api` `DATABASE_URL` | **absent** — **zero** `DATABASE_URL` matches | present, interpolated (`:325`) |
+| DSN the `api` container receives | **none at all** | `postgresql+asyncpg://lemondrop:change-me@postgres:5432/lemondrop` |
+
+**Either way the deployed stack has no RDS DSN**, and the failure mode differs:
+
+- **On `main`** the container gets **no `DATABASE_URL`**, so `Settings` construction fails —
+  `resolve_database_url_from_environment` raises naming the key (`config.py:417-437`).
+- **On M3 as written** the DSN is **well-formed** — non-empty username *and* password, so
+  the Phase 2 validator **passes** it — and then fails at **connection** time, because host
+  `postgres` is a service gated behind the `devdb` profile that **does not exist on EC2**,
+  and `change-me` is not an RDS credential. `/health/ready` reports the database degraded
+  and `/documents` and `/search` return **503**.
+
+The second case is the one that matters, and it is the **more dangerous** of the two: it
+means M3's own DSN validation does **not** catch the misconfiguration, because the DSN is
+syntactically fine. It is aimed at a host that is not there. Note also that RDS's host and
+port are **never consulted at all** on either path — nothing in the deployed stack asks.
+
+### 10.4 The blocking gap: `DatabaseUrlResolver` is UNIMPLEMENTED — and it is code, not Terraform
+
+**This is the single blocking gap between local acceptance and AWS acceptance, and it is
+application code.** No amount of Terraform work closes it.
+
+The intended chain — SSM parameter `/lemondrop/dev/db/{host,port,secret-arn}` → Secrets
+Manager → assembled DSN — **does not exist.** `DatabaseUrlResolver` (`config.py:372`) is a
+`Protocol` describing the seam, and `DATABASE_URL_RESOLVER` (`config.py:448`) is bound to
+`resolve_database_url_from_environment`, which reads the environment variable and nothing
+else. **There is no AWS code path.** `boto3` is deliberately absent from the image.
+
+The consequence, stated precisely against the corrected §10.3: M3 code deployed as-is
+**cannot connect to RDS.** Not "may connect unreliably" — the RDS host never enters the
+DSN at all. `/health/ready` reports the database degraded, and `/documents` and `/search`
+return **503** on every call.
+
+**The Phase 2 DSN validation deliberately REJECTS an empty username or password**
+(`_must_carry_a_username_and_a_password`, `config.py:533`), so *if* the empty-credential DSN
+were what got interpolated, `Settings` construction would fail outright. Per §10.3 it is
+not what gets interpolated on the M3 tree — so that validation, one of the security
+properties Phase 2 verified, **does not fire here** and must not be credited with catching
+this. It is worth stating precisely because a reader who has only read §4.2 row 6 would
+reasonably assume the deployed stack fails loudly. It fails at the socket instead.
+
+**This is the work that has to happen next**, and it is `api/app/config.py` plus wiring —
+not a Terraform change.
+
+### 10.5 The database schema has never been migrated on RDS
+
+**The Alembic migration was applied only to the local devdb.** §2 row 8 recorded that the
+migration target resolved to `127.0.0.1:5432/lemondrop` — **not** AWS RDS — and nothing
+since has changed that.
+
+Two independent blockers, both unverified:
+
+- **RDS requires the master user to create the extension.** `rds_superuser` is required for
+  `CREATE EXTENSION vector`, so the migration cannot be applied by the application role —
+  which is the whole point of the `DATABASE_URL` / `ALEMBIC_DATABASE_URL` split.
+- **The `feat/aws-infrastructure` IAM changes are NOT applied.** Deployed permissions are
+  therefore **unverified** and must be checked directly against the live instance before any
+  cloud integration (inherited from §4.4 item 4 and §8.8 item 3).
+
+### 10.6 Any `terraform apply` would replace the EC2 instance
+
+**Carried forward unresolved from Milestone 2.** `infra/compute.tf` sets
+`user_data_replace_on_change = true` (`:185`), and the Milestone 2 audit's **comment-only**
+edit to `compute.tf` (commit `f13e4c0`) changed the `user_data` hash. A changed `user_data`
+hash **replaces the instance.** Every EC2 boot re-clones the default branch (§10.2) and
+regenerates `.env` from `.env.example` (§10.3), so an `apply` meant to change something
+unrelated **also** silently re-runs the whole boot. Open, and unchanged.
+
+### 10.7 Rerank latency on EC2 is unmeasured — and it decides the ALB timeout
+
+**The ~11s median in §8.6 was measured on the developer's host, not EC2.** §8.7 already
+says so three times, and it is repeated in the standing list because this number is load-
+bearing for a decision that has not been made.
+
+EC2 is a **`t3.micro`** — the Milestone 2 hardware description is ~913Mi with **~280Mi
+available at rest** — with **both models resident**. The reranker is a cross-encoder scoring
+every (query, passage) pair on **CPU**, and §8.6 measured no batch discount. EC2 may be
+**materially slower** than the developer host.
+
+**This is the number that would decide whether the ALB `lb_idle_timeout` (currently 60s)
+needs raising.** It has not been measured, so the question has not been answered.
+
+### 10.8 The ALB/API timeout chain is misconfigured — deferred, not fixed
+
+**The worst-case request time exceeds the load balancer's patience by roughly 4×.**
+
+| Component | Value | Reference |
+|---|---|---|
+| `INFERENCE_TIMEOUT_SECONDS` — a **per-call** budget, applied **inside** `_post_upstream` | **120s** | `main.py:106`; `main.py:547` |
+| `/search` calls `_post_upstream` **twice, sequentially** — embed, then rerank | **2 × 120s** | `main.py:1381` (embed), `main.py:1459` (rerank) |
+| **Worst-case request time** | **~240s** | 120 + 120 |
+| ALB `lb_idle_timeout` | **60s** | `infra/variables.tf:665-671` (default `60`), applied at `infra/load_balancer.tf:67` |
+| **Outcome** | **The ALB times out before the API does.** | |
+
+The per-call framing is why the arithmetic is not visible from the constant alone: `120.0`
+reads like a request budget and is not one. Two sequential calls each get the full 120s.
+
+**Status: DELIBERATELY DEFERRED.** The operator approved a config change; it has not been
+made, **pending the EC2 latency measurement** in §10.7. Raising `lb_idle_timeout` without
+that number would be tuning against a guess — the honest reason to hold, and it will not
+hold forever.
+
+### 10.9 Python version skew
+
+Local venv is **Python 3.14.4**; `api/Dockerfile` is **`python:3.12-slim`**, and
+**`python3.12` is not available on this host**. Every one of the 62 tests that imports
+application modules ran on 3.14.4. A 3.12-only incompatibility would **not** be caught
+locally. Inherited from §4.4 item 2.
+
+### 10.10 Least privilege is asserted, not demonstrated
+
+The local devdb role is a **SUPERUSER**, so the `DATABASE_URL` / `ALEMBIC_DATABASE_URL`
+split is enforced by variable naming and documented intent only. Nothing local proves the
+application role lacks DDL rights. Inherited from §4.4 item 3, §5.5 item 1, §8.8 item 2 —
+and it matters more now, because §10.5 needs a master-credential migration to run on RDS
+against exactly a role whose privileges have never been demonstrated.
+
+### 10.11 The corpus is synthetic
+
+**`data/corpus.json` was generated for this milestone because no dataset was supplied.** See
+§1. No conclusion drawn from it is a conclusion about real-world documentation quality. It
+does mean every measurement above is a measurement *on a corpus of known shape*, not on
+anything a real user would search.
