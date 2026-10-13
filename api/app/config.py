@@ -5,7 +5,7 @@ can do anything?* Everything here is read once, at settings-construction time,
 into a single frozen object, so that no later code has to reach back into
 ``os.environ`` and no two call sites can disagree about a value.
 
-Three decisions in this file are load-bearing and all three are about the DSN:
+Four decisions in this file are load-bearing and all four are about the DSN:
 
 1. ``DATABASE_URL`` is a ``pydantic.SecretStr``, not a ``str``. See
    ``Settings.database_url``.
@@ -17,6 +17,10 @@ Three decisions in this file are load-bearing and all three are about the DSN:
    catches ``postgresql+asyncpg://:@postgres:5432/`` — what a ``${DEV_DB_*}``
    variable that was never defined interpolates to on a host without a ``.env``,
    which is otherwise set, non-blank, and completely useless.
+4. WHERE THE DSN COMES FROM IS EXPLICIT, NEVER INFERRED. See
+   ``DB_DSN_SOURCE_ENV_VAR`` and ``resolve_database_url``. A process that
+   cannot find ``DATABASE_URL`` does NOT quietly fall back to AWS; it either
+   reads the environment or it was told, by name, to read AWS.
 
 Everything else in here is either a named constant with a stated reason, a small
 helper that exists to keep a credential out of a log line, or the retrieval
@@ -29,7 +33,11 @@ above ``QUERY_PREFIX``.
 
 from __future__ import annotations
 
+import functools
+import json
+import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -41,7 +49,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import URL, make_url
+
+logger = logging.getLogger(__name__)
 
 # ── Which environment variable carries the application DSN ────────────────────
 #
@@ -369,32 +379,713 @@ def _build_funnel(retrieval_candidates: int, rerank_top_k: int) -> Funnel:
     return Funnel(retrieval_candidates=retrieval_candidates, rerank_top_k=rerank_top_k)
 
 
-class DatabaseUrlResolver(Protocol):
-    """The seam an alternative credential source plugs into.
+# ── The AWS credential path ───────────────────────────────────────────────────
+#
+# Milestone 3 added the second implementation of the `DatabaseUrlResolver` seam
+# below: the one that reads the RDS master password out of Secrets Manager rather
+# than out of the environment. Everything in this section exists to make that
+# path behave under three pressures that the environment path never has to
+# survive — it talks to the network, it costs money per call, and its input is a
+# credential this process is not supposed to print.
 
-    Defined now, implemented only by the environment reader below, so that the
-    substitution point is a named, documented shape rather than something the
-    next person has to invent inside `get_settings()`.
+
+# ── WHICH SOURCE IS READ. EXPLICIT, ALWAYS ────────────────────────────────────
+#
+# `DB_DSN_SOURCE` names the source. It has two documented values and a default:
+#
+#   environment (default)  read DATABASE_URL from the process environment.
+#   aws                    read SSM Parameter Store + AWS Secrets Manager.
+#
+# ── WHY THERE IS NO "AUTODETECT" VALUE, AND WHY THIS MATTERS MORE THAN IT LOOKS ──
+# The obvious design is "if DATABASE_URL is unset, try AWS". It is refused, and
+# the reason is the exact failure this repository has already been bitten by
+# twice elsewhere: a configuration mistake that does not fail where it was made.
+#
+# A forgotten `DATABASE_URL` in a container environment is a routine event — the
+# variable is set in `docker-compose.yml` for local dev and in an `.env` on a
+# laptop, and neither travels to EC2. Under an autodetect rule, that omission
+# would not produce "no database". It would produce a successful connection to
+# the PRODUCTION RDS instance, at production latency, with production data,
+# because the local variable happened to be missing — and the symptom would be
+# an authentication failure hours later if the secret were wrong, or nothing at
+# all if it were right. Silently doing something dangerous is the failure mode;
+# the loud stop is the fix. So the flag is required, and spelling it wrong is
+# also a loud stop.
+#
+# The ORDER below is the other half of the rule and is the reverse of the
+# natural one. `DATABASE_URL` is consulted FIRST and wins even when
+# `DB_DSN_SOURCE=aws` is set, so local behaviour is byte-for-byte unchanged and a
+# laptop can never reach AWS by accident — including in a shell that still has
+# the flag exported from last week's experiment.
+DB_DSN_SOURCE_ENV_VAR = "DB_DSN_SOURCE"
+
+#: Read `DATABASE_URL` from the environment. The default, and the value every
+#: local and container deployment uses today.
+DB_DSN_SOURCE_ENVIRONMENT = "environment"
+
+#: Read the host and port from SSM Parameter Store and the master credential
+#: from Secrets Manager, through the EC2 instance role.
+DB_DSN_SOURCE_AWS = "aws"
+
+# Every accepted value of DB_DSN_SOURCE, for the message below. One tuple so the
+# error and the accepted set cannot drift apart.
+DB_DSN_SOURCE_VALUES = (DB_DSN_SOURCE_ENVIRONMENT, DB_DSN_SOURCE_AWS)
+
+
+# ── WHERE THE THREE SSM PARAMETERS LIVE ──────────────────────────────────────
+#
+# These three paths mirror `aws_ssm_parameter.app_core`, `app_db_port` and
+# `app_db_secret_arn` in `infra/iam.tf`, which build them from `var.project_name`
+# and `var.environment`. The deployed values are, literally:
+#
+#     /lemondrop/dev/db/host
+#     /lemondrop/dev/db/port
+#     /lemondrop/dev/db/secret-arn
+#
+# iam.tf writes a long comment about how those names have already been
+# mis-applied twice (once without the leading slash, once with a trailing one).
+# Read it before touching anything below.
+#
+# The prefix is an environment variable with the deployed value as its default
+# rather than a literal, for one reason: the "dev" in the path follows
+# `var.environment`, and hardcoding it here would silently point a `prod`
+# deployment at a parameter that does not exist — a wrong-database failure of the
+# same family as the one this whole section exists to prevent. A caller who sets
+# nothing gets exactly what is deployed today.
+DB_SSM_PARAMETER_PREFIX_ENV_VAR = "DB_SSM_PARAMETER_PREFIX"
+DEFAULT_DB_SSM_PARAMETER_PREFIX = "/lemondrop/dev/db"
+
+# The three leaves. Named rather than concatenated inline so that every error
+# message can name the exact parameter it failed on, and so the three strings
+# appear once each in the whole codebase.
+DB_SSM_HOST_LEAF = "host"
+DB_SSM_PORT_LEAF = "port"
+DB_SSM_SECRET_ARN_LEAF = "secret-arn"
+
+# The database to connect to, which is NEITHER in SSM nor in the secret by this
+# module's choice. See the long note on the secret's ignored fields below.
+DB_NAME_ENV_VAR = "DB_NAME"
+DEFAULT_DB_NAME = "lemondrop"
+
+
+# ── REGION ────────────────────────────────────────────────────────────────────
+#
+# `AWS_REGION` then `AWS_DEFAULT_REGION`, in that order — the same order the AWS
+# tooling itself uses, so a shell that sets either one behaves identically here
+# and on the CLI.
+#
+# ── WHY THERE IS NO DEFAULT REGION ────────────────────────────────────────────
+# The tempting default is the region this stack was deployed into. It is refused
+# for the same reason every other default in this module is: a default here is
+# not a fallback, it is a CLAIM. Resolving against `eu-west-1` when the instance
+# actually lives elsewhere produces `InvalidSignatureException` or a DNS failure
+# whose message names a region the operator never configured — a failure that
+# reads like an IAM problem and sends them to look at the role instead of at the
+# answer. Failing on the missing variable costs one line in the task definition;
+# guessing costs an afternoon.
+AWS_REGION_ENV_VAR = "AWS_REGION"
+AWS_DEFAULT_REGION_ENV_VAR = "AWS_DEFAULT_REGION"
+
+# The IAM actions each step needs, quoted into the error messages. Named here so
+# that the operator's next move — "check the role's policy" — is spelled out in
+# the one place that already knows the answer, and so a policy change is a change
+# to a constant rather than to five f-strings.
+AWS_SSM_GET_PARAMETER_ACTION = "ssm:GetParameter"
+AWS_SECRETS_GET_SECRET_VALUE_ACTION = "secretsmanager:GetSecretValue"
+
+
+# ── TIMEOUTS ──────────────────────────────────────────────────────────────────
+#
+# Named for what they bound, in the same spirit as `main.py`'s split between a
+# probe budget and a work budget: these are three different questions and
+# collapsing them into one number would hide which one had run out.
+#
+# TCP/TLS connect to the AWS API endpoint. An EC2 instance with no egress route
+# blackholes this rather than refusing it, so without an explicit bound botocore
+# sits in `connect()` until the OS gives up — which on Linux is minutes.
+AWS_CONNECT_TIMEOUT_SECONDS = 3.0
+
+# Waiting for a response to ONE AWS API call, after the connection is up.
+# Secrets Manager and SSM are both a single round trip to a regional endpoint
+# inside AWS; the normal answer is tens of milliseconds. Five seconds is an
+# order of magnitude of headroom over that, which is what makes it a bound on
+# the pathological case rather than on the ordinary one.
+AWS_READ_TIMEOUT_SECONDS = 5.0
+
+# botocore's retry ceiling per API call. 2 rather than botocore's default of 3:
+# a retry after a throttling response is genuinely worth having, and a THIRD
+# attempt against a `t3.micro` that is already the bottleneck is where a
+# configuration problem becomes a startup problem. The worst case for one call
+# is therefore `AWS_MAX_ATTEMPTS * (AWS_CONNECT_TIMEOUT_SECONDS +
+# AWS_READ_TIMEOUT_SECONDS)` = 16s.
+AWS_MAX_ATTEMPTS = 2
+
+# ── THE OVERALL BUDGET, AND WHAT IT ACTUALLY GUARANTEES ───────────────────────
+# This bounds the WHOLE resolution: three SSM reads, one secret read, and the
+# parsing between them. It is enforced by `_Deadline`, which is consulted before
+# every AWS call and which clamps each call's timeouts to the time still
+# remaining.
+#
+# Stated honestly, because "bounded" is a claim: the deadline is checked BEFORE
+# a call, not during one. So at most ONE call can begin with a full 16s of
+# retry worst case; every call after it is clamped to whatever is left, and a
+# call that would start with nothing left is refused without being made. The
+# total is therefore bounded by this budget plus one call's worst case — not by
+# this budget alone. Given that the ordinary case finishes in well under a
+# second, and that this runs once per process, that is the right trade: a hard
+# bound needs a watchdog thread, and a watchdog thread guarding four blocking
+# calls that each have their own timeouts is more machinery than the failure it
+# prevents.
+AWS_RESOLVE_BUDGET_SECONDS = 15.0
+
+
+# The driver the DSN is built for. Named rather than written into the URL twice,
+# because `db.py` already assumes an asyncpg DSN and a scheme typo would produce
+# a confusing driver error from a mile away.
+POSTGRES_ASYNCPG_DRIVER = "postgresql+asyncpg"
+
+
+class _Deadline:
+    """A wall-clock budget for one resolution, consulted before every AWS call.
+
+    `time.monotonic()` rather than `time.time()` on purpose: this is a
+    DURATION, and a duration measured against the wall clock is wrong by exactly
+    however long NTP stepped the clock during startup — including backwards, in
+    which case a deadline would appear to have hours left and would never fire.
+
+    Never raises on its own. `check` raises so the caller can name the step that
+    ran out; `remaining` returns a number so the client can clamp its timeouts.
+    """
+
+    __slots__ = ("_expires_at",)
+
+    def __init__(self, budget_seconds: float) -> None:
+        self._expires_at = time.monotonic() + budget_seconds
+
+    def remaining(self) -> float:
+        """Seconds left. Zero once the budget is spent, never negative."""
+        return max(0.0, self._expires_at - time.monotonic())
+
+    def check(self, step: str) -> float:
+        """Return the seconds left, or raise naming `step` if there are none.
+
+        The step name is a constant written by the caller — never a value read
+        from AWS — so nothing a remote service said can reach this message.
+        """
+        remaining = self.remaining()
+        if remaining <= 0.0:
+            raise RuntimeError(
+                f"resolving the database DSN from AWS ran out of its "
+                f"{AWS_RESOLVE_BUDGET_SECONDS:g}s budget before it could {step}. "
+                "Something is making the AWS API very slow to answer from this "
+                "host: an egress problem that blackholes rather than refuses, or a "
+                "region endpoint that is not reachable from this subnet. This is "
+                "reported as the database being unavailable rather than raised out "
+                "of startup, so the process is up and /health/ready is answering "
+                "503 while you look."
+            )
+        return remaining
+
+
+def _boto3_client(service_name: str, *, region_name: str, config: Any) -> Any:
+    """Construct one boto3 client. THE ONLY PLACE boto3 IS TOUCHED.
+
+    ── WHY THIS EXISTS AS ITS OWN FUNCTION ─────────────────────────────────────
+    Three reasons, in increasing order of how much they matter.
+
+    1. It is the boundary. Everything above it in this section — source
+       selection, JSON parsing, field validation, URL construction, every error
+       message — is REAL logic that the test suite exercises directly. This one
+       function is the entire surface the tests replace, which is what lets the
+       tests prove the resolver works without a network, an AWS account, or a
+       credential anywhere in sight.
+    2. The import is LAZY, inside the function. boto3 is 16MB of botocore's JSON
+       service models and pulling it in costs real import time on a path that a
+       local developer takes every single day and that never touches AWS. So
+       `import app.config` stays boto3-free, `db.py` stays boto3-free, and the
+       dependency is paid only by the one deployment that asked for it.
+    3. No credentials are passed. There is no `aws_access_key_id` argument here
+       and there must never be one. Omitting them entirely puts boto3 on its
+       default provider chain, which is the ONLY correct arrangement for this
+       service: on EC2 that chain ends at the instance profile, whose temporary
+       credentials rotate automatically and expire on their own. Building a
+       credential object out of environment variables by hand — the alternative
+       that looks tidier — is the pattern that leaks credentials into subprocesses
+       (they inherit the environment), into crash reports (they read it), and
+       into every log line that dumps `os.environ`.
+    """
+    import boto3  # noqa: PLC0415 — deliberately local; see point 2 above.
+
+    return boto3.client(service_name, region_name=region_name, config=config)
+
+
+def _aws_error_code(exc: BaseException) -> str:
+    """The AWS error code for an exception, or its class name.
+
+    botocore reports service errors as `ClientError`, whose `.response` carries
+    `Error.Code` (`AccessDeniedException`, `ParameterNotFound`, …) and
+    `Error.Message`. Only the CODE is read, never the message: the code is the
+    stable, greppable thing an operator can search IAM's error docs for, and the
+    message is free text that varies by service, by version and by SDK language.
+
+    The class name is the fallback for everything else — connection errors,
+    timeouts, DNS failures — for the same reason `main.py`'s `_probe` prefers
+    `type(exc).__name__`: it is stable where the message is not.
+    """
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error = response.get("Error")
+        if isinstance(error, dict):
+            code = error.get("Code")
+            if code:
+                return str(code)
+    return type(exc).__name__
+
+
+def _aws_client_config(remaining: float) -> Any:
+    """botocore `Config` for one call, with its timeouts clamped to `remaining`.
+
+    Clamping rather than using the constants directly is what makes
+    `AWS_RESOLVE_BUDGET_SECONDS` a bound on the resolution rather than a comment
+    about it. Without the clamp, the fourth call in a slow resolution would still
+    be allowed a full `AWS_READ_TIMEOUT_SECONDS` on top of whatever budget had
+    already been spent, and the total would be the sum of four independent
+    worst cases instead of something an operator can reason about.
+
+    botocore is imported here rather than at module scope for the same reason
+    `_boto3_client` does it there, and it is only reached when the AWS path is
+    actually taken.
+    """
+    from botocore.config import Config  # noqa: PLC0415 — see `_boto3_client`.
+
+    return Config(
+        connect_timeout=min(AWS_CONNECT_TIMEOUT_SECONDS, remaining),
+        read_timeout=min(AWS_READ_TIMEOUT_SECONDS, remaining),
+        retries={"max_attempts": AWS_MAX_ATTEMPTS, "mode": "standard"},
+    )
+
+
+def _ssm_parameter_path(leaf: str) -> str:
+    """The full SSM path for one leaf, from the configured prefix.
+
+    Rstrip'd of a trailing slash because iam.tf records that a trailing slash is
+    a `ValidationException` at apply time, and a path that cannot be deployed
+    should not be readable by the process that depends on it either.
+    """
+    prefix = os.environ.get(
+        DB_SSM_PARAMETER_PREFIX_ENV_VAR, DEFAULT_DB_SSM_PARAMETER_PREFIX
+    ).strip()
+    return f"{prefix.rstrip('/')}/{leaf}"
+
+
+def _aws_region() -> str:
+    """The region to talk to, from the environment, or raise naming the variable.
+
+    See the note on `AWS_REGION_ENV_VAR` for why there is no default. The error
+    names BOTH variables because either one satisfies the read, and an operator
+    told only about `AWS_DEFAULT_REGION` on a host that uses `AWS_REGION` would
+    conclude the problem was the instance role.
+    """
+    for name in (AWS_REGION_ENV_VAR, AWS_DEFAULT_REGION_ENV_VAR):
+        value = os.environ.get(name)
+        if value and value.strip():
+            return value.strip()
+    raise RuntimeError(
+        f"{DB_DSN_SOURCE_ENV_VAR}={DB_DSN_SOURCE_AWS} was requested but neither "
+        f"{AWS_REGION_ENV_VAR} nor {AWS_DEFAULT_REGION_ENV_VAR} is set.\n"
+        "\n"
+        "There is deliberately no default region. Guessing one does not fall back "
+        "to a working configuration, it produces an AWS error naming a region "
+        "this deployment never used — which reads like an IAM problem and sends "
+        "you to check the instance role instead of the environment.\n"
+        "\n"
+        f"Set {AWS_REGION_ENV_VAR} to the region the RDS instance is in, or set "
+        f"{DB_DSN_SOURCE_ENV_VAR} back to '{DB_DSN_SOURCE_ENVIRONMENT}' and supply "
+        f"{DATABASE_URL_ENV_VAR} instead."
+    )
+
+
+def _read_ssm_parameter(client: Any, parameter_name: str) -> str:
+    """Read one SSM String parameter, or raise naming the parameter and the action.
+
+    `WithDecryption=False` explicitly rather than left off: these three
+    parameters hold a hostname, a port and an ARN, none of which are SecureString,
+    and saying so in the call means the request cannot decrypt something by
+    accident if the parameter is ever retyped.
+
+    Every failure message names the FAILING PARAMETER and the IAM ACTION, because
+    the operator's next move after any of them is "check the role's policy" and
+    "which parameter?" is the first question they have to answer. A message that
+    said only "AccessDeniedException" would send them to the IAM console with no
+    idea which of three statements to look at.
+
+    `from None` on every branch, for the reason this module already does it
+    everywhere else: a chained botocore exception renders its own traceback, and
+    botocore exception text is not something this module controls.
+    """
+    try:
+        response = client.get_parameter(Name=parameter_name, WithDecryption=False)
+    except Exception as exc:  # noqa: BLE001 — every botocore failure mode
+        code = _aws_error_code(exc)
+        # ParameterNotFound is separated from the rest because it is not an IAM
+        # problem at all, and telling an operator to check their policy when the
+        # parameter was never deployed sends them to the wrong console entirely.
+        hint = (
+            "The parameter does not exist. Check whether it was deployed — "
+            "`terraform apply` in infra/ creates it only when "
+            "var.enable_managed_database is true."
+            if code == "ParameterNotFound"
+            else (
+                f"The instance role needs {AWS_SSM_GET_PARAMETER_ACTION} on this "
+                "parameter. Check the role's inline policy in infra/iam.tf and, if "
+                "it has not been applied, whether the IAM changes are deployed at "
+                "all — unapplied policies are the most likely cause here."
+            )
+        )
+        raise RuntimeError(
+            f"reading the SSM parameter {parameter_name} failed: {code}.\n{hint}"
+        ) from None
+
+    try:
+        value = response["Parameter"]["Value"]
+    except (KeyError, TypeError, IndexError):
+        raise RuntimeError(
+            f"the SSM parameter {parameter_name} was read but the response carried "
+            "no Parameter.Value. The parameter exists and this role can read it, so "
+            "the problem is the parameter's TYPE or the shape of the response — not "
+            "the policy. The three parameters this application reads must all be "
+            "type String."
+        ) from None
+
+    return str(value)
+
+
+def _read_secret_credentials(client: Any, secret_arn: str) -> tuple[str, str]:
+    """Return `(username, password)` from an RDS-managed secret, or raise safely.
+
+    ── THE SHAPE ───────────────────────────────────────────────────────────────
+    A secret created by RDS `manage_master_user_password` holds a JSON object
+    with (among others) `username` and `password`. That is where the master
+    password LIVES: with `manage_master_user_password = true` on `aws_db_instance`
+    (see infra/database.tf) the password never appears in Terraform at all, not
+    even in state, and the only copy is in Secrets Manager.
+
+    The `username` it carries is the RDS MASTER username — which is the account
+    this application connects as, and which `Settings` then refuses to accept if
+    it is empty. That is the intended coupling: one account, one credential, no
+    second variable that could disagree with the secret about who the user is.
+
+    ── WHAT IS NEVER DONE HERE, AND WHY ────────────────────────────────────────
+    The response is never logged, never `%r`-formatted, never attached to an
+    exception, and the password is never passed to `str()`, `repr()` or an f-string.
+    A `logger.debug("secret: %s", body)` is the single line that turns this
+    function into a credential leak, and it is a line that reads as helpful while
+    debugging a parse failure. So every message below is written from constants —
+    field names, the ARN, a shape description — and `from None` keeps botocore's
+    and json's own tracebacks from rendering underneath.
+
+    A non-string or empty field is reported as a MISSING FIELD, naming which one.
+    That is what the operator needs: "the secret has no `password`" points at
+    `manage_master_user_password`, "malformed secret" points at nothing.
+    """
+    try:
+        response = client.get_secret_value(SecretId=secret_arn)
+    except Exception as exc:  # noqa: BLE001 — every botocore failure mode
+        raise RuntimeError(
+            f"reading the secret {secret_arn} failed: {_aws_error_code(exc)}.\n"
+            f"The instance role needs {AWS_SECRETS_GET_SECRET_VALUE_ACTION} on this "
+            "secret. Check the role's policy in infra/iam.tf and, if it has not been "
+            "applied, whether the IAM changes are deployed at all — unapplied "
+            "policies are the most likely cause here."
+        ) from None
+
+    try:
+        secret_string = response["SecretString"]
+    except (KeyError, TypeError):
+        raise RuntimeError(
+            f"the secret {secret_arn} was read but the response carried no "
+            "SecretString. A secret with only SecretBinary cannot be read by this "
+            "application; the RDS-managed secret this one should be created with "
+            "manage_master_user_password stores the credential as a JSON string."
+        ) from None
+
+    try:
+        payload = json.loads(secret_string)
+    except (TypeError, ValueError):
+        # Deliberately NOT `from exc`. json's own DecodeError renders a fragment
+        # of what it failed on, and what it failed on here is a credential.
+        raise RuntimeError(
+            f"the secret {secret_arn} did not contain JSON this application can "
+            "read. A secret created by RDS manage_master_user_password is a JSON "
+            "object carrying `username` and `password`; anything else means either "
+            "the wrong secret was published to this parameter or something else "
+            "wrote to it. The value is not reproduced here because it is a "
+            "credential."
+        ) from None
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"the secret {secret_arn} contained JSON that is not an object (it is "
+            f"a {type(payload).__name__}). This application expects a JSON object "
+            "with `username` and `password`. The value is not reproduced here "
+            "because it is a credential."
+        ) from None
+
+    # The field the operator has to go and fix, named. Checked as "absent, not a
+    # string, or blank" in one pass because all three produce the same next move
+    # and distinguishing them would be guessing: a field that is `null`, a number,
+    # or `""` is as unusable as one that was never written, and the fix is the
+    # same — look at how the secret was created.
+    #
+    # The blank test is `.strip()` and not `not value`, and that is the whole
+    # point of it. A whitespace-only password is TRUTHY, so an `if not value`
+    # check accepts it and hands a blank credential to the driver — which then
+    # produces a `fe_sendauth: no password supplied` error at connection time,
+    # several steps from the secret that was wrong. Same rule as `main.py`'s
+    # `NonBlankText`, applied for the same reason. The value is NOT stripped:
+    # only its emptiness is tested, because a real password may legitimately
+    # begin or end with a space and rewriting it would break a working
+    # credential.
+    resolved: dict[str, str] = {}
+    for field in ("username", "password"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeError(
+                f"the secret {secret_arn} has no usable `{field}` field. An RDS "
+                "secret created by manage_master_user_password always carries both "
+                "`username` and `password` as non-empty strings, so this means the "
+                "secret is not the one this parameter points at, or it has been "
+                "rewritten. No part of the secret is reproduced here."
+            )
+        resolved[field] = value
+
+    return resolved["username"], resolved["password"]
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_database_url_from_aws_once() -> str:
+    """Resolve the DSN from AWS, once per process. Cached; see the caller.
+
+    `functools.lru_cache` rather than a module global so that "has this already
+    been fetched" is a property of a named object that a test can clear with
+    `_resolve_database_url_from_aws_once.cache_clear()`, instead of a variable
+    that has to be reassigned from the outside.
+
+    The arguments are none, which is why the cache is `maxsize=1` rather than a
+    cache keyed by anything: within one process the environment is read once and
+    the answer is the answer.
+    """
+    region = _aws_region()
+    deadline = _Deadline(AWS_RESOLVE_BUDGET_SECONDS)
+    host_parameter = _ssm_parameter_path(DB_SSM_HOST_LEAF)
+    port_parameter = _ssm_parameter_path(DB_SSM_PORT_LEAF)
+    secret_parameter = _ssm_parameter_path(DB_SSM_SECRET_ARN_LEAF)
+
+    def _client(service_name: str, step: str) -> Any:
+        """Build one client for `step`, refusing if the budget is already gone."""
+        remaining = deadline.check(step)
+        return _boto3_client(
+            service_name,
+            region_name=region,
+            config=_aws_client_config(remaining),
+        )
+
+    # ── Three SSM reads ───────────────────────────────────────────────────────
+    # `ssm` and `secretsmanager` are constructed once and reused for their calls,
+    # but the TIME OUTS are clamped per fetch: constructing a client is local work
+    # and costs no AWS calls, while a stale read timeout on the last fetch is
+    # exactly the case the overall budget exists to prevent.
+    ssm = _client("ssm", "read the first SSM parameter")
+    host = _read_ssm_parameter(ssm, host_parameter).strip()
+
+    ssm = _client("ssm", "read the second SSM parameter")
+    port_text = _read_ssm_parameter(ssm, port_parameter).strip()
+
+    ssm = _client("ssm", "read the third SSM parameter")
+    secret_arn = _read_ssm_parameter(ssm, secret_parameter).strip()
+
+    # ── One Secrets Manager read ──────────────────────────────────────────────
+    secrets = _client("secretsmanager", "read the database secret")
+    username, password = _read_secret_credentials(secrets, secret_arn)
+
+    try:
+        port = int(port_text)
+    except ValueError:
+        # The port is not a credential, so quoting it is safe — and quoting it is
+        # the whole value of the message, because the operator's next action is to
+        # look at what that parameter actually contains.
+        raise RuntimeError(
+            f"the SSM parameter {port_parameter} contains {port_text!r}, which is not "
+            "a port number. It is published by infra/iam.tf as tostring(local.db_port) "
+            "and must be type String; check the parameter's value and type."
+        ) from None
+
+    if not host:
+        raise RuntimeError(
+            f"the SSM parameter {host_parameter} is set but empty, so there is no "
+            "host to connect to. Check what that parameter actually contains."
+        )
+
+    # ── Assemble the DSN ──────────────────────────────────────────────────────
+    # `URL.create()`, NEVER string concatenation. This is a correctness
+    # requirement, not a style preference, and the reason is that an RDS master
+    # password is machine-generated from a password policy that does not restrict
+    # punctuation — so it can contain any of `@ : / ? # [ ] % & =` and more.
+    #
+    # Measured on this stack's SQLAlchemy 2.0.54, concatenating a password
+    # containing `@ : / ? %` does not merely produce an ugly DSN: it produces one
+    # that no longer parses at all (`ValueError: invalid literal for int() with
+    # base 10: 'w'` from the port parser, because `user:pass@ss` left the host
+    # reading as `ss`). And a password containing only `@` parses happily into
+    # the WRONG HOST — a DSN that connects somewhere, fails to authenticate, and
+    # produces an authentication error hours later that points at the RDS user
+    # rather than at this line. `URL.create` percent-encodes every component, so
+    # the rendered string round-trips back to the original characters.
+    url = URL.create(
+        POSTGRES_ASYNCPG_DRIVER,
+        username=username,
+        password=password,
+        host=host,
+        port=port,
+        database=os.environ.get(DB_NAME_ENV_VAR, DEFAULT_DB_NAME).strip()
+        or DEFAULT_DB_NAME,
+    )
+    dsn = url.render_as_string(hide_password=False)
+
+    # The one log line this path produces. The host is the sanctioned loggable
+    # component (see `Settings.database_host` for why it is the only one), and the
+    # count is here so an operator reading a log can tell a cached resolution from
+    # a repeated one without counting lines themselves. No DSN, no password, no
+    # secret body, no ARN: the ARN is an identifier rather than a credential, but
+    # the host already says which database this is, and there is no second job
+    # this line has to do.
+    logger.info(
+        "database DSN resolved from AWS (region %s, host %s, secret #1)",
+        region,
+        host,
+    )
+    return dsn
+
+
+def resolve_database_url_from_aws() -> str:
+    """Return the DSN built from SSM + Secrets Manager. Cached for the process.
+
+    ── WHY THE RESULT IS CACHED, EXACTLY ONCE, FOR THE LIFE OF THE PROCESS ─────
+    Two reasons, both of them real numbers rather than tidiness.
+
+    * COST. Secrets Manager charges per API call: $0.05 per 10,000 calls in
+      eu-west-1, and the same per-call rate elsewhere. One fetch per process is
+      one call. Fetching per REQUEST turns a read-only search service into a
+      metered API line item: at even 20 requests/second sustained, one process
+      would make 1.728 million calls a day and cost about $86 a month. The same
+      service fetching once at startup costs $0.00. The SSM reads are free, but
+      they have the same round-trip cost and the same shape, so they are cached
+      with them rather than being left as an inconsistency.
+
+    * LATENCY. A Secrets Manager round trip is tens of milliseconds from inside
+      the same region. Doing that on the request path adds it to EVERY search,
+      which is the one thing this service is supposed to be fast at. The engine's
+      connection pool is the natural lifetime for this: the pool is built in the
+      FastAPI lifespan and disposed in its shutdown (see `db.startup`), so the
+      credential and the pool are created and destroyed together, and there is no
+      cache to invalidate and no rotation that this code silently misses.
+
+    Called from `resolve_database_url`, which is called from `get_settings`,
+    which `db.startup` calls exactly once. The cache is a belt-and-braces
+    guarantee on top of that, and it is what makes "exactly once" a property of
+    this function rather than a property of a call graph nobody is holding still.
+
+    CACHE CLEARING IS A TEST CONCERN ONLY. There is deliberately no refresh, no
+    TTL and no rotation handling: a rotated secret is picked up the next time the
+    process starts, which is the correct behaviour for a long-lived pool and is
+    the one thing that does not need a reaper.
+    """
+    return _resolve_database_url_from_aws_once()
+
+
+def resolve_database_url() -> str:
+    """Return the DSN, from the source `DB_DSN_SOURCE` NAMES. Never infers.
+
+    Three branches, in this order, and the order is the policy:
+
+    1. `DATABASE_URL` set and non-blank → return it, unchanged, and do not
+       construct a boto3 client, do not read a region and do not touch the
+       network. This is what makes local development byte-for-byte identical to
+       what it was before this function existed, and it is why a laptop can never
+       reach AWS even by accident — even with `DB_DSN_SOURCE=aws` still exported
+       in the shell from an earlier experiment.
+    2. Otherwise, `DB_DSN_SOURCE` says `aws` → resolve from AWS.
+    3. Otherwise → the environment reader's existing error, unchanged, which
+       names `DATABASE_URL` and explains that there is deliberately no default.
+
+    A `DB_DSN_SOURCE` set to anything else is an ERROR rather than a fallback.
+    Falling back would make a typo indistinguishable from "not configured", and
+    the operator's diagnosis of the first is completely different from the
+    second.
+
+    `resolve_database_url_from_environment` is still called on branch 3 rather
+    than its error being re-typed here, so the missing-`DATABASE_URL` message has
+    exactly one home and cannot drift between the two paths.
+    """
+    raw = os.environ.get(DATABASE_URL_ENV_VAR)
+    if raw is not None and raw.strip():
+        return raw.strip()
+
+    requested = os.environ.get(DB_DSN_SOURCE_ENV_VAR, DB_DSN_SOURCE_ENVIRONMENT)
+    requested = requested.strip().lower()
+
+    if requested == DB_DSN_SOURCE_ENVIRONMENT:
+        # Not a tautology. It is the branch that guarantees an UNSET
+        # DB_DSN_SOURCE and an explicit `DB_DSN_SOURCE=environment` take the same
+        # path, so the default is not a separate behaviour that can diverge from
+        # the named one.
+        return resolve_database_url_from_environment()
+
+    if requested == DB_DSN_SOURCE_AWS:
+        return resolve_database_url_from_aws()
+
+    raise RuntimeError(
+        f"{DB_DSN_SOURCE_ENV_VAR} is {requested!r}, which is not a source this "
+        f"application knows. It must be one of {', '.join(DB_DSN_SOURCE_VALUES)}.\n"
+        "\n"
+        "There is no fallback, because a fallback here would make a typo look "
+        "exactly like a missing configuration — and those two have nothing in "
+        "common when the operator is reading the message.\n"
+        "\n"
+        f"Use {DB_DSN_SOURCE_ENVIRONMENT!r} for the local devdb (with "
+        f"{DATABASE_URL_ENV_VAR} set), or {DB_DSN_SOURCE_AWS!r} on the EC2 host."
+    )
+
+
+class DatabaseUrlResolver(Protocol):
+    """The seam each credential source plugs into.
+
+    One shape, two implementations: `resolve_database_url_from_environment` (the
+    local and container path, unchanged since the database phase) and
+    `resolve_database_url_from_aws` (SSM Parameter Store plus Secrets Manager,
+    through the EC2 instance role). `resolve_database_url` chooses between them
+    on an explicitly named flag and binds to `DATABASE_URL_RESOLVER`.
 
     ── WHY THIS EXISTS AND WHAT IS DELIBERATELY NOT HERE ──────────────────────
-    The intended AWS credential path reads the host and port from SSM
-    (`/lemondrop/dev/db/{host,port}`) and a secret ARN from the same prefix,
-    fetches the password from Secrets Manager, assembles a DSN, and returns it —
+    The AWS path reads the host and port from SSM
+    (`/lemondrop/dev/db/{host,port}`), a secret ARN from the same prefix, the
+    master credential from Secrets Manager, assembles a DSN, and returns it —
     with the credential existing only in memory for the life of the process.
 
-    None of that is written, because it is NOT this phase and it CANNOT BE
-    verified in this phase: the `feat/aws-infrastructure` IAM changes are not
-    applied, so the deployed permissions for SSM and Secrets Manager are
-    unverified and assumed to be nothing. Writing code against unverified
-    permissions produces code whose failure mode is unknown. boto3 is
-    deliberately absent from `api/requirements.txt` for the same reason.
+    What the seam guarantees is that this touches ONE function:
+    `DATABASE_URL_RESOLVER`. `db.py` never learns where the DSN came from, never
+    fetches a credential, and never imports boto3. If that ever stops being true,
+    this seam has been bypassed and the next credential source will leak into the
+    database layer.
 
-    What this seam guarantees is that adding it later touches ONE function:
-    rebind `DATABASE_URL_RESOLVER` at import, or pass a different resolver into
-    `get_settings()`. `db.py` never learns where the DSN came from, never
-    fetches a credential, and never needs a boto3 import. If that ever stops
-    being true, this seam has been bypassed and the next credential source will
-    leak into the database layer.
+    ── WHAT IS STILL UNVERIFIED, AND IS NOT FIXED BY THE SEAM ──────────────────
+    The `feat/aws-infrastructure` IAM changes are NOT applied, so the deployed
+    permissions for SSM and for Secrets Manager are unverified and assumed to be
+    nothing. Writing the path was still the right call — the alternative is that
+    the first thing anyone learns about the instance role is an AccessDenied at
+    3am — but every error message below is written to NAME the action that was
+    denied, precisely because the first real run may well fail here and the
+    message has to be the useful one.
     """
 
     def __call__(self) -> str: ...
@@ -441,11 +1132,14 @@ def resolve_database_url_from_environment() -> str:
     return raw.strip()
 
 
-# The single, named place an alternative credential source would be bound.
-# Today: the environment. Later: an SSM/Secrets Manager resolver. See
-# `DatabaseUrlResolver` for why the substitution point is defined now and
-# implemented then.
-DATABASE_URL_RESOLVER: DatabaseUrlResolver = resolve_database_url_from_environment
+# The single, named place a credential source is bound. Today it is the SELECTOR
+# `resolve_database_url`, not one of the two resolvers: `get_settings` takes a
+# `DatabaseUrlResolver` and must not have to know that there is more than one,
+# and the choice between them is a configuration decision (`DB_DSN_SOURCE`), not
+# a fact about the interface. Rebinding this to `resolve_database_url_from_aws`
+# unconditionally — in a test, or in a future single-target deployment — is still
+# a one-line change and is exactly what the seam exists to allow.
+DATABASE_URL_RESOLVER: DatabaseUrlResolver = resolve_database_url
 
 
 class Settings(BaseModel):

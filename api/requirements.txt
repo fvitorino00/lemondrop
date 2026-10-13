@@ -76,6 +76,55 @@ asyncpg==0.32.0
 # Python >= 3.10, which both interpreters clear.
 pgvector==0.5.1
 
+# ── AWS ───────────────────────────────────────────────────────────────────────
+# The credential path. Used ONLY when `DB_DSN_SOURCE=aws`, which the EC2
+# instance role sets and no local or compose deployment does. Everything the API
+# does about the database — the pool, the probes, `SELECT 1`, the retrieval
+# query — is unchanged; this one package is what lets the DSN stop being a
+# literal in an environment file and become something the instance fetches
+# through its role.
+#
+# WHY IT IS NOT A HARDER DEPENDENCY THAN IT LOOKS. The obvious AWS SDKs are
+# `aws-sdk` (v2) and a hand-rolled SigV4 client over `httpx`, and both were
+# considered. boto3 wins because the credential chain is the whole job: signing a
+# SigV4 request correctly, refreshing a temporary session token before it
+# expires, following the instance-metadata credential provider, and reading the
+# region from the environment are all things that must be RIGHT, and none of
+# them are things this service should be writing. `httpx` alone cannot do them;
+# boto3 does them for free, and `config.py` deliberately passes no credential
+# arguments so that boto3's default provider chain is the only path in.
+#
+# Note the lazy import in `config._boto3_client`: this package is 16MB of
+# botocore's JSON service models, and a developer running the local devdb pays
+# that import cost only if they have asked for the AWS path. It is NOT a hard
+# dependency of `app.config`, `app.db` or `app.main` at import time.
+#
+# ABOUT THE WHEELS, since the Dockerfile installs no compiler toolchain (the same
+# question answered for pgvector above): this one and its whole dependency tree
+# are PURE PYTHON, and every artifact is a single `py3-none-any` wheel —
+#
+#     boto3-1.43.112-py3-none-any.whl     (140 kB)
+#     botocore-1.43.112-py3-none-any.whl  (16.1 MB)
+#     jmespath-1.1.0-py3-none-any.whl
+#     s3transfer-0.19.2-py3-none-any.whl   (pulled in but never used by this app)
+#     python-dateutil-2.9.0.post0-py2.py3-none-any.whl
+#     six-1.17.0-py2.py3-none-any.whl
+#
+# No cp312 build, no cp314 build, no sdist-only release, no compiled extension —
+# so one wheel satisfies the container's CPython 3.12 and the host venv's CPython
+# 3.14 alike, and `pip install` never invokes a compiler in either place. The
+# constraint is satisfied by the package's shape rather than by a build. Nothing
+# else has to be added to the image.
+#
+# `s3transfer` is in that list because boto3 requires it. This application
+# touches no S3 bucket, and nothing in `api/app/` imports it.
+#
+# Verified against the live PyPI JSON API rather than assumed: on 2026-10-13
+# `boto3`'s `info.version` was 1.43.112, `info.yanked` false, and
+# `info.requires_python` ">=3.10" — which the container's 3.12 and the host's
+# 3.14 both clear.
+boto3==1.43.112
+
 # ── No migrations here, on purpose ────────────────────────────────────────────
 # Alembic used to sit in this file. It has moved to requirements-dev.txt, and
 # the reason is worth stating so nobody "helpfully" puts it back: alembic is a
