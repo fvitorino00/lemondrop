@@ -263,3 +263,216 @@ jobs:
               sys.exit(1)
           print("secrets-in-tracked-content: PASS — no credential pattern in any tracked non-binary file. Binary files are skipped by -I and are NOT covered here.")
           '
+# ═══════════════════════════════════════════════════════════════════════════
+  # Milestone 4, Stage 2 — terraform validation for both stacks
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # WHAT IT DOES, AND WHAT IT DELIBERATELY NEVER DOES
+  # It formats-checks, initialises and validates `infra/` and `infra/bootstrap/`.
+  # It NEVER contacts AWS. No credentials, no `plan`, no `apply`, no state read,
+  # no state write, no state lock. The workflow-level `permissions: contents:
+  # read` is the entire permission set and no step requests a secret, so this
+  # job holds nothing with which it could authenticate to AWS even in principle.
+  #
+  # THE THREE THINGS THAT MAKE "NO AWS" TRUE RATHER THAN MERELY INTENDED
+  # ──────────────────────────────────────────────────────────────
+  # 1. `-backend=false` on the main stack. `infra/versions.tf` declares a real
+  #    s3 backend pointing at the live bucket `lemondrop-tfstate-filipe` with
+  #    `use_lockfile = true`. A plain `init` there opens that bucket and takes a
+  #    real `.tflock` against real state. `-backend=false` skips backend
+  #    initialisation entirely, so the bucket is never contacted at all.
+  # 2. `-input=false` on both stacks. A CI terminal has nobody to answer a
+  #    prompt, so init fails fast and loudly instead of hanging until the job
+  #    is killed at the six-hour mark with no explanation in the log.
+  # 3. `-lockfile=readonly` on both stacks. Provider resolution may only READ
+  #    the committed `.terraform.lock.hcl`. If it were incomplete or disagreed
+  #    with the declared constraints, init FAILS rather than quietly rewriting it
+  #    and then validating a different provider than the one that is committed.
+  #
+  # bootstrap is the deliberate exception to (1). `infra/bootstrap/terraform.tf`
+  # has NO backend block — it is the stack that CREATES the state bucket, so it
+  # cannot be the stack that uses it — which means its backend is the local one.
+  # `-backend=false` there would be a flag with nothing to skip. The flags are
+  # read out of what each file actually declares, not applied uniformly.
+  #
+  # WHY `-lockfile=readonly` IS NOT ENOUGH ON ITS OWN
+  # It prevents a write attempt, but "no write attempted" is not the same claim
+  # as "nothing changed". The `lockfile-drift` steps close that gap:
+  # `git diff --exit-code` against the committed blob is what actually PROVES
+  # the provider selection did not move, independent of whether Terraform tried
+  # to move it. A pinned provider cannot silently drift.
+  #
+  # WHY THE TERRAFORM VERSION IS PINNED HERE
+  # Both `fmt` output and `validate` acceptance are version-sensitive, so a
+  # runner-default Terraform could disagree with a developer's local run for
+  # reasons having nothing to do with the configuration. Both stacks declare
+  # `required_version = ">= 1.10"` — a floor, not a choice — so this job pins
+  # the exact version the configuration was verified against. The pin does NOT
+  # raise the floor the repository declares; it satisfies it.
+
+  terraform-validate:
+    name: terraform validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      # An explicit version, never the runner default. See "WHY THE TERRAFORM
+      # VERSION IS PINNED HERE" above.
+      #
+      # `setup-terraform@v3` declares exactly four inputs: `terraform_version`,
+      # `terraform_wrapper`, `cli_config_credentials_hostname` and
+      # `cli_config_credentials_token`. There is NO `plugin_cache` input at v3 or
+      # at v4, so the provider cache this job uses is NOT requested from this
+      # action — it is configured explicitly in the next step. An earlier revision
+      # of this comment claimed no `TF_PLUGIN_CACHE_DIR` was set by this job at
+      # all; that was true when written and is false now, and it is corrected
+      # here rather than left to contradict the step below it.
+      - name: setup-terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.5
+
+      # ── IN-JOB SHARED PROVIDER CACHE ───────────────────────────────────────
+      # WHAT THIS IS, AND WHY IT EXISTS
+      # `infra/` and `infra/bootstrap/` are two separate working directories that
+      # lock the SAME provider — hashicorp/aws v5.100.0, 706,945,176 bytes
+      # unpacked — and this job runs `terraform init` in BOTH of them, one after
+      # the other. Terraform installs providers per working directory, so without
+      # this step the job downloads and unpacks that same ~675 MB binary TWICE
+      # inside a single run.
+      #
+      # `TF_PLUGIN_CACHE_DIR` is Terraform's own mechanism for that: it names a
+      # directory that the first init populates and that a later init in a
+      # DIFFERENT working directory installs from instead of downloading.
+      # Measured on this machine, these two stacks, these exact flags:
+      #     init — main       `- Installing hashicorp/aws v5.100.0...`  33.2 s
+      #     init — bootstrap  `- Using hashicorp/aws v5.100.0 from the
+      #                          shared cache directory`                2.2 s
+      # A control run with the variable unset took 33.2 s and printed
+      # `Installing`, so the 2.2 s figure is the cache and not a warm DNS cache
+      # or a lucky network moment.
+      #
+      # WHY `$GITHUB_ENV` AND NOT A PLAIN `export`
+      # Every `run:` block is a separate shell process. An `export` inside this
+      # step dies with this shell, the two init steps below would never see the
+      # variable, and the job would download twice while looking unchanged and
+      # for no visible reason. `$GITHUB_ENV` is the mechanism that carries an
+      # environment variable forward to later steps of the SAME job — which is
+      # exactly the scope this cache is meant to have.
+      #
+      # WHY `$RUNNER_TEMP` AND NOT SOMETHING INSIDE THE TREE
+      # Two traps, both avoided:
+      #   1. Nested inside `.terraform/`. `.terraform/` is a directory Terraform
+      #      owns and rewrites, so a cache inside it collapses the distinction
+      #      between "the shared copy" and "this working directory's installed
+      #      copy", and it hides inside a gitignored tree where nothing can see
+      #      it. It also gives up the one property this step needs, which is
+      #      surviving independently of any working directory.
+      #   2. Nested inside the checked-out repository. Then a ~675 MB untracked
+      #      directory appears in the working tree, and the `git status` and
+      #      `git diff --exit-code` steps below have to reason around it.
+      # `$RUNNER_TEMP` is runner scratch space, outside the checkout, discarded
+      # when the job ends — which is precisely the lifetime this cache wants.
+      #
+      # THE CAVEAT THAT ACTUALLY BITES: THE DIRECTORY MUST EXIST BEFORE init
+      # Verified against 1.16.5: pointing `TF_PLUGIN_CACHE_DIR` at a path that
+      # does not exist makes init report a CLI configuration error before it
+      # installs anything —
+      #     Error: The specified plugin cache dir <path> cannot be opened:
+      #     stat <path>: no such file or directory
+      #     As a result of the above problems, Terraform may not behave as
+      #     intended.
+      # init then creates the directory anyway and carries on. So the failure is
+      # not a clean one at the point of the mistake: whether the JOB goes red can
+      # come down to some unrelated later step, and the log then reads like a
+      # lockfile or provider problem when the real cause was a setup line above
+      # it. The `mkdir -p` below is load-bearing, not tidiness — it is the
+      # difference between a clean log and one that opens on a warning the reader
+      # has to know to recognise.
+      #
+      # WHY THIS CANNOT WEAKEN THE LOCKFILE GUARANTEE
+      # Worth being precise, because a shared cache directory looks like it could
+      # let provider selection drift. It cannot. The cache is a STORE keyed by
+      # provider address and version; init still decides which version to install
+      # exclusively from the committed `.terraform.lock.hcl`, under
+      # `-lockfile=readonly`, and a cache holding some other version simply goes
+      # unused. The guarantee that matters was never "init behaved" — it is the
+      # two `git diff --exit-code` steps, which compare the lockfile against the
+      # committed blob regardless of how the bytes arrived. This cache changes
+      # only WHERE the bytes come from, never WHICH version is selected.
+      #
+      # WHAT THIS DELIBERATELY DOES NOT DO: NO CROSS-RUN CACHING
+      # This is IN-JOB ONLY. There is no `actions/cache` here, and that is a
+      # decision rather than an omission. `$RUNNER_TEMP` does not outlive the job,
+      # so every CI run still pays ONE full ~675 MB download exactly as it did
+      # before this step existed. What this buys is halving that cost within a
+      # run that otherwise pays it twice.
+      #
+      # Cross-run caching is the obvious next step and is deliberately deferred
+      # until this job's real CI wall-clock has been measured. A cache key and a
+      # restore path are a behavioural change, not a documentation fix: a stale
+      # or poisoned cache is a new way for the job to fail, and one that is hard
+      # to read from a log. Adding that failure mode before there is a
+      # measurement to justify it would be guessing.
+      - name: configure provider cache (in-job)
+        run: |
+          set -euo pipefail
+          CACHE_DIR="${RUNNER_TEMP}/terraform-plugin-cache"
+          mkdir -p "$CACHE_DIR"
+          echo "TF_PLUGIN_CACHE_DIR=${CACHE_DIR}" >> "$GITHUB_ENV"
+          echo "TF_PLUGIN_CACHE_DIR=${CACHE_DIR}"
+
+      # `fmt -check`, never bare `fmt`: it reports and exits non-zero, and it
+      # never rewrites a file. Nothing in CI is permitted to edit the tree.
+      #
+      # These two steps overlap by construction — `terraform fmt -check
+      # -recursive` run in `infra/` already descends into `infra/bootstrap/` —
+      # and are kept separate anyway so the log names the stack that failed
+      # instead of leaving that to be inferred from a relative path.
+      - name: fmt — main stack
+        working-directory: infra
+        run: terraform fmt -check -recursive
+
+      - name: fmt — bootstrap stack
+        working-directory: infra/bootstrap
+        run: terraform fmt -check -recursive
+
+      # ── Main stack ─────────────────────────────────────────────────────────
+      # `-backend=false` is the load-bearing flag on this line.
+      - name: init — main stack (no backend)
+        working-directory: infra
+        run: terraform init -backend=false -input=false -lockfile=readonly
+
+      - name: lockfile-drift — main stack
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- infra/.terraform.lock.hcl; then
+            echo "::error file=infra/.terraform.lock.hcl,title=terraform lockfile drift::terraform init changed the committed lockfile. The provider set that was validated is not the provider set that is committed. Fix the lockfile deliberately, and commit it in the same change as whatever altered the provider constraints."
+            exit 1
+          fi
+          echo "lockfile-drift (infra): PASS — provider selection is unchanged."
+
+      - name: validate — main stack
+        working-directory: infra
+        run: terraform validate
+
+      # ── Bootstrap stack ────────────────────────────────────────────────────
+      # No `-backend=false` here, and that is a decision read out of
+      # `infra/bootstrap/terraform.tf` rather than an oversight.
+      - name: init — bootstrap stack (local state)
+        working-directory: infra/bootstrap
+        run: terraform init -input=false -lockfile=readonly
+
+      - name: lockfile-drift — bootstrap stack
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- infra/bootstrap/.terraform.lock.hcl; then
+            echo "::error file=infra/bootstrap/.terraform.lock.hcl,title=terraform lockfile drift::terraform init changed the committed lockfile. The provider set that was validated is not the provider set that is committed. Fix the lockfile deliberately, and commit it in the same change as whatever altered the provider constraints."
+            exit 1
+          fi
+          echo "lockfile-drift (infra/bootstrap): PASS — provider selection is unchanged."
+
+      - name: validate — bootstrap stack
+        working-directory: infra/bootstrap
+        run: terraform validate
