@@ -503,3 +503,140 @@ jobs:
       - name: validate — bootstrap stack
         working-directory: infra/bootstrap
         run: terraform validate
+
+# ═══════════════════════════════════════════════════════════════════════════
+  # Milestone 4, Stage 3 — the workflow-compile gate
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # WHY THIS JOB EXISTS AT ALL
+  # Run 38603050168 failed in 0 seconds with ZERO jobs. Not one check ran. The
+  # workflow did not fail a gate — it failed to COMPILE. The cause was a literal,
+  # empty dollar-brace expression sitting inside a comment inside a `run:` block,
+  # and GitHub resolves expressions before any job is scheduled, so the comment
+  # was not a comment as far as the expression parser was concerned.
+  #
+  # THAT IS THE POINT, AND IT IS THE WORST PART OF IT
+  # A malformed workflow does not fail CI here — it cannot. The compile error is
+  # raised before the run exists, so the state-leak gate, the terraform gate and
+  # every other gate in this file are not defeated, they are simply never
+  # reached. Each one reports success by absence. A gate defined as "the thing
+  # that goes red when the gate is broken" cannot catch this, because the class
+  # of defect is upstream of every gate: no job in any workflow can observe a
+  # workflow that failed to compile. The only thing that can observe it is a
+  # checker that reads the file WITHOUT running it — which is what this is.
+  #
+  # THIS IS A RELEASE GATE BY BEING CALLED, NOT BY BEING WIRED
+  # `release.yml` already calls this file with `uses:`, so adding a job here
+  # makes it a SIXTH release gate on `main` with no edit to `release.yml` and
+  # none required. Anything that fails here fails the release.
+  #
+  # Note the asymmetry that makes this job load-bearing rather than redundant.
+  # A bad workflow can land on `main` DIRECTLY, without ever passing through the
+  # pull request that review would have caught it in — and a gate that only ran
+  # on `pull_request` would therefore be bypassed by definition in precisely the
+  # scenario that motivates it. Running from `main`'s own pipeline is the point.
+  #
+  # WHAT IT CHECKS: EVERY WORKFLOW, NOT JUST THIS ONE
+  # No path argument is passed, so actionlint walks `.github/workflows`
+  # recursively and reads every `.yml` and `.yaml` beneath it. Checking only the
+  # file this job lives in would be the wrong instinct: the compile failure that
+  # motivated this job was not confined to the file being edited, and a
+  # malformed `release.yml` zeroes a run just as completely as a malformed
+  # `hygiene.yml` does. The three workflows are one blast radius.
+  #
+  # WHY THE VERSION IS PINNED EXACTLY
+  # `1.7.12`, never `latest` — the same reason this file pins `actions/checkout`
+  # at a major and terraform at `1.16.5`. A floating tag means the verdict
+  # recorded against `main` can change with no commit to account for it.
+  #
+  # The tag was READ, not guessed. At the time of writing, 1.7.12 is the highest
+  # semver tag published for `rhysd/actionlint` on Docker Hub, and `latest`
+  # resolves to exactly it, so the pin costs no currency:
+  #     rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+  # The digest is RECORDED here rather than enforced. Enforcing it would fail
+  # the moment the tag is rebuilt for a base-image bump, and this repository
+  # does not claim digest-pinning guarantees anywhere else; a stronger claim in
+  # one job would be a claim nothing else keeps.
+  #
+  # WHY THIS JOB NEEDS NOTHING ELSE
+  # No `setup-python`, no `setup-terraform`, no `services:`, no provider cache,
+  # no credentials, no backend. actionlint is a static checker: it reads files
+  # and exits with a status. It declares no `permissions:` of its own and asks
+  # for no `secrets:`, so it runs under the workflow-level `contents: read` and
+  # holds nothing with which it could authenticate to anything — AWS included.
+  # It cannot contact AWS even in principle, because it never runs Terraform.
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      # `-no-color`: actionlint auto-detects a non-TTY and drops colour anyway,
+      # but stating it keeps CI logs free of escape codes on every runner image
+      # rather than relying on that detection holding.
+      #
+      # No path argument: see "WHAT IT CHECKS" above — recursive over the whole
+      # workflows directory.
+      #
+      # `-ignore 'SC2016'` is a scope decision, argued at length immediately below.
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -no-color -ignore 'SC2016'
+
+  # ── SCOPE: WHY `-ignore 'SC2016'` AND NOT `-shellcheck=` ────────────────────
+  # This is the one judgement call in this job, so it is recorded here rather
+  # than settled silently in a flag.
+  #
+  # WHAT THE DEFAULT SCOPE ACTUALLY REPORTS ON THIS REPOSITORY, TODAY
+  # Measured with 1.7.12 against the current workflows, default configuration:
+  #     exit status 1, exactly TWO findings, both shellcheck, ZERO expression
+  #     errors, zero syntax errors, zero unknown-key errors:
+  #       .github/workflows/hygiene.yml:163:9   SC2016, script line 74 col 37
+  #       .github/workflows/release.yml:556:9   SC2016, script line 27 col 35
+  #
+  # BOTH ARE FALSE POSITIVES AND BOTH HAVE THE SAME ROOT CAUSE:
+  # A BACKTICK INSIDE A SINGLE-QUOTED STRING.
+  #   1. hygiene.yml — a backtick inside a PYTHON COMMENT, inside `python3 -c`.
+  #      Located by bisection, not guessed: it is the word `git grep` written
+  #      with backticks in that Python comment that fires it, not the `$SPECS`
+  #      expansion sitting beside it on the same line.
+  #   2. release.yml — markdown backticks inside a `sed` program that wraps each
+  #      line in code formatting for a workflow annotation. Single quotes are
+  #      the ONLY correct quoting for that sed program.
+  # ShellCheck sees a single-quoted string and warns when what follows could be a
+  # command substitution. It cannot know it is reading Python or sed.
+  #
+  # In both cases "expressions do not expand here" is the DESIRED behaviour, not
+  # a defect. Acting on these findings would mean corrupting a Python comment or
+  # breaking an annotation in order to satisfy a linter reading them as shell.
+  # There is no genuine defect to fix here, and none was fixed.
+  #
+  # WHY THIS IS `-ignore` AND NOT `-shellcheck=`
+  # shellcheck is DEFERRED, NOT DISABLED. `-shellcheck=` would switch the entire
+  # integration off and discard a check that is demonstrably working: shellcheck
+  # 0.11.0 ships inside this image, is genuinely active, and swept every `run:`
+  # block in every workflow in this repository without finding one real problem.
+  # `-ignore 'SC2016'` leaves it running and removes exactly the one rule that
+  # is wrong here. Verified against the exact flags above: a planted SC2086
+  # (unquoted expansion) in a scratch file still fails this command line, so the
+  # ignore is narrow and shellcheck is demonstrably not muted.
+  #
+  # SC2016 IS ALSO THE RIGHT RULE TO SUPPRESS, NOT A CONVENIENT ONE
+  # Its entire claim is that expressions do NOT expand in single quotes — which
+  # is exactly why single quotes are used to hand a literal program or a literal
+  # dollar sign to an interpreter. In shell embedded in YAML, where
+  # single-quoting is the normal way to pass a multi-line interpreter program,
+  # the rule is close to unfalsifiable and close to always wrong. That is a
+  # rule-level reason to suppress it, and it is why this is one `-ignore` rather
+  # than a scatter of inline disable comments dropped through working code.
+  #
+  # WHAT IS *NOT* SUPPRESSED
+  # The class that motivated this job — expression errors, and with them the
+  # syntax errors and unknown keys that share the same compile boundary — is
+  # fully in scope and fully enforced. Nothing here narrows the coverage that
+  # matters. Verified negatively: a scratch workflow carrying the exact defect
+  # from run 38603050168 fails this command line with a non-zero exit.
+  #
