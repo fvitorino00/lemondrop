@@ -223,9 +223,48 @@ def test_a_wrong_password_never_reaches_an_exception_a_log_or_a_repr(caplog):
     The connection is asserted to have FAILED as well. A test that passes
     because nothing was attempted protects nothing: this is why there is no
     `pytest.skip()` for an unreachable database here.
+
+    And because `ok is False` is ALSO what a refused socket reports, "it
+    failed" is asserted twice over: the endpoint is first proved reachable with
+    the real credential (a precondition, not an assertion about the outcome),
+    and the failure that follows is then required to be
+    `asyncpg.InvalidPasswordError` — SQLSTATE 28P01, and a class name rather
+    than a message, because `db._describe`'s docstring records that driver
+    messages vary between versions. Together those two are what make this a
+    test of the authentication path instead of a test of the string
+    "no password in this message", which a closed port satisfies too.
     """
     good = configured_settings()
     good_dsn = good.database_url.get_secret_value()
+
+    # ── PRECONDITION: the endpoint must be REACHABLE and accept this credential ─
+    # `PingResult.ok` is False for EVERY failure mode — a wrong password, a
+    # refused socket, a name that does not resolve, a timeout. So the step-0
+    # assertion below is satisfied just as well by a closed port as by a server
+    # that rejected the password, and every "the password is not in this
+    # message" assertion after it then passes without the authentication path
+    # ever being executed. Measured on this host: pointed at a closed port, this
+    # test used to pass in 0.47s having asked nothing of any server.
+    #
+    # So the endpoint is proved ALIVE with the REAL credential first, before the
+    # wrong one is configured. After this, a `ok is False` can only mean the
+    # server saw the credential and said no — which is the entire claim.
+    def _ping_good(database: db.Database) -> Coroutine[Any, Any, Any]:
+        return database.ping()
+
+    reachable = with_database(_ping_good, good)
+
+    assert reachable.ok is True, (
+        f"the configured database did not answer a ping with the REAL credential, so "
+        f"this test cannot exercise an authentication failure: {reachable.detail}\n"
+        f"DSN host was {good.database_host!r}.\n"
+        f"If the host is wrong, check {DATABASE_URL_ENV_VAR} in .env.\n"
+        f"If the database is simply not running:\n"
+        f"    {START_DEVDB}\n"
+        f"Without this, a refusal to connect would sail through every redaction "
+        f"assertion below and be reported as if the password had been checked."
+    )
+
     # Replace the real password component rather than the whole authority
     # string, so this keeps working if the username or host ever contains a
     # colon or an at-sign.
@@ -251,6 +290,25 @@ def test_a_wrong_password_never_reaches_an_exception_a_log_or_a_repr(caplog):
 
     # 0. The failure must be real. Without this the whole test is vacuous.
     assert verdict.ok is False, "a wrong password was accepted — the test proves nothing"
+
+    # 0b. It must be the AUTHENTICATION failure specifically, not merely some
+    #     failure. `ok is False` alone cannot tell "the server rejected this
+    #     password" from "nothing was listening", and a transport error would
+    #     reach the four redaction assertions below having proved nothing about
+    #     credentials — which is exactly the vacuous pass this precondition and
+    #     this assertion exist to end.
+    #
+    #     Asserted on the exception CLASS NAME, never on message text:
+    #     `db._describe`'s own docstring records that driver messages vary
+    #     between versions and are not a stable thing to parse, while the class
+    #     name is. `asyncpg.InvalidPasswordError` is SQLSTATE 28P01 and is
+    #     stable. `_describe` puts the class name FIRST in the string and
+    #     `_brief` truncates at 120 characters, so the cap cannot hide it.
+    assert "InvalidPasswordError" in verdict.detail, (
+        f"the connection failed for a reason other than a rejected password, so the "
+        f"redaction assertions below are being applied to a transport failure: "
+        f"{verdict.detail!r}"
+    )
 
     # 1. The verdict. This string is put straight into the /health/ready
     #    response body, so it is the one most likely to reach an unauthenticated

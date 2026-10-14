@@ -25,8 +25,35 @@ correct behaviour rather than a broken test, and there is deliberately no
 reporting green, and green-that-means-nothing is worse than red, because red gets
 read.
 
-Section 0 (the funnel's configuration rules) needs no services at all and passes
-on a machine where nothing is running.
+**No test in this file passes on a machine where nothing is running — all 26
+require a database, including Section 0.** An earlier version of this docstring
+claimed otherwise ("Section 0 ... needs no services at all and passes on a
+machine where nothing is running"). That claim was false, and the fixture is
+why. `_clean_probe_collection` is declared `@pytest.fixture(autouse=True)`, so
+it empties this file's probe collection in the database before AND after
+*every* test — it runs for Section 0's pure-configuration tests exactly as it
+does for the live ones. With no database reachable it raises in SETUP, and the
+test never reaches its own body.
+
+Measured on this host, CPython 3.14.4 / pytest 9.1.1, exit status 1 both ways:
+
+    env -u DATABASE_URL -u API_URL pytest api/tests/test_search.py
+    → 26 errors in 2.16s
+
+    DATABASE_URL=postgresql+asyncpg://...@127.0.0.1:<closed port>/lemondrop \
+      API_URL=http://127.0.0.1:1 pytest api/tests/test_search.py
+    → 26 errors in 8.84s
+
+and the traceback for a Section 0 test — `test_a_coherent_funnel_is_accepted`,
+whose body reads two environment variables and asserts on an `if` — lands at
+`api/tests/test_search.py:245`, inside the fixture, not in the test.
+
+This is why no test in this file is declared T1 in `.github/workflows/tests.yml`,
+and why Section 0's five funnel tests are declared in T2 rather than T1: five
+declarations that expand to 13 collected cases, all of them on the database side
+of that line. The comment banner above Section 0 still says "No services
+required", and it is wrong for the same reason; it has been left in place here
+rather than fixed in a change scoped to this docstring.
 
 What this file protects, in rough order of how much damage its absence causes:
 
