@@ -438,7 +438,7 @@ The order is the design (`deploy.sh`, under `── THE ORDER IS THE DESIGN ─�
 | 6 | **schema gate, first pass** — *early optimisation only* | with a revision supplied: `reading the alembic head at <sha> …` / `  head from the source tree: <head>`. Without one: `no source revision given.` and an explanation that the authoritative gate will run after the pull | no |
 | 7 | **pull** | `pulling <ref> …` / `  pulled image id: sha256:…` (and possibly a `NOTE: the image also answers to …` when the registry lists an index and a platform manifest separately) | downloads the image |
 | **6b** | **establish the two facts from the image** (`resolve_deploy_facts()`) | `establishing what this image is, from the image itself …` / `  source revision : <sha>  (from: <label\|argument>)` / `  alembic head    : <head>  (from: <label\|argument>)`. **This is where §4.4 happens** | no — a refusal here is free, which is why it is here and not after `compose up` |
-| **6c** | **schema gate, authoritative** | `schema gate: OK — target head '0001' matches the recorded head.` or a refusal naming the baseline problem | no |
+| **6c** | **schema gate, authoritative** | `schema gate: OK — target head '0001' matches the recorded head.` — or, on a **labelled image whose `org.lemondrop.alembic-head` does not match the recorded `ALEMBIC_HEAD`**, the `════════ SCHEMA MISMATCH — REFUSING ════════════════` block below | no |
 | 8 | **switch** | `writing API_IMAGE into /opt/lemondrop/.env …` then `recreating ONLY the api service …` | **first change:** `.env`, then the `api` container |
 | 9 | **verify** (`verify_stack`) | `verifying the new deployment …` then the readiness and known-good-search lines | no |
 | 10 | **record** (`write_record`) | the `──────────────── DEPLOYED ─────────────────────────` block | writes the record |
@@ -451,6 +451,20 @@ The order is the design (`deploy.sh`, under `── THE ORDER IS THE DESIGN ─�
 
 - **Step 5 comes before the pull on purpose** (`deploy.sh`, under `── IS THE DIGEST OBTAINABLE ──`): "A typo'd digest discovered after the old container is gone is a self-inflicted outage; discovered now it is a message."
 - **Step 6 comes before the pull on purpose too** (`deploy.sh`, `── SCHEMA GATE (FIRST PASS …) ──`): "the gate needs no image and no network — only the source tree — so running it here refuses a schema-incompatible deploy without spending a download on an artifact nobody is going to run."
+- **⚠️ Step 6c's refusal — the labelled-image head mismatch — has no override, by design.** On a labelled image, `6c` compares the image's own `org.lemondrop.alembic-head` against the `ALEMBIC_HEAD` in the record. If they differ, `schema_gate()` prints and refuses (exit 2), before `.env` is touched:
+
+  ```
+  ════════ SCHEMA MISMATCH — REFUSING ════════════════
+    recorded alembic head (the running deployment): 0001
+    target  alembic head (revision <40-char-sha>):     0002
+  ```
+
+  The script names both values, refuses to migrate, and says why it cannot: "This script will NOT migrate, and there is no flag to make it. The EC2 role can read only the application secret and `lemondrop_app` has no DDL rights (`infra/iam.tf`), so a migration cannot be run from this host at all."
+
+  **This is a different refusal from §7.1's `SCHEMA DISAGREEMENT`, and the difference is which side moved.** Here both values come from artefacts this host can read: the record says what was deployed, the label says what this image expects, and the disagreement is between two revisions of *this project's* schema history — almost always a migration that was applied out of band without a redeploy. The fix is either to deploy the revision whose head still matches the record, or to apply the missing migration from a workstation with the RDS master credential (`api/alembic/README.md`) and record the new head. **Do not edit `ALEMBIC_HEAD` in the record to make the gate pass.** That is the "do not hand-edit it into something truer" that `adopt_current()` warns about on the neighbouring path (§7.1), and it is the one edit that would make every *subsequent* deploy compare against a fiction.
+
+  The other two `6c` refusals — `schema gate: no usable baseline.` (no record at all, §7.1) and `schema gate: the record … carries no ALEMBIC_HEAD.` (a record with no schema head) — both exit 2 and change nothing. Note the second one exists to stop "unknown" being treated as "compatible".
+
 - **Step 8 order is `.env` first, then the service** (`deploy.sh`, `── SWITCH ──`): the reverse order would recreate the api against the *old* `API_IMAGE`, restarting the old image for no reason and then changing the pin without ever having run it.
 - **Step 8's three flags are load-bearing** (`deploy.sh`, the comments on the `compose up -d --no-build --no-deps --force-recreate api` line):
   - `--no-build` — **mandatory.** "Without it compose rebuilds from ./api and the whole strategy silently reverts to today's defect — deploying a locally built image while the record claims a digest that was tested."
@@ -458,6 +472,20 @@ The order is the design (`deploy.sh`, under `── THE ORDER IS THE DESIGN ─�
   - `--force-recreate` — the api must be *replaced*, not left alone because its configuration appears unchanged to compose.
 - **Step 10 is last, on purpose** (`deploy.sh`, `── RECORD ──`): "A record written before verification is a record of a deployment that might not work, and the next deploy would use its head as a baseline — so an unverified deploy that poisoned the record would refuse every later one. Recording last is what makes the record trustworthy."
 - **The success block names where each fact came from.** `revision : <sha>  (from: <label|argument>)` — read that suffix. It is the difference between "the image told us" and "you told us", and on an unlabelled image it is the only warning you get.
+- **⚠️ On the ADOPTION path that suffix has a third value, and it is the only one you get.** Everything above describes a **deploy**. Adoption (`--adopt-current`, §7.1) prints `revision    : <sha>  (from: image-label (org.opencontainers.image.revision))` when the running image is labelled, and otherwise:
+
+  ```
+    revision    : <unknown>  (from: UNKNOWN — the image carries no
+                             org.opencontainers.image.revision label)
+                  Recorded as unknown, on purpose. The checkout's HEAD is
+                  not evidence of what built these bytes: it is whatever
+                  boot.sh last cloned, and on this host it is ahead of the
+                  running image's own tree.
+  ```
+
+  **Nothing is substituted for a missing label** — not the checkout's `HEAD`, not a timestamp, not a guess — so `REVISION` is written **empty** rather than filled from the tree. Adoption deliberately no longer calls `resolve_deploy_facts()`; the header comment in `adopt_current()` records why: feeding `git rev-parse HEAD` in as the revision slot "was wrong twice over", because for an unlabelled image it asserted evidence that did not exist, and for a labelled one it made the checkout a *competing* assertion — manufacturing a spurious `PROVENANCE CONFLICT` whenever a labelled image legitimately disagreed with a checkout that had moved on. `adopt_current()` records what is **running**; a deploy resolves what is **about to run**, and they now have different code.
+
+  `verify-deployment.sh` reports the empty revision as `PROVENANCE UNKNOWN`, and the next deploy's own labels are the first real provenance this host will have.
 
 **The success block looks like this** (shape from `deploy.sh`, under the `DEPLOYED` banner):
 
@@ -485,14 +513,15 @@ sudo cat /var/lib/lemondrop/deployed-revision.env
 
 Format: one `KEY=value` per line, `#` comments and blanks permitted. **Parse it with `grep`/`sed`, never `source` it** (stated in `deploy-lib.sh`, above `RECORD_KEYS_RE`) — a file that gets `set -a; . record` is a file that can set any variable it likes.
 
-Thirteen keys (the `RECORD_KEYS_RE` regex in `deploy-lib.sh`):
+Fourteen keys (the `RECORD_KEYS_RE` regex in `deploy-lib.sh`):
 
 | Key | Meaning |
 |---|---|
 | `RECORD_VERSION` | `1` |
-| `REVISION` | the git commit deployed |
+| `REVISION` | the git commit deployed. **May be empty** after an `--adopt-current` onto an unlabelled image (§4.5) |
 | `SOURCE_REVISION` | same value, written by the deploy path |
-| `IMAGE_DIGEST` | the digest deployed. **May be empty** after an `--adopt-current`, and after a legacy rollback (see §6.3, §6.4) |
+| `IMAGE_DIGEST` | the digest deployed. **May be empty** after an `--adopt-current`, and after a legacy rollback (see §6.3, §6.4). An empty digest is what routes `verify-deployment.sh` to **`UNPINNED (LEGACY)`** — a third verdict, "nothing was compared", exit 0 — instead of the permanent false `DIVERGENCE` an empty-vs-empty comparison would produce. It used to be filled with a synthetic `unrecorded-local-image (<id>)` placeholder, which could never match a real digest list and so reported `DIVERGENCE` forever on a healthy host |
+| `IMAGE_ID` | the image's own ID. **Written only when `IMAGE_DIGEST` is empty** — on a digest-bearing record the digest already names the exact bytes and a second identifier for the same image is a drift hazard the format otherwise refuses. It is the **only** field naming the running bytes on a legacy adoption, where the digest is empty and (on an unlabelled image) so is the revision. **Deliberately NOT a required key**, and it is the only optional one: every record already in the field predates it, and requiring it would make `record_is_valid` classify all of them as `TRUNCATED`, which would make `schema_gate` refuse the next deploy on every host that has ever been deployed to. An absent `IMAGE_ID` therefore means "this record names its image by digest" |
 | `ALEMBIC_HEAD` | schema head at that revision. Empty is legal but blocks every later deploy (§7.1) |
 | `DEPLOYED_AT_UTC` | ISO-8601 UTC |
 | `DEPLOYED_BY` | `$SUDO_USER` |
@@ -657,7 +686,7 @@ The legacy path (the legacy branch of `rollback.sh`'s `main()`):
 2. Re-tags it as `lemondrop-api`, because `--no-build` will not build it and the `lemondrop-api` tag may since have moved onto a newer image.
 3. **Removes** the `API_IMAGE` key from `.env` rather than blanking it, so compose resolves the bare local name again — exactly the M3 wiring. Pointing `API_IMAGE` at the timestamped tag would also work but would leave the host configured by a migration script rather than by boot.sh.
 4. Recreates `api` and re-verifies.
-5. Records `IMAGE_DIGEST=` **empty**, because in the legacy path there is no digest to write.
+5. Records `IMAGE_DIGEST=` **empty**, because in the legacy path there is no digest to write — **and, on the same path, records `IMAGE_ID=`** with the restored image's ID. The two are written together and for the same reason: `IMAGE_ID` is written exactly when `IMAGE_DIGEST` is empty (§4.6), and on the legacy path that is *every* record. Without it the rewritten record would describe a deployment it cannot identify at all — no digest, and on an unlabelled image no revision either. The id is read by `docker image inspect` if the rollback did not already have it in hand.
 
 An empty `IMAGE_DIGEST` is not an error. `verify-deployment.sh` prints, for a host-built image: "none — this image was built on this host and was never pulled from or pushed to a registry. That is the M3 behaviour, and it means it has no registry reference to roll back to."
 
@@ -741,25 +770,79 @@ sudo docker inspect -f '{{.Image}}' "$(docker compose -p lemondrop -f /opt/lemon
 sudo cat /var/lib/lemondrop/deployed-revision.env 2>&1
 ```
 
-Then, if the running image is the one you want as the baseline:
+Then, if the running image is the one you want as the baseline. **`--adopt-current` takes one mandatory argument: the alembic revision the database is actually at.** It has no default and no fallback, and running it bare refuses (see *Why the argument is mandatory* below):
 
 ```bash
-sudo /opt/lemondrop/scripts/deploy.sh --adopt-current
+# 0001 is this host's database-verified revision — see "The database head this
+# host is at" below in this section, for how that was established and why you
+# must re-read it. On a DIFFERENT host the value is whatever that host's
+# database is at; the argument is <db-verified-alembic-revision>, not universal.
+sudo /opt/lemondrop/scripts/deploy.sh --adopt-current 0001
 ```
 
-`--adopt-current` (`adopt_current()` in `deploy.sh`) writes a record describing what is running **right now** and changes nothing else — it only reads. It refuses if a record already exists, **including a malformed one** (in `adopt_current()` in `deploy.sh`). So a damaged record must be moved aside first:
+`--adopt-current` (`adopt_current()` in `deploy.sh`) writes a record describing what is running **right now** and changes nothing else — it only reads. It refuses if a record already exists, **including a malformed one** (the `[ -f "$LEMDROP_RECORD_FILE" ]` test at the top of `adopt_current()`). So a damaged record must be moved aside first:
 
 ```bash
 sudo mv /var/lib/lemondrop/deployed-revision.env \
         /var/lib/lemondrop/deployed-revision.env.bad.$(date -u +%Y%m%dT%H%M%SZ)
-sudo /opt/lemondrop/scripts/deploy.sh --adopt-current
+sudo /opt/lemondrop/scripts/deploy.sh --adopt-current 0001   # or <db-verified-alembic-revision>
 ```
 
-It prints everything it is about to record — container, image id, digest, revision, alembic head — and says "If any of it is wrong, fix the cause and delete the record — do not hand-edit it into something truer." **Read those lines before accepting them.**
+**⚠️ Do the `mv` last, or not at all.** The two commands above are shown together because they are the two halves of one recovery, not because they are independent. The `mv` is what makes the damaged record disappear to `adopt_current()`; the argument is what makes it succeed. Run with the argument missing and you have moved the evidence aside and recorded nothing — the record is now in `.bad.<stamp>`, the host has no baseline, and every later deploy refuses against no baseline. That is strictly worse than the damaged record you started with. **Confirm the revision first (§7.1 below), then move the file, then adopt.**
+
+It prints everything it is about to record — container, image id, digest, revision, alembic head — and says "If any of it is wrong, fix the cause and delete the record — do not hand-edit it into something truer." **Read those lines before accepting them.** On an image built on this host the digest line reads `<none>`, the record gets an empty `IMAGE_DIGEST` **and** an `IMAGE_ID` naming the running bytes (§4.6).
 
 **⚠️ A trap worth naming.** `--adopt-current` adopts whatever is running, healthy or not. If the host is currently serving a broken image, adopting it cements a broken baseline and every later deploy will be compared against it. That is why step 1 above is `verify-deployment.sh`.
 
-**If no alembic head can be determined**, adoption refuses (2) with: "no alembic head could be determined, and every future deploy would refuse against an empty baseline. Fix the checkout or record the head by hand, then re-run." (in `adopt_current()` in `deploy.sh`). In that case the checkout is not a git checkout or the commit is not present — see §2.4.
+**Why the argument is mandatory, and what the refusal now says.** An earlier draft of this section quoted a refusal about "no alembic head could be determined … every future deploy would refuse against an empty baseline", and pointed the reader at §2.4 to fix the checkout. **Both are gone.** That was the pre-`09cf02d` behaviour, when adoption derived the head from the git tree and could therefore fail to derive one. Adoption no longer consults the tree at all, so there is nothing left to fail to determine.
+
+Running the bare command now refuses before touching anything — exit **2**, no record written, no state created:
+
+```
+$ bash scripts/deploy.sh --adopt-current
+refusing: --adopt-current requires the database-verified alembic revision.
+Usage:
+  deploy.sh <registry>/<repository>@sha256:<64-hex-digest> [source-git-revision]
+  deploy.sh --adopt-current <database-verified-alembic-revision>
+  … (usage text) …
+```
+
+and the second refusal is the arity check — note it counts the flag:
+
+```
+$ bash scripts/deploy.sh --adopt-current 0001 extra
+… (usage text) …
+FATAL: --adopt-current takes one argument, the alembic revision the database is at (got 3).
+```
+
+**The value must be read out of band, because this host cannot read it.** The EC2 instance role holds the *application* secret only, and `lemondrop_app` is DML-only with no DDL rights — `CREATE EXTENSION vector` needs `rds_superuser`, which is precisely the split between the two credentials (`infra/iam.tf`, under *WHY THE APPLICATION CREDENTIAL AND NOT THE MASTER PASSWORD* and *⚠️ MIGRATIONS DELIBERATELY LOSE THEIR EC2 PATH. ⚠️*). The procedure for reading and migrating it is `api/alembic/README.md`, under *Against RDS, later*. `deploy.sh`, `rollback.sh` and `verify-deployment.sh` can all **compare against** `ALEMBIC_HEAD` and none of them can **confirm** it — nothing in this repository can. The argument is you, doing the looking, on purpose.
+
+It is deliberately **not** taken from the git tree either: the checkout answers "what schema does this code expect", and this argument means "what schema is the database at". Those differ whenever a migration was applied out of band with the RDS master credential, which is the normal way this host's schema moves — and `boot.sh` clones `--depth 1` of whatever `main` was at boot, so the tree is routinely ahead of the database. `validate_alembic_revision_id()` rejects anything that could not be a revision id at all: non-identifier characters, more than 64 characters, a leading `-`/`.`/`_`, and the three symbolic names `head`, `heads` and `base`. **A value that survives is not proven correct — nothing on this host can prove that — it is merely not malformed, and the record says which of the two it is.**
+
+**The other adoption refusal: the image's own label contradicts your value.** If the running image carries an `org.lemondrop.alembic-head` label and it is not the revision you verified in the database, adoption refuses before writing anything:
+
+```
+════════ SCHEMA DISAGREEMENT — REFUSING ════════
+  the running image's org.lemondrop.alembic-head label says : <label value>
+  the revision you verified in the database says       : <your argument>
+```
+
+The label says what the code **expects**; your value says what the database **is**. Disagreement means the api running right now expects a schema it is not being served — either a migration applied out of band without a redeploy, or the wrong revision recorded. **Re-read the revision from the database and work out which of the two is right before adopting.** The label is never used as the value; it is only used to contradict you.
+
+**The database head this host is at.** This is written down here because the value has to be typed into a command and typing it from memory is how a stale number becomes a baseline:
+
+| Fact | Value | How established | When |
+|---|---|---|---|
+| Live RDS alembic revision | `0001` | read out of band by the operator from the RDS instance, per `api/alembic/README.md` (*Against RDS, later*) | 2026-10-14 |
+
+**Read the corroboration for what it is.** `docs/verification-milestone-3.md:145` row 1 records "Revision `0001` applied successfully", executed and reported by the operator. It confirms that **`0001` is the single migration this repository has**, and it is the origin of the number. It is **not** independent evidence about the RDS instance: row 8 of the same table, and the paragraph beneath it, record that the migration target resolved to `127.0.0.1:5432` — the local container — and state "Nothing in this section is evidence about the RDS instance." The `0001` above is the operator's out-of-band read from RDS; that row is why the value is plausible, not why it is believed.
+
+**⚠️ THIS IS AN EVIDENCE RECORD, NOT A CACHED BELIEF — RE-READ IT BEFORE YOU ADOPT.** This document is not the database. The argument you pass is the database's answer; `0001` written here is a note about what that answer was on 2026-10-14.
+
+- **Re-read the revision from RDS before adopting.** The procedure is `api/alembic/README.md`.
+- **If it is no longer `0001`, the NEW value is what `--adopt-current` takes.** Do not pass `0001` because this document says `0001`. A baseline that contradicts the database is not a harmless typo: it is a value every later deploy's fail-closed schema gate is measured against, so it converts one mistyped argument into a host that refuses every deploy until someone reconciles it by hand.
+- **This is the exact failure `deploy.sh` was rewritten to eliminate.** `validate_alembic_revision_id()`'s header comment says so directly: the value is not looked up in the checkout because "the entire reason this argument exists is that the answer comes from the database, and the database is frequently not what the tree says". A runbook that hard-codes a revision *without this warning* would reintroduce the very substitute — a value carried around in a file instead of read from its source — through the documentation instead of through the code.
+- **Recorded 2026-10-14.** If you are reading this after a migration has been applied, treat the value as unverified until you have re-read it.
 
 **If you know exactly what should be running**, and the record is gone entirely, the `write_record` failure branch of `deploy.sh` gives the other route, for the specific case where verification passed but the record write failed: record by hand from the values the deploy printed, or re-run `deploy.sh` with the same arguments once the directory is writable. The script's own instruction is: "Do NOT re-run this deploy to fix it."
 
@@ -1296,8 +1379,11 @@ sudo /opt/lemondrop/scripts/verify-deployment.sh
 # Deploy (one argument is enough on a labelled image; the 2nd cross-checks it — §4.4)
 sudo /opt/lemondrop/scripts/deploy.sh <registry>/<repo>@sha256:<64-hex> [<40-char-sha>]
 
-# First time on an M3 host: record what is running, change nothing
-sudo /opt/lemondrop/scripts/deploy.sh --adopt-current
+# First time on an M3 host: record what is running, change nothing.
+# The revision is MANDATORY — no default, no fallback. 0001 is this host's
+# database-verified head (§7.1); on another host it is <db-verified-alembic-revision>,
+# and you must read it from that host's RDS. Re-read it; do not trust this line.
+sudo /opt/lemondrop/scripts/deploy.sh --adopt-current 0001
 
 # Roll back (no arguments)
 sudo /opt/lemondrop/scripts/rollback.sh
