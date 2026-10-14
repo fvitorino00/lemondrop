@@ -1,0 +1,802 @@
+name: tests
+
+# Milestone 4, Stage 3 — the test gate.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# WHAT RUNS HERE, WHAT DOES NOT, AND WHY
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The suite is split into three tiers by what it needs to run, and the split is
+# NOT the one the milestone plan assumed. It was measured, not guessed. Every
+# count below is what `pytest --collect-only` reports and what an actual run
+# confirms; `python -m pytest api/tests --collect-only -q` collects 106, and
+# `test_lemondrop_app_bootstrap.py` collects 40 more, for 146 tracked tests in
+# total.
+#
+# ┌─────────┬──────┬───────────────────────────────────────────────────────────┐
+# │ TIER    │ COUNT│ WHAT IT NEEDS                                          │
+# ├─────────┼──────┼───────────────────────────────────────────────────────────┤
+# │ T1      │   90 │ Python + requirements-dev.txt. NOTHING else. No database,│
+# │ service-│      │ no HTTP, no models, no network.                          │
+# │ free    │      │   test_lemondrop_app_bootstrap.py ... 40               │
+# │         │      │   test_db_credentials.py ......... 44                   │
+# │         │      │   test_db.py (6 named nodes) ......... 6                │
+# ├─────────┼──────┼───────────────────────────────────────────────────────────┤
+# │ T2      │   28 │ T1's tier PLUS a disposable PostgreSQL 16 + pgvector     │
+# │ database│      │ service container. NO API, NO models.                    │
+# │         │      │   test_db.py ......... 4   (ping, redaction, vector(384))│
+# │         │      │   test_documents.py ... 11   (codec, pgvector constraints)│
+# │         │      │   test_search.py ...... 13   (funnel config rules)       │
+# ├─────────┼──────┼───────────────────────────────────────────────────────────┤
+# │ T3      │   28 │ The LIVE STACK. NOT RUN IN THIS WORKFLOW. See below.     │
+# │ live    │      │   test_integration.py ... 6                             │
+# │         │      │   test_db.py ......... 3   (/health/*)                   │
+# │         │      │   test_documents.py ... 6   (POST /documents)            │
+# │         │      │   test_search.py ...... 13   (POST /search)              │
+# └─────────┴──────┴───────────────────────────────────────────────────────────┘
+#
+#   90 + 28 + 28 = 146. Every tracked test is accounted for in exactly one tier,
+#   and the T1 job and the T2 job share no test between them.
+#
+# ── THE GATE IS CLASSIFICATION COMPLETENESS, NOT A TEST COUNT ────────────────
+# Those counts are a MEASUREMENT, printed on every run. They are not a baseline
+# this gate enforces, and pinning one would be the wrong gate: a hardcoded 146
+# fails every pull request that adds a test, for the sole reason that a number
+# went stale, which teaches every engineer that the number is arbitrary — and the
+# next edit is to update the number in the same commit as the failing test.
+#
+# What IS enforced, by the `tier-classification` job, is that every collected
+# test node is assigned to exactly one of T1, T2 or T3:
+#
+#   * a collected test in NO tier        -> FAIL "unclassified"
+#   * a collected test in TWO tiers      -> FAIL "claimed more than once"
+#   * a declared node id matching no
+#     collected test                     -> FAIL (renamed or deleted:
+#                                           EXPECTED BUT MISSING)
+#   * a tier that selects nothing       -> FAIL (an empty selection passes
+#                                           everything by testing nothing)
+#
+# So a new test nobody assigned fails CI as "this test is unclassified", which is
+# the finding worth having, and adding a test, classifying it, watching it pass,
+# and seeing 146 become 147 requires NO edit to this file at all.
+#
+# ── DISCREPANCIES AGAINST THE "100 TESTS" WORKING ASSUMPTION ────────────────
+# The 44 / 13 / 17 / 26 split is arithmetically correct but INCOMPLETE. It
+# omits two modules entirely:
+#
+#   1. `api/tests/test_integration.py` — 6 tests, all T3. 44+13+17+26 = 100
+#      counts a FOUR-module suite; there are FIVE modules under `api/tests/`.
+#   2. `test_lemondrop_app_bootstrap.py` at the REPOSITORY ROOT — 40 tests,
+#      tracked, fully mocked (`subprocess.run` and boto3 are replaced before
+#      `main()` is called, per its own module docstring) and therefore service-
+#      free. It is not under `api/tests/`, so any invocation rooted at
+#      `api/tests` silently never collected it. It is T1 and it runs here.
+#
+# Neither is a test-suite defect. Both are accounting defects, and both were
+# invisible until the suite was actually run rather than described.
+#
+# ── WHY THE TIER BOUNDARY FALLS WHERE IT DOES, IN ONE PLACE ─────────────────
+# Two findings decide it, and both are counter-intuitive enough to be worth
+# stating here where a future editor will read them before changing the lists:
+#
+#   * `test_search.py` LOOKS like it has a service-free section. Its docstring
+#     says so ("Section 0 (the funnel's configuration rules) needs no services
+#     at all and passes on a machine where nothing is running"). It does not
+#     run on a machine where nothing is running: the module carries an AUT OUSE
+#     fixture (`_clean_probe_collection`, test_search.py:245) that empties a
+#     collection in the database before and after every single test, so with no
+#     database all 26 tests ERROR AT SETUP — including the 13 funnel-config ones.
+#     That is why 13 test_search tests are T2 and 0 are T1.
+#   * `test_db.py` is not service-free as a FILE. Three of its 13 tests connect
+#     to a real database. Two of those fail loudly when the database is absent,
+#     which is the good case. The third — and this is the one that matters —
+#     PASSES SILENTLY: `test_a_wrong_password_never_reaches_an_exception_a_log_
+#     or_a_repr` configures a deliberately wrong password, the connection is
+#     refused, `ping()` reports not-ready, and every "the password is not in
+#     this message" assertion then passes vacuously. Measured, not argued:
+#     `env -u DATABASE_URL ... pytest api/tests/test_db.py` fails 4 and passes 9;
+#     with a well-formed DSN pointing at a dead port, all 13 pass. So T1 selects
+#     test_db.py's 6 service-free tests BY NODE ID rather than taking the file,
+#     and T2 names its own 28 rather than taking these modules and subtracting —
+#     see `tier-classification`. That test is a KNOWN DEFECT, not a designed
+#     property: it passes for the wrong reason in T1 and is listed here so the
+#     next reader does not mistake its T2 green for a clean bill of health. It is
+#     precisely the M3 lesson (docs/verification-milestone-3.md §8.5, "An
+#     isolation test that was found BLIND"): a test that passes for the wrong
+#     reason is worse than no test, and a gate that runs it is worse than a gate
+#     that does not.
+#
+# ── T3 IS DELIBERATELY NOT EXECUTED HERE ────────────────────────────────────
+# T3 needs the whole retrieval stack: the API, both llama.cpp workers, the
+# bge-small-en-v1.5 and bge-reranker-base GGUF weights (~325 MB, gitignored by
+# design — `.gitignore` ignores `*.gguf` and `models/*`, and `scripts/
+# fetch-models.sh` provisions them from HuggingFace), and a corpus loaded by
+# `scripts/load_corpus.py`. Three reasons it is not in PR CI:
+#
+#   1. The weights are not in the repository, so a T3 CI job would download
+#      ~325 MB on every single run.
+#   2. llama.cpp cross-encoder inference is CPU-only and slow, and a
+#      GitHub-hosted runner is a memory-shaped box for it. A T3 job that times
+#      out on runner capacity trains engineers to ignore red, which is a worse
+#      outcome than an honest gap.
+#   3. This workflow runs NO model inference of any kind. It starts no
+#      llama.cpp container and downloads no weights.
+#
+# The consequence, stated plainly so nobody reads a green run as a claim about
+# the retrieval funnel: **THIS WORKFLOW IS NOT "ALL TESTS PASSING".** It is 118
+# of 146 tests, and the 28 it does not run are the ones that exercise
+# cross-encoder ranking, index mapping and the /health contracts. Those are
+# verified locally against the real stack and, at the time of writing, are not
+# covered by any automated gate. That is a KNOWN GAP, recorded here on purpose.
+# `docs/m4-plan.md` §3.1 recommends a `workflow_dispatch`-only T3 job as a
+# follow-up; it is NOT implemented in Stage 3 and is a later decision, because
+# a manual job that needs 325 MB of weights and two inference services is not
+# a thing that can be written without being measured.
+#
+# ── HOW TO RUN T3 BY HAND, WHEN IT IS NEEDED ──────────────────────────────────
+# T3 is not run in CI and that is a decision, not an oversight. It is not
+# unrunnable, and the procedure is short. From the repository root:
+#
+#     docker compose --profile devdb up -d --build postgres   # pgvector database
+#     ./scripts/fetch-models.sh                              # ~325 MB of GGUF
+#     docker compose up -d --build                            # API + 2 workers
+#     .venv/bin/python scripts/load_corpus.py                  # the collections
+#     .venv/bin/python -m pytest -v -ra                       # or a subset
+#
+# The last line is where the 28 node ids matter, and they are not written out a
+# fourth time here: the `tier-classification` job prints every tier's
+# declarations on every run, so the authoritative list is never a copy that can
+# rot. Select by hand with, for example:
+#
+#     python -m pytest api/tests/test_integration.py -v
+#
+# Prerequisites, per group — which is the whole of "what each group needs":
+#
+#   * a migrated PostgreSQL 16 with pgvector — needed by EVERY T3 member, because
+#     all of them write and read the `documents` table through the live API;
+#   * the API answering on `$API_URL` (default `http://localhost:8000`) — every
+#     T3 member, with no mocking anywhere in these files;
+#   * BOTH llama.cpp workers healthy — `/health/ready`, the `/documents`
+#     embedding-width assertions, and every `/search` test;
+#   * the corpus loaded — test_search.py's count, isolation and ordering
+#     assertions read `data/corpus.json` and the collections it defines.
+#
+# OUTSTANDING, AND NOT DELIVERED BY THIS FILE: Stage 5 acceptance requires a
+# realistic SMOKE-TEST PROCEDURE — a documented, repeatable sequence that brings
+# the stack up, waits for `/health/ready` to report `ok`, and runs ONE known-good
+# search that must return the known-good document first, printing the evidence
+# rather than a bare exit status. It does not exist yet, it is not built here,
+# and no green run of this workflow is evidence for it.
+#
+# ── HOW A TIER BOUNDARY IS ENFORCED, NOT ASSUMED ─────────────────────────────
+# One job, `tier-classification`, is the single place the three tiers are
+# declared, and it is the only place an editor changes them. It publishes the T1
+# and T2 selections as job outputs, so the two test jobs execute exactly what was
+# classified — there is no second copy of a 20-node list to drift out of sync.
+#
+# A declaration is either a MODULE PATH (it owns every test in that module) or
+# `path::test_name` (it owns that test and all of its parameterised cases).
+# Naming whole modules where whole modules are genuinely service-free is what
+# keeps a 90-test tier readable. Naming every test individually where a tier is a
+# SUBSET of a module is what stops a new test being swept into the tier by
+# accident. T2 and T3 are declared test by test for exactly that reason: stating
+# either of them as a complement — "everything T1 and T3 do not claim" — would
+# silently reclassify a brand-new test as T2 or T3 on the day it is written, and
+# an unassigned test that quietly lands in the wrong tier is worse than one that
+# turns the gate red.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+# Minimal by construction, matching hygiene.yml. This workflow reads the
+# repository, installs pinned public packages, starts a throwaway database and
+# runs pytest. It requests no secret, holds no `packages: write`, and must never
+# grow `id-token: write` — there is no OIDC-to-AWS exchange anywhere in it.
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ═════════════════════════════════════════════════════════════════════════
+  tier-classification:
+    name: T0 (tier classification)
+    runs-on: ubuntu-latest
+    env:
+      # 3.12, for the reason spelled out in the T1 job's `setup-python` step.
+      # All three jobs MUST agree: a suite that runs on two interpreters is not
+      # one suite.
+      PYTHON_VERSION: '3.12'
+    # The T1 and T2 selections, published so those jobs run exactly what was
+    # classified here rather than carrying their own copy of the list.
+    outputs:
+      t1: ${{ steps.classify.outputs.t1 }}
+      t2: ${{ steps.classify.outputs.t2 }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: api/requirements-dev.txt
+
+      - name: install dependencies
+        run: python -m pip install --disable-pip-version-check -r api/requirements-dev.txt
+
+      # ── THE CLASSIFICATION ─────────────────────────────────────────────────
+      # Reads the FULL inventory of tracked tests — `api/tests/` AND the
+      # repository-root bootstrap module, which a `pytest api/tests` invocation
+      # silently never collects — and checks that the three declared tiers are a
+      # partition of it: every node in exactly one tier, no node in two, no
+      # declared node that no longer exists, no tier that selects nothing.
+      #
+      # It collects only. It runs no test, starts no service and holds no
+      # credential, which is why it can be the job everything else depends on.
+      # It cannot detect a skip or an xfail — a test that reports itself as
+      # skipped is only visible when it RUNS, so that check lives in the T1 and
+      # T2 jobs where the junit XML exists. T3 has no automated skip check at
+      # all, which is one of the things the gap above is.
+      #
+      # Nothing here compares against a count. An ordinary increase in the number
+      # of tests passes; an unclassified test fails.
+      - name: classify every collected test into exactly one tier
+        id: classify
+        run: |
+          set -uo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          # ── THE TIERS, declared once. This list is the gate. ────────────────
+          # A declaration is a MODULE PATH (owns every test in it) or
+          # `path::test_name` (owns that test and all of its parameterised
+          # cases). Whole modules where whole modules are genuinely
+          # service-free; named tests where the tier is a SUBSET of a module.
+          T1 = [
+              "test_lemondrop_app_bootstrap.py",
+              "api/tests/test_db_credentials.py",
+              "api/tests/test_db.py::test_the_redactor_removes_a_dsn_that_a_driver_quotes",
+              "api/tests/test_db.py::test_missing_database_url_raises_an_error_naming_the_key",
+              "api/tests/test_db.py::test_a_dsn_with_an_empty_password_is_rejected_and_leaks_nothing",
+              "api/tests/test_db.py::test_a_dsn_with_an_empty_username_is_rejected",
+              "api/tests/test_db.py::test_a_malformed_dsn_is_rejected_without_leaking_the_parser_s_error",
+              "api/tests/test_db.py::test_a_fully_populated_dsn_still_constructs",
+          ]
+
+          T2 = [
+              "api/tests/test_db.py::test_ping_reports_ok_against_the_configured_local_database",
+              "api/tests/test_db.py::test_a_wrong_password_never_reaches_an_exception_a_log_or_a_repr",
+              "api/tests/test_db.py::test_repr_of_settings_does_not_contain_the_password",
+              "api/tests/test_db.py::test_embedding_dim_is_384_and_matches_the_column_definition",
+              "api/tests/test_documents.py::test_every_pooled_connection_has_the_vector_codec",
+              "api/tests/test_documents.py::test_without_the_registration_a_vector_write_fails",
+              "api/tests/test_documents.py::test_attaching_the_listener_without_disposing_leaves_the_ping_connection_broken",
+              "api/tests/test_documents.py::test_sqlalchemy_has_no_vector_colspec_so_raw_sql_is_the_only_route",
+              "api/tests/test_documents.py::test_upsert_document_reports_which_arm_ran_and_what_width_was_stored",
+              "api/tests/test_documents.py::test_a_768_dimension_vector_is_rejected_by_the_database",
+              "api/tests/test_documents.py::test_metadata_that_is_not_a_json_object_is_rejected_by_the_database",
+              "api/tests/test_documents.py::test_retrieve_returns_only_documents_from_the_asked_collection",
+              "api/tests/test_documents.py::test_retrieve_selects_the_distance_metric_by_name_and_rejects_an_unknown_one",
+              "api/tests/test_documents.py::test_the_corpus_file_is_shaped_the_way_the_loader_expects",
+              "api/tests/test_documents.py::test_both_corpus_collections_are_distinct_enough_to_be_a_canary",
+              "api/tests/test_search.py::test_a_coherent_funnel_is_accepted",
+              "api/tests/test_search.py::test_an_incoherent_funnel_is_refused_and_the_message_names_both_values",
+              "api/tests/test_search.py::test_a_non_numeric_funnel_value_is_refused_with_a_message_naming_the_variable",
+              "api/tests/test_search.py::test_settings_reports_the_funnel_and_refuses_an_incoherent_pair",
+              "api/tests/test_search.py::test_a_caller_can_narrow_the_funnel_and_can_never_widen_it",
+          ]
+
+          T3 = [
+              "api/tests/test_integration.py::test_health_reports_all_dependencies_ok",
+              "api/tests/test_integration.py::test_embed_returns_384_dimensions",
+              "api/tests/test_integration.py::test_embed_rejects_blank_text",
+              "api/tests/test_integration.py::test_rerank_ranks_the_relevant_document_first",
+              "api/tests/test_integration.py::test_rerank_rejects_empty_documents",
+              "api/tests/test_integration.py::test_rerank_preserves_original_document_indices",
+              "api/tests/test_db.py::test_health_live_returns_200",
+              "api/tests/test_db.py::test_health_ready_returns_200_when_the_database_and_both_workers_are_up",
+              "api/tests/test_db.py::test_health_is_unchanged_by_the_database_phase",
+              "api/tests/test_documents.py::test_a_posted_document_is_read_back_through_a_fresh_connection",
+              "api/tests/test_documents.py::test_posting_the_same_document_id_updates_it_in_place",
+              "api/tests/test_documents.py::test_a_document_is_embedded_bare_and_stores_384_dimensions",
+              "api/tests/test_documents.py::test_the_stored_vector_is_the_bare_embedding_not_the_prefixed_one",
+              "api/tests/test_documents.py::test_a_json_array_as_metadata_is_a_422_naming_the_field",
+              "api/tests/test_documents.py::test_a_blank_collection_or_content_is_a_422_not_a_500",
+              "api/tests/test_search.py::test_the_corpus_is_loaded_enough_for_every_assertion_below_to_mean_something",
+              "api/tests/test_search.py::test_the_bge_query_prefix_is_the_default_and_is_not_a_per_request_setting",
+              "api/tests/test_search.py::test_a_relevant_query_returns_the_relevant_document_first_in_the_right_collection",
+              "api/tests/test_search.py::test_the_api_runs_the_configured_funnel",
+              "api/tests/test_search.py::test_the_funnel_is_capped_and_a_caller_cannot_widen_it",
+              "api/tests/test_search.py::test_the_collection_filter_holds_against_the_adversarial_canary_pairs",
+              "api/tests/test_search.py::test_results_are_ordered_by_descending_relevance_score",
+              "api/tests/test_search.py::test_an_empty_collection_returns_200_with_no_results_and_never_reaches_the_reranker",
+              "api/tests/test_search.py::test_a_collection_name_that_does_not_exist_is_an_empty_result_not_an_error",
+              "api/tests/test_search.py::test_a_blank_query_or_collection_is_a_422_not_a_500",
+              "api/tests/test_search.py::test_every_result_carries_the_score_of_its_own_document",
+              "api/tests/test_search.py::test_the_endpoints_that_existed_before_this_phase_are_unaffected",
+              "api/tests/test_search.py::test_scoring_ten_real_documents_costs_what_it_costs_measured_not_assumed",
+          ]
+
+          TIERS = (("T1", T1), ("T2", T2), ("T3", T3))
+
+          def inventory() -> list:
+              """Every tracked test, collected from BOTH roots.
+
+              `api/tests` alone silently omits the repository-root
+              `test_lemondrop_app_bootstrap.py`, which is 40 of the 146 and is
+              T1. Naming both roots here is what makes the inventory complete.
+              """
+              proc = subprocess.run(
+                  [sys.executable, "-m", "pytest",
+                   "test_lemondrop_app_bootstrap.py", "api/tests",
+                   "--collect-only", "-q", "-p", "no:cacheprovider"],
+                  capture_output=True, text=True,
+              )
+              # 5 is pytest's "no tests collected"; anything else is a real
+              # collection error, in which case the inventory below is fiction
+              # and every conclusion drawn from it would be fiction too.
+              if proc.returncode not in (0, 5):
+                  print("::error title=tier classification::pytest --collect-only exited "
+                        f"{proc.returncode}; the inventory could not be read, so no conclusion "
+                        "below about the tiers is trustworthy.")
+                  print(proc.stdout[-4000:])
+                  print(proc.stderr[-4000:], file=sys.stderr)
+                  sys.exit(2)
+              return [line.strip() for line in proc.stdout.splitlines() if "::" in line]
+
+          def claimed_by(declaration: str, case: str) -> bool:
+              """Does `declaration` own this collected test?
+
+              A module path owns every test in it. A `path::test_name`
+              declaration owns that test and every parameterised case of it,
+              because `test_x` and `test_x[1-5]` are one test, and a new
+              parameter case must not read as a new test needing a new
+              declaration.
+              """
+              dpath, _, dname = declaration.partition("::")
+              cpath, _, cname = case.partition("::")
+              if dpath != cpath:
+                  return False
+              if not dname:
+                  return True
+              if dname.rpartition("::")[0] != cname.rpartition("::")[0]:
+                  return False
+              return (dname.rpartition("::")[2].split("[", 1)[0]
+                      == cname.rpartition("::")[2].split("[", 1)[0])
+
+          errors = []
+          collected = inventory()
+
+          owners = {}
+          counts = {}
+          for tier, declarations in TIERS:
+              if not declarations:
+                  errors.append(f"{tier} declares nothing at all")
+              counts[tier] = 0
+              for declaration in declarations:
+                  if declarations.count(declaration) > 1:
+                      errors.append(f"{tier} lists {declaration!r} more than once")
+                  matched = [c for c in collected if claimed_by(declaration, c)]
+                  if not matched:
+                      errors.append(
+                          f"{tier} declares {declaration!r} but no collected test matches "
+                          "it - it was renamed or deleted, and this tier expects it"
+                      )
+                  for case in matched:
+                      owners.setdefault(case, []).append((tier, declaration))
+                  counts[tier] += len(matched)
+
+          for case, claimants in owners.items():
+              if len(claimants) > 1:
+                  where = "; ".join(f"{t} via {d!r}" for t, d in claimants)
+                  errors.append(
+                      f"{case} is claimed more than once ({where}) - a test belongs to "
+                      "exactly one tier, declared exactly once"
+                  )
+
+          for tier, n in counts.items():
+              if n == 0:
+                  errors.append(
+                      f"{tier} selects zero tests - a tier that runs nothing passes by "
+                      "testing nothing"
+                  )
+
+          for case in collected:
+              if case not in owners:
+                  errors.append(
+                      f"unclassified: {case} is collected by pytest and assigned to no "
+                      "tier. Decide which of T1, T2 or T3 it belongs to and add it to "
+                      "that tier's list in tier-classification."
+                  )
+
+          for tier, declarations in TIERS:
+              print(f"--- {tier}: {len(declarations)} declaration(s), "
+                    f"{counts[tier]} test(s)")
+              for declaration in declarations:
+                  print(f"      {declaration}")
+
+          total = sum(counts.values())
+          print(f"inventory={len(collected)} T1={counts['T1']} T2={counts['T2']} "
+                f"T3={counts['T3']} classified={total}")
+          print("no test-count baseline is enforced here: a tier that grows is fine; "
+                "a test in no tier is not.")
+
+          # Published whether or not the classification passed, so the log of a
+          # failing run still carries the selections the jobs below would have
+          # used. The jobs are gated on this job SUCCEEDING, so a bad selection
+          # is never executed.
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"t1={json.dumps(T1)}\n")
+              out.write(f"t2={json.dumps(T2)}\n")
+
+          for error in errors:
+              print(f"::error title=tier classification::{error}")
+          print(f"tier-classification: {'PASS' if not errors else 'FAIL'} "
+                f"({len(errors)} problem(s))")
+          sys.exit(1 if errors else 0)
+          PY
+
+  # ═════════════════════════════════════════════════════════════════════════
+  t1-service-free:
+    name: T1 (service-free)
+    runs-on: ubuntu-latest
+    # Runs only against a classification that PASSED. If a test is unclassified,
+    # this job does not run at all — which is the honest outcome, because a tier
+    # nobody has finished defining cannot be executed meaningfully.
+    needs: tier-classification
+    env:
+      # CI runs the interpreter the IMAGE runs. See "THE PYTHON VERSION" below.
+      PYTHON_VERSION: '3.12'
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: setup-python
+        uses: actions/setup-python@v5
+        with:
+          # ── THE PYTHON VERSION, AND WHY IT IS 3.12 ──────────────────────────
+          # This is `api/Dockerfile`'s `FROM python:3.12-slim`, chosen to match.
+          #
+          # The local development venv on this repository's workstation is
+          # CPython 3.14.4, so the tests have been passing locally on an
+          # interpreter PRODUCTION NEVER RUNS. CI on 3.14 would validate
+          # something the deployed image does not execute, and every green run
+          # would be a green run about a different Python than the one serving
+          # traffic. Matching the image is the whole point: the pinned
+          # dependencies are documented in api/requirements.txt as shipping
+          # prebuilt wheels for CPython 3.12 on linux/amd64, and the Dockerfile
+          # installs no compiler toolchain, so 3.12 is also the only version for
+          # which "pip never builds anything from source" is a verified claim.
+          #
+          # THE KNOWN SKEW, FLAGGED RATHER THAN PAPERED OVER: local runs on
+          # 3.14.4 and CI on 3.12 are not the same interpreter, so a test that
+          # passes on the workstation and fails here (or the reverse) is a real
+          # and useful signal, not CI noise to be silenced with a matrix. The
+          # local/3.12 skew is unresolved and is not resolved by this file.
+          python-version: ${{ env.PYTHON_VERSION }}
+          # Pinned `==` requirements, so the pip cache key is exact. This caches
+          # wheels into the runner's tool cache and writes NOTHING into the
+          # checkout, which is the same discipline the hygiene gate relies on.
+          cache: pip
+          cache-dependency-path: api/requirements-dev.txt
+
+      # `requirements-dev.txt`, NOT `requirements.txt`. The dev file is
+      # `-r requirements.txt` plus alembic, pytest and requests; the runtime
+      # file alone installs no test runner at all.
+      - name: install dependencies
+        run: python -m pip install --disable-pip-version-check -r api/requirements-dev.txt
+
+      # `pip check` is its own step, and it runs BEFORE any test. A dependency
+      # conflict that is compatible enough to import but not to satisfy is
+      # exactly the class of problem that shows up as a confusing assertion
+      # failure three files away from its cause. Measured on the 3.14.4
+      # workstation venv: `python -m pip check` → "No broken requirements
+      # found." (exit 0). If this step ever fails, that conflict is the finding —
+      # it is not to be worked around with `--no-deps` or a looser pin.
+      - name: pip check
+        run: python -m pip check
+
+      # ── The control that proves the tier split is real ─────────────────────
+      # A T1 job that passes proves nothing unless it passed with NO service to
+      # lean on. This step asserts that rather than trusting it:
+      #   * `.env` is ABSENT. There is no environment file on a runner, and the
+      #     T1 tests must not be reading credentials from one. (hygiene.yml
+      #     separately guarantees no `.env` is TRACKED; this is the runtime half
+      #     of the same property.)
+      #   * `DATABASE_URL` is UNSET — so no test can have been handed a DSN.
+      #   * `API_URL` is UNSET — so no test can have been handed an API address.
+      #   * nothing is listening on the database port the devdb would publish.
+      # If any of these is not true, T1's green is an accident and the job must
+      # say so instead of reporting a pass.
+      - name: tier-1-preconditions
+        run: |
+          set -euo pipefail
+          failed=0
+          if [ -e .env ]; then
+            echo "::error title=T1 precondition::.env exists on the runner; T1 must run with no environment file."
+            failed=1
+          fi
+          for var in DATABASE_URL API_URL DB_DSN_SOURCE ALEMBIC_DATABASE_URL AWS_REGION; do
+            if [ -n "${!var:-}" ]; then
+              echo "::error title=T1 precondition::${var} is set in the T1 job. T1 is the service-free tier and must reach the resolver with no configuration at all."
+              failed=1
+            fi
+          done
+          if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
+            echo "::error title=T1 precondition::something is already listening on 127.0.0.1:5432. T1 declares no service container, so this job is not what it claims to be."
+            exec 3<&- 2>/dev/null || true
+            failed=1
+          fi
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+          echo "tier-1-preconditions: PASS — no .env, no DATABASE_URL, no API_URL, nothing listening on 5432. This job's green means what it says."
+
+      # ── The T1 command ──────────────────────────────────────────────────────
+      # The selection is NOT written here. It is the `tier-classification` job's
+      # T1 list, delivered as a job output: two whole modules plus SIX NAMED NODES
+      # from test_db.py. Whole-module where whole-module is honest (measured:
+      # 40/40 and 44/44 in a network namespace with no interfaces, no database and
+      # an empty environment); named nodes where it is not, because test_db.py is
+      # not a service-free file — see the header for why naming them is the only
+      # thing that keeps its silently-vacuous database test out of a tier that
+      # cannot run it.
+      #
+      # The list arrives as JSON and is expanded through `mapfile`, so a node id
+      # is never pasted into a command line by interpolation. `TIER_SELECTION` is
+      # read out of the environment for the same reason.
+      #
+      # `-p no:cacheprovider` keeps pytest from writing `.pytest_cache/` into the
+      # checkout: nothing in CI is permitted to edit the working tree.
+      #
+      # `-ra` reports every skipped and xfailed test WITH ITS REASON, and the
+      # check below fails the job if there is even one. The suite is written with
+      # no `pytest.skip()` anywhere (test_db.py:23-26: "a skipped test has stopped
+      # testing while still reporting green, and green-that-means-nothing is worse
+      # than red, because red gets read") and that is enforced, not assumed.
+      - name: collect and run T1
+        env:
+          TIER_SELECTION: ${{ needs.tier-classification.outputs.t1 }}
+        run: |
+          set -uo pipefail
+
+          mapfile -t SELECTED < <(python -c 'import json, os, sys; sys.stdout.write("\n".join(json.loads(os.environ["TIER_SELECTION"])))')
+          echo "tier-classification declares ${#SELECTED[@]} member(s) for T1:"
+          printf '  %s\n' "${SELECTED[@]}"
+
+          python -m pytest \
+            "${SELECTED[@]}" \
+            -v -ra --tb=short -p no:cacheprovider \
+            --junitxml="$RUNNER_TEMP/junit-t1.xml" \
+            2>&1 | tee "$RUNNER_TEMP/pytest-t1.log"
+          status=${PIPESTATUS[0]}
+          python - "$RUNNER_TEMP/junit-t1.xml" T1 <<'PY'
+          import sys, xml.etree.ElementTree as ET
+
+          path, tier = sys.argv[1], sys.argv[2]
+          root = ET.parse(path).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+
+          # Count the <testcase> ELEMENTS, not the suite's `tests` attribute.
+          # The attribute is inflated by subtests: this file's T1 job runs
+          # test_lemondrop_app_bootstrap.py, which reports "90 passed, 9
+          # subtests passed" and writes tests="99" into the suite. Counting
+          # elements gives the number a reader means by "tests".
+          cases = [c for s in suites for c in s.findall("testcase")]
+          failures = sum(1 for c in cases if c.find("failure") is not None)
+          errors = sum(1 for c in cases if c.find("error") is not None)
+          # pytest records an xfail in junit XML as a <skipped> element, so this
+          # one counter covers BOTH `@pytest.mark.skip` and `xfail`.
+          skipped = sum(1 for c in cases if c.find("skipped") is not None)
+
+          # Reported, never compared against a stored number. A tier that gained
+          # a test is a normal event and this file does not need editing for it.
+          print(f"[{tier}] collected={len(cases)} failures={failures} "
+                f"errors={errors} skipped-or-xfailed={skipped}")
+
+          if not cases:
+              print(f"::error title={tier} empty selection::this tier ran ZERO tests. "
+                    "An empty selection is green by construction. The classification job "
+                    "should have caught this; if it did not, the tier boundary is wrong.")
+          if skipped:
+              print(f"::error title={tier} silent skip::{skipped} test(s) skipped or xfailed. A test that stops testing and reports green is worse than no test (docs/verification-milestone-3.md 8.5). This suite is written with no pytest.skip(); find the reason and fix the test, do not accept the skip.")
+          sys.exit(1 if (not cases or skipped) else 0)
+          PY
+          check=$?
+          exit $(( status != 0 ? status : check ))
+
+  # ═════════════════════════════════════════════════════════════════════════
+  t2-database:
+    name: T2 (disposable pgvector)
+    runs-on: ubuntu-latest
+    # Same reason as T1: this job executes the selection the classification job
+    # published, so it must not run unless that classification passed.
+    needs: tier-classification
+    env:
+      PYTHON_VERSION: '3.12'
+      # ── THE THROWAWAY DATABASE CREDENTIAL ───────────────────────────────────
+      # These are NOT secrets and are not treated as secrets. They are literals
+      # for a PostgreSQL container that is created when this job starts and
+      # destroyed when the job ends, holding nothing but documents the tests
+      # write and delete themselves. There is no `.env` here, no secret store,
+      # no `secrets.*`, and nothing to rotate.
+      #
+      # The literal appears TWICE — once in the service block below and once in
+      # the DSNs — because GitHub does not expose the `env` context to
+      # `jobs.<job>.services.<service>.env`; a `${{ env.* }}` there expands to
+      # the empty string. The duplication is safe in the only direction that
+      # matters: if the two ever disagree, the migration step fails with an
+      # authentication error naming the database. There is no silent path.
+      #
+      # `POSTGRES_INITDB_ARGS` matches docker-compose.yml's devdb so CI
+      # authenticates the same way the developer's local database does.
+      PG_USER: lemondrop
+      PG_PASSWORD: lemondrop-ci-throwaway
+      PG_DB: lemondrop
+      PG_PORT: '5432'
+    services:
+      pgvector:
+        # The SAME image and the SAME PostgreSQL major version as
+        # docker-compose.yml's `devdb` profile. Deliberate: pgvector semantics
+        # and planner behaviour are version-sensitive, and a CI database on a
+        # different major version would let a migration pass here and fail
+        # against RDS 16.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: lemondrop
+          POSTGRES_PASSWORD: lemondrop-ci-throwaway
+          POSTGRES_DB: lemondrop
+          POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+        ports:
+          - 5432:5432
+        # The `pg_isready` wait, as the milestone plan asks for. It does a real
+        # connection check against the named user and database, so it fails not
+        # merely while the postmaster is up but while the database is still
+        # running initdb on a cold volume. GitHub Actions holds the job's steps
+        # until this reports healthy, so no step below races the bootstrap.
+        options: >-
+          --health-cmd "pg_isready -U lemondrop -d lemondrop"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: setup-python
+        uses: actions/setup-python@v5
+        with:
+          # 3.12, for the reason spelled out in the T1 job's `setup-python`
+          # step. Both jobs MUST agree: a suite that runs half on 3.14 and half
+          # on 3.12 is not one suite.
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: api/requirements-dev.txt
+
+      # Same file as T1, for the same reason. `requests` is imported at module
+      # scope by test_db.py, test_documents.py and test_search.py, and alembic
+      # is what the next step runs.
+      - name: install dependencies
+        run: python -m pip install --disable-pip-version-check -r api/requirements-dev.txt
+
+      # ── Migrations ──────────────────────────────────────────────────────────
+      # Alembic, out of `api/`, because that is where `alembic.ini` lives and
+      # `api/alembic/README.md` and the file's own header both say to run every
+      # command from that directory. `alembic.ini` deliberately contains no
+      # `sqlalchemy.url`; `alembic/env.py` reads `ALEMBIC_DATABASE_URL` and
+      # raises if it is unset, so the URL is exported here for this step and
+      # exists in no file and in no git history.
+      #
+      # `env.py`'s `_assert_local_target` accepts `127.0.0.1` and refuses
+      # anything else without an explicit opt-in, so this step cannot be aimed
+      # at a remote database by accident even by a later edit.
+      #
+      # This runs `CREATE EXTENSION vector` and `CREATE TABLE documents` against
+      # a container that exists for this job and nothing else.
+      - name: migrate
+        working-directory: api
+        run: |
+          set -euo pipefail
+          # Assembled from the job's PG_* values rather than written out again.
+          # Those values are the SAME literals as the service container's own
+          # environment; if the two ever diverge, this fails to authenticate and
+          # says so. There is no silent path.
+          export ALEMBIC_DATABASE_URL="postgresql+asyncpg://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/${PG_DB}"
+          echo "target host: 127.0.0.1:${PG_PORT} (loopback only; env.py refuses anything else without ALEMBIC_ALLOW_REMOTE_HOST=1)"
+          alembic current
+          alembic upgrade head
+          echo "--- migrations applied; documents must now be vector(384) ---"
+          alembic current
+
+      # ── The T2 command ──────────────────────────────────────────────────────
+      # The selection is NOT written here. It is the `tier-classification` job's
+      # T2 list, delivered as a job output: 20 declarations that expand to 28
+      # collected tests, because two of them are parameterised funnel tests whose
+      # cases all belong together.
+      #
+      # It is a positive list of tests, not "these three modules minus these
+      # twenty-eight". That distinction is the whole reason this job is written
+      # this way: with a module-minus-exclusions selection, a test added to
+      # test_documents.py tomorrow morning is silently swept into T2 without
+      # anybody assigning it, and the classification gate cannot see it because
+      # the classification and the execution are the same thing. Stated as a
+      # list of tests, a new test is unclassified until someone decides where it
+      # goes — and if it actually needs the live API, deciding wrongly now fails
+      # loudly at collection instead of quietly at runtime.
+      #
+      # The check below fails the job on any skip or xfail, so a test that
+      # starts skipping — the way a test quietly stops testing — turns CI red
+      # instead of green.
+      - name: collect and run T2
+        env:
+          TIER_SELECTION: ${{ needs.tier-classification.outputs.t2 }}
+        run: |
+          set -uo pipefail
+
+          # The DSN is assembled from the job's PG_* values, exactly as the
+          # migrate step assembles its own URL, so there is one definition of
+          # the credential per job and one duplication (the service block)
+          # that a failed authentication would expose.
+          export DATABASE_URL="postgresql+asyncpg://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/${PG_DB}"
+
+          # Pointed at an unroutable loopback address on purpose. Every T3 test
+          # is in a DIFFERENT tier, so nothing selected here should ever use it —
+          # but naming an address that cannot answer means a mis-classified test
+          # fails loudly at the test instead of quietly reaching whatever
+          # happens to be listening on 127.0.0.1:8000.
+          export API_URL="http://127.0.0.1:1"
+
+          mapfile -t SELECTED < <(python -c 'import json, os, sys; sys.stdout.write("\n".join(json.loads(os.environ["TIER_SELECTION"])))')
+          echo "tier-classification declares ${#SELECTED[@]} member(s) for T2:"
+          printf '  %s\n' "${SELECTED[@]}"
+
+          python -m pytest \
+            "${SELECTED[@]}" \
+            -v -ra --tb=short -p no:cacheprovider \
+            --junitxml="$RUNNER_TEMP/junit-t2.xml" \
+            2>&1 | tee "$RUNNER_TEMP/pytest-t2.log"
+          status=${PIPESTATUS[0]}
+          python - "$RUNNER_TEMP/junit-t2.xml" T2 <<'PY'
+          import sys, xml.etree.ElementTree as ET
+
+          path, tier = sys.argv[1], sys.argv[2]
+          root = ET.parse(path).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+
+          # Element counts, not the suite attributes — see the note in the T1
+          # job. The T2 tier has no subtests today, so the two agree here; the
+          # element count is the one that stays right if that changes.
+          cases = [c for s in suites for c in s.findall("testcase")]
+          failures = sum(1 for c in cases if c.find("failure") is not None)
+          errors = sum(1 for c in cases if c.find("error") is not None)
+          skipped = sum(1 for c in cases if c.find("skipped") is not None)
+
+          # Reported, never compared against a stored number.
+          print(f"[{tier}] collected={len(cases)} failures={failures} "
+                f"errors={errors} skipped-or-xfailed={skipped}")
+
+          if not cases:
+              print(f"::error title={tier} empty selection::this tier ran ZERO tests. "
+                    "An empty selection is green by construction. The classification job "
+                    "should have caught this; if it did not, the tier boundary is wrong.")
+          if skipped:
+              print(f"::error title={tier} silent skip::{skipped} test(s) skipped or xfailed. A test that stops testing and reports green is worse than no test (docs/verification-milestone-3.md 8.5). This suite is written with no pytest.skip(); find the reason and fix the test, do not accept the skip.")
+          sys.exit(1 if (not cases or skipped) else 0)
+          PY
+          check=$?
+          exit $(( status != 0 ? status : check ))
