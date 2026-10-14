@@ -448,26 +448,128 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── WHY THERE IS A `docker tag` HERE AT ALL (RUN 38572006061) ────────────
+      # THIS STEP IS THE FIX. Release run 38572006061 pushed the SHA tag
+      # successfully and then FAILED on the very next line with:
+      #
+      #     tag does not exist: ghcr.io/fvitorino00/lemondrop-api:main
+      #
+      # The cause is structural, not a typo. The `build` job tags the image ONLY
+      # as `${sha_tag}` (`tags: ${{ steps.refs.outputs.image }}`), because that
+      # is all the content gate and the `docker save` need. So the runner's
+      # daemon holds exactly ONE reference. `docker push "$MAIN_TAG"` was then
+      # asked to push a reference that no local image was named by; the daemon
+      # could not resolve it locally, so the CLI treated it as a bare registry
+      # reference, and the registry — which had never been given that tag —
+      # rejected it. The SHA image was already published when the run died, and
+      # the `main` pointer was never moved.
+      #
+      # `docker tag "$SHA_TAG" "$MAIN_TAG"` is the fix, and it is the RIGHT fix
+      # for a reason that matters more than making the command stop failing: it
+      # creates a second NAME for the image the artifact-identity check has
+      # already verified, in this daemon, on this runner. It does NOT rebuild,
+      # and it does not re-resolve anything from the registry — so both names
+      # are, by construction, the same bytes the content gate ran against.
+      # That is what turns "both tags resolve to the inspected image" from an
+      # assumption into a property. The alternative repair — building or pulling
+      # a second image to tag as `main` — would be a DIFFERENT image, and would
+      # reintroduce exactly the inspected-equals-published gap that the
+      # two-job split exists to close.
+      #
+      # The equality check below is not decoration. `docker tag` is an assertion
+      # by Docker, not by this script; if anything ever retargeted `MAIN_TAG`
+      # between the two lines, the two `.Id` values would diverge and the step
+      # fails BEFORE either push. Reading both back is one cheap inspect each.
       - name: push the sha and main tags
         run: |
           set -euo pipefail
+          # The artifact-identity check above has already passed and is not
+          # repeated, reordered or weakened here.
+          docker tag "$SHA_TAG" "$MAIN_TAG"
+
+          sha_id="$(docker image inspect --format '{{.Id}}' "$SHA_TAG")"
+          main_id="$(docker image inspect --format '{{.Id}}' "$MAIN_TAG")"
+          echo "sha reference : ${SHA_TAG}"
+          echo "main reference: ${MAIN_TAG}"
+          echo "sha  image ID : ${sha_id}"
+          echo "main image ID : ${main_id}"
+          if [ "$sha_id" != "$main_id" ]; then
+            echo "::error title=tag identity::the local 'docker tag' did not produce two names for one image (${SHA_TAG} -> ${sha_id}, ${MAIN_TAG} -> ${main_id}). Refusing to push: the main tag would not be the image that passed the content gate."
+            exit 1
+          fi
+          echo "tag identity  : PASS — both tags name the one inspected image (${sha_id})."
+
           docker push "$SHA_TAG"
           docker push "$MAIN_TAG"
 
-      # ── THE AUTHORITATIVE DIGEST ───────────────────────────────────────────
+      # ── THE AUTHORITATIVE DIGEST — NOW A HARD REQUIREMENT ──────────────────
       # After a successful push, the local image carries `RepoDigests`, whose
-      # first entry is `ghcr.io/<owner>/lemondrop-api@sha256:<manifest digest>`
+      # entries are `ghcr.io/<owner>/lemondrop-api@sha256:<manifest digest>`
       # — the registry's own content address for what it just stored. That is
       # the value worth recording, and it is recorded HERE because this is the
       # only job that can observe it.
+      #
+      # ── IT IS A DIFFERENT VALUE FROM `EXPECTED_DIGEST`, AND IS NEVER SWAPPED
+      # ── WITH IT. `EXPECTED_DIGEST` is `docker image inspect .Id`: the LOCAL
+      # image-config ID, a content address of the image `build` inspected. It
+      # is what the artifact-identity check compares, and it is the right value
+      # for that job because it needs no registry. The registry manifest digest
+      # is a DIFFERENT hash, computed by the registry over the manifest it
+      # stored, and it is the only value any deployment can pin to. Writing the
+      # local ID into the "published digest" field would be a correctness bug,
+      # not a cosmetic one — so `$EXPECTED_DIGEST` appears nowhere below.
+      #
+      # ── WHY THIS FAILS THE RUN NOW. This step used to emit a `::warning` and
+      # ── write the literal string `(unavailable on this runner)`, which let a
+      # ── release succeed having recorded no digest at all. A Stage 4 acceptance
+      # ── that cannot cite a digest is an acceptance of an assertion, and
+      # ── `(unavailable on this runner)` is not evidence of anything. An absent
+      # ── or malformed digest is now a hard failure: if this step does not
+      # ── print a validated digest, the pipeline does not go green.
+      #
+      # `RepoDigests` can carry one entry per tag reference that image has been
+      # pulled/pushed under, so this does not blindly take index [0]. It selects
+      # the entry whose repository part is exactly this repository — derived from
+      # "$SHA_TAG" rather than typed, for the same reason `refs` derives it.
       - name: record the pushed digest
         run: |
           set -euo pipefail
-          repo_digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$SHA_TAG" || true)"
-          if [ -z "$repo_digest" ] || [ "$repo_digest" = "<no value>" ]; then
-            echo "::warning title=pushed digest::could not read RepoDigests for ${SHA_TAG} after push. The push itself succeeded; the registry digest could not be read back on this runner."
-            repo_digest="(unavailable on this runner)"
+          repository="${SHA_TAG%:*}"   # ghcr.io/<owner>/lemondrop-api — derived, never typed
+          expected_shape="${repository}@sha256:<64 lowercase hex characters>"
+
+          reject() {
+            echo "::error title=pushed digest::$1"
+            exit 1
+          }
+
+          raw="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$SHA_TAG" 2>/dev/null || true)"
+          if [[ -z "${raw//[[:space:]]/}" ]]; then
+            reject "RepoDigests carried no entry at all for ${SHA_TAG} after a successful push; expected ${expected_shape}. Stage 4 is not acceptable without digest evidence, so this run fails rather than recording a placeholder."
           fi
+
+          # Select the entry naming THIS repository, and refuse placeholders on
+          # sight. RepoDigests is a list of repository@digest references, one per
+          # name the image has been pushed or pulled under, so the entry wanted
+          # is located by its repository half rather than by position.
+          repo_digest=""
+          while IFS= read -r entry; do
+            entry="${entry%$'\r'}"
+            case "$entry" in
+              "<no value>"|"(unavailable on this runner)")
+                reject "read the placeholder '${entry}' for ${SHA_TAG}; expected ${expected_shape}. A placeholder is not a digest." ;;
+            esac
+            [ "${entry%%@*}" = "$repository" ] || continue
+            repo_digest="$entry"
+            break
+          done <<< "$raw"
+
+          if [ -z "$repo_digest" ]; then
+            reject "no RepoDigests entry names this repository (${repository}); read '$(printf '%s' "$raw" | tr '\n' ' ')'; expected ${expected_shape}. Another repository's digest is not this repository's published digest."
+          fi
+          if [ "${repo_digest%%@*}" != "$repository" ] || ! [[ "${repo_digest#*@}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            reject "read '${repo_digest}' for ${SHA_TAG}; expected ${expected_shape}. The registry digest must name THIS repository and carry a full 64-character lowercase hex sha256."
+          fi
+          echo "digest shape  : PASS — ${repo_digest}"
 
           # ── WHAT THE SHA TAG IS, AND WHAT IT IS NOT ─────────────────────────
           # `:${GITHUB_SHA}` is a NAMING CONVENTION, NOT AN IMMUTABILITY
@@ -478,9 +580,9 @@ jobs:
           # it either. Two pushes of the same tag to different content is a
           # supported operation, not an error.
           #
-          # That is exactly why the digest is recorded below and treated as the
-          # authoritative reference. A tag is a mutable POINTER; a digest is
-          # the CONTENT. `docker pull ghcr.io/.../lemondrop-api@sha256:...`
+          # That is exactly why the validated digest recorded above is treated
+          # as the authoritative reference. A tag is a mutable POINTER; a digest
+          # is the CONTENT. `docker pull ghcr.io/.../lemondrop-api@sha256:...`
           # resolves to the same bytes forever; `docker pull ...:<sha-tag>` does
           # not, after a second push.
           #
@@ -493,7 +595,7 @@ jobs:
             echo
             echo "- sha tag:      \`${SHA_TAG}\`  (naming convention — **not** registry-enforced immutability; GHCR permits overwriting an existing tag)"
             echo "- main tag:     \`${MAIN_TAG}\`  (moving pointer, convenience only — never deployable)"
-            echo "- **digest (authoritative):** \`${repo_digest}\`"
+            echo "- **registry manifest digest (authoritative):** \`${repo_digest}\`  — the registry's own hash of what it stored; this is NOT the local image-config ID used for the artifact-identity check above, and the two values are never interchanged"
             echo
             echo "Record the digest, not the tag. A tag can be repointed by a second push; a digest cannot."
           } >> "$GITHUB_STEP_SUMMARY"
