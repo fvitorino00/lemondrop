@@ -15,9 +15,11 @@
 # ghcr.io/ggml-org/llama.cpp:server. Neither has a Dockerfile and neither
 # has a `build:` section, because the operator verified that image runs
 # correctly and CPU-only on this machine. It is a third-party artifact,
-# so it is consumed as published. `api` is different in kind: it is our
-# own application code, not a published upstream image, so it is built
-# from ./api rather than pulled.
+# so it is consumed as published. `api` IS different in kind: it is our
+# own application code, not a published upstream image. That difference
+# used to be expressed as a build, and it is now expressed as a PULL of a
+# digest-pinned image that CI published — see the `api:` block, which has
+# no `build:` key at all.
 #
 # ── One published port, on `api` ──────────────────────────────────────────────
 # Of the three RUNTIME services, this file publishes exactly ONE `ports:` key,
@@ -305,37 +307,133 @@ services:
   # The API is stateless in this phase: no volumes, no database. There is nothing
   # for it to persist, so there is nothing to mount.
   api:
-    # Built from ./api rather than pulled. This is application code, not a
-    # published upstream image — and unlike llama.cpp:server it is not a
-    # third-party artifact we consume as-is.
-    build: ./api
-    # Name the built image so it is identifiable in `docker images` and
-    # referenceable by name rather than only by this project.
+    # ── NO `build:` KEY. IT IS GONE, DELIBERATELY (M4 Stage 5) ─────────────────
+    # This service used to carry `build: ./api`. It does not any more, and the
+    # reason is not tidiness — it is a provenance failure that only a `build:`
+    # key makes possible.
+    #
+    # `scripts/boot.sh` is not the script that runs on the host and is not
+    # authoritative for this decision. The authoritative one is the boot script
+    # inlined as `user_data` in `infra/compute.tf`, and its step 6 is
+    # (`infra/compute.tf:552-554`):
+    #
+    #     docker compose pull embedder reranker 2>&1 | tee -a "$LOG_FILE" \
+    #       || log "WARNING: 'docker compose pull' failed; continuing with local build/cache"
+    #     docker compose up -d --remove-orphans 2>&1 | tee -a "$LOG_FILE"
+    #
+    # Note what that is and is not. The pull is NAMED — `api` is not in it, and
+    # per the comment at `compute.tf:545-549` that naming is deliberate. And
+    # there is no `--build`. So the api's image is never fetched, and nothing
+    # tells compose to build it. As long as a `build:` key existed, compose
+    # filled that gap itself: when the named image is absent locally, a
+    # `build:` key makes `docker compose up` build an image SILENTLY, from
+    # whatever the clone at `/opt/lemondrop` happens to contain, and tag it with
+    # the name in the `image:` line. No error, no warning, no line in the boot
+    # log.
+    #
+    # That is precisely the failure this milestone exists to eliminate: a
+    # deployment whose provenance cannot be stated. The stack comes up
+    # healthy, the record names a digest, and nothing anywhere says "this is not
+    # the image you deployed". `verify-deployment.sh` exists to make that
+    # divergence visible — but a check that reports a divergence on every single
+    # boot is not a check, it is a permanent amber light. Removing the cause is
+    # strictly better than permanently reporting the symptom.
+    #
+    # With the key gone, the absent-image case has exactly one behaviour: the
+    # `image:` reference below is PULLED, or the pull fails and the stack says
+    # so. Both are loud. Neither is a mystery build.
+    #
+    # ── THE COST OF THIS, STATED PLAINLY ──────────────────────────────────────
+    # `docker compose up --build` no longer builds this service. That is the
+    # intended effect and it is not a regression to be worked around silently.
+    #
+    # A developer who wants their WORKING TREE running does this instead — the
+    # build context is `./api` and the Dockerfile is the repository's own
+    # `api/Dockerfile`, so nothing here is a shell one-liner invented for this
+    # commit:
+    #
+    #     # 1. point .env at the LOCAL name (gitignored, yours to edit)
+    #     #      API_IMAGE=lemondrop-api
+    #     # 2. build the image yourself, from this repo's api/Dockerfile
+    #     docker build -t lemondrop-api ./api
+    #     # 3. bring the stack up against that image
+    #     docker compose up -d --no-build
+    #
+    # Step 2 is the only new step and it is the same `docker build` the old
+    # implicit path was doing anyway — it is now written down instead of
+    # inferred. `--no-build` in step 3 is redundant today, precisely BECAUSE the
+    # `build:` key is gone; it is kept because it states the intent, and because
+    # it keeps the command correct if a `build:` key ever returns.
+    #
+    # Leaving `.env` on the shipped digest instead is a supported and common
+    # choice: `docker compose up` then PULLS and runs exactly the image CI
+    # published. That is how you check whether your change is the problem.
+    #
+    # Name the image so it is identifiable in `docker images` and referenceable
+    # by name rather than only by this project.
     #
     # ── WHY THIS IS PARAMETERISED (M4 Stage 4) ─────────────────────────────────
-    # `${API_IMAGE:-lemondrop-api}` is the M3 behaviour, EXACTLY, when API_IMAGE
-    # is unset: the `:-` default is the literal string this line used to hold,
-    # so every existing workflow — `docker compose up --build` on a developer's
-    # machine, the M3 verification runs, the boot script — resolves to exactly
-    # the same image name it always did. Nothing about M3 changes.
+    # Stage 4 made this `${API_IMAGE:-lemondrop-api}` so Stage 5 could exist:
+    # deploying an image CI published to GHCR means exporting
+    # `API_IMAGE=ghcr.io/<owner>/lemondrop-api@sha256:<manifest digest>` — the
+    # DIGEST, never the `:main` tag and never the `:sha` tag — so two deploys of
+    # "the same" tag cannot resolve to different bytes. See the SHA tag
+    # discussion in .github/workflows/release.yml: a tag is a mutable pointer,
+    # and GHCR does not enforce immutability on one.
     #
-    # Its purpose is Stage 5, and it is added here only so Stage 5 can exist.
-    # Today the only value that can ever resolve is `lemondrop-api`, because
-    # nothing in this repository sets API_IMAGE. When Stage 5 deploys an image
-    # that CI published to GHCR, it exports
-    # `API_IMAGE=ghcr.io/<owner>/lemondrop-api@sha256:<manifest digest>` —
-    # the DIGEST, never the `:main` tag and never the `:sha` tag — so that two
-    # deploys of "the same" tag cannot resolve to different bytes. See the SHA
-    # tag discussion in .github/workflows/release.yml: a tag is a mutable
-    # pointer, and GHCR does not enforce immutability on one.
+    # ── WHY THE DEFAULT CHANGED (M4 Stage 5) — FAIL CLOSED ─────────────────────
+    # The Stage 4 default was the bare name `lemondrop-api`. That is a Docker
+    # HUB name. `lemondrop-api` is not qualified by any registry, so if API_IMAGE
+    # is ever unset while there is no `build:` key above to satisfy it,
+    # `docker compose up` resolves it as `docker.io/library/lemondrop-api` — a
+    # PUBLIC image on Docker Hub that this project does not control, does not
+    # publish, and has never tested. The service that answers on :8000 would
+    # then be whatever somebody else pushed under that name. That is not a
+    # hypothetical: `build:` IS gone as of this commit, so the default on this
+    # line is now load-bearing whenever the stack is brought up — including on
+    # the bootstrap's first boot — rather than merely a fallback, and the two
+    # edits were one commit apart from being one bug apart.
     #
-    # This line changes NOTHING about the build. `build: ./api` above is
-    # untouched, so with no API_IMAGE set the image is still built from source
-    # exactly as before; the parameter only decides what the built image is
-    # CALLED. Stage 5 will need a deploy path that does not rebuild at all
-    # (`docker compose up --no-build`), and that is a Stage 5 decision, not one
-    # made here. Nothing is deployed by this change.
-    image: ${API_IMAGE:-lemondrop-api}
+    # The default is therefore a FULLY-QUALIFIED, DIGEST-PINNED reference to an
+    # image this project published, verified, and can pull anonymously:
+    #
+    #     ghcr.io/fvitorino00/lemondrop-api@sha256:0bdb7afa566b…42986
+    #
+    # There are now exactly TWO reachable values for this line:
+    #
+    #   API_IMAGE set   → whatever the operator set, and it was a deliberate act
+    #   API_IMAGE unset → the one verified image, pinned to its manifest digest
+    #
+    # `docker.io/library/lemondrop-api` is reachable from NEITHER. The silent,
+    # uncontrolled substitution is gone; what remains is a loud one.
+    #
+    # WHY THAT IS "FAIL CLOSED" AND NOT JUST "A BETTER DEFAULT". A default that
+    # names a real image is a closed set: an unset variable cannot produce a
+    # reference outside the two cases above. The residual failure mode is that
+    # `.env` is missing, in which case the stack comes up on the published
+    # image instead of on a local build — wrong for a developer, but LOUD,
+    # attributable, and reversible. The alternative was an unset variable
+    # silently producing an image from an account nobody here controls.
+    #
+    # ── WHAT THIS CHANGED, AND WHAT IT STILL DOES NOT CHANGE ───────────────────
+    # WHAT CHANGED. With no `build:` key, this line no longer merely decides
+    # what a locally-built image is CALLED — it decides what gets RUN. An unset
+    # API_IMAGE is no longer rescued by a local build; it is a pull of the
+    # digest above. The parameter stopped being cosmetic.
+    #
+    # WHAT DID NOT CHANGE. The `image:` line itself is byte-identical to the one
+    # Stage 5 shipped, and the two edits were deliberately landed together: the
+    # qualified digest below was already the default, so removing `build:` did
+    # not have to also change this line to be safe.
+    #
+    # `.env.example` now ALSO ships this digest, not the local-dev name. That
+    # was forced by the `build:` removal rather than chosen on its own merits:
+    # boot step 4 is `cp .env.example .env`, so the template's value IS the
+    # production value, and shipping `lemondrop-api` there would have sent every
+    # fresh boot straight at `docker.io/library/lemondrop-api`. The local
+    # developer's two-command override is documented beside that line in
+    # `.env.example`.
+    image: ${API_IMAGE:-ghcr.io/fvitorino00/lemondrop-api@sha256:0bdb7afa566bbff0c8db481cd78a048b130bb8fc8531739530d98fe3cde42986}
 
     # The only `ports:` key in this file. Host side from .env so the door can be
     # moved without editing this file; container side from .env to match the port
