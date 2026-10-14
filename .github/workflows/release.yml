@@ -1,0 +1,500 @@
+name: release
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Milestone 4, Stage 4 — build, inspect, and publish the API image.
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# WHAT THIS WORKFLOW IS FOR
+#   On a merge to `main`, run every verification gate this repository has, and
+#   only then build the API image, inspect what was actually built, and publish
+#   THAT image to GHCR. The five gates are not advisory and not a parallel
+#   concern: publication is downstream of all of them by construction.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# THE FIVE GATES, AND WHAT "ALL FIVE PASSED" ACTUALLY MEANS HERE
+# ═════════════════════════════════════════════════════════════════════════════
+# A "gate" in this repository is a JOB. There are exactly five of them, in two
+# files, and they are listed here in `needs:` order:
+#
+#   ┌────┬────────────────────────┬──────────────┬────────────────────────────────┐
+#   │ #  │ JOB                    │ IN FILE      │ WHAT IT ASSERTS               │
+#   ├────┼────────────────────────┼──────────────┼────────────────────────────────┤
+#   │ 1  │ state-leak-gate        │ hygiene.yml  │ BOTH forbidden-path steps: no  │
+#   │    │                        │              │ .env/.tfstate/.gguf/crash log │
+#   │    │                        │              │ or model weight is IN THE     │
+#   │    │                        │              │ INDEX, and none of 5 credential│
+#   │    │                        │              │ shapes is in tracked content  │
+#   │ 2  │ terraform-validate     │ hygiene.yml  │ both stacks fmt/init/validate  │
+#   │    │                        │              │ — NO AWS CONTACT OF ANY KIND   │
+#   │ 3  │ tier-classification    │ tests.yml    │ every collected test is in    │
+#   │    │                        │              │ exactly one of T1/T2/T3; no   │
+#   │    │                        │              │ test left unclassified        │
+#   │ 4  │ t1-service-free        │ tests.yml    │ the 90 service-free tests,    │
+#   │    │                        │              │ with 0 skips and 0 xfails     │
+#   │ 5  │ t2-database            │ tests.yml    │ the 28 tests against a        │
+#   │    │                        │              │ disposable pgvector, same     │
+#   └────┴────────────────────────┴──────────────┴────────────────────────────────┘
+#   (Job 1 runs TWO checks — forbidden-paths-tracked and secrets-in-tracked-
+#   content — as two steps. They are one job, so they are one gate here: the
+#   count of five is the count of JOBS, which is what `needs:` actually waits on.)
+#
+# SIXTH GATE, NOT ON `main`: T3 (the 28 live-stack tests) is still not in CI, for
+# the reasons tests.yml's header gives at length. A green release run is
+# therefore NOT a claim that all 146 tests pass. It is a claim about 118.
+#
+# ── WHY `terraform-validate` IS COVERED BY `needs: [hygiene]` ────────────────
+# THIS COMMENT IS LOAD-BEARING. DO NOT "OPTIMISE" THE TERRAFORM GATE AWAY.
+#
+# Gate 2 (`terraform-validate`) is a JOB INSIDE `hygiene.yml`, not a job of this
+# workflow. Nothing named `terraform-validate` appears below, and that is
+# correct — but it is also easy to misread this file as though the Terraform
+# gate were absent, and then to "simplify" `needs: [hygiene, tests]` down to
+# `needs: [tests]` or drop the `hygiene` call entirely as redundant-looking.
+# That edit would silently delete gate 2, and nothing in the resulting file
+# would still say so.
+#
+# The dependency is transitive and it is total: a job that calls a reusable
+# workflow with `uses:` succeeds ONLY IF EVERY JOB INSIDE THAT WORKFLOW
+# SUCCEEDED. `hygiene.yml` contains exactly two jobs — `state-leak-gate`
+# (gate 1) and `terraform-validate` (gate 2) — so a green `hygiene` job here is
+# a green terraform validation. There is no configuration of the `hygiene` call
+# that brings in one job and not the other; `uses:` is all-or-nothing per
+# workflow. The same is true of `tests.yml`, which contributes gates 3, 4 and 5.
+#
+# The five gates are therefore not "all" because they are listed five times
+# below. They are "all" because `build` needs BOTH reusable-workflow calls, and
+# each call is a conjunction over its own jobs. Removing any gate means editing
+# `hygiene.yml` or `tests.yml` — where the gate still has its own name,
+# documentation and owner — not editing a `needs:` list here.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# WHY `needs:`, AND WHY NOT `workflow_run`
+# ═════════════════════════════════════════════════════════════════════════════
+# The obvious alternative is: let hygiene.yml and tests.yml keep their
+# `push: branches: [main]` triggers, and add a `workflow_run` workflow that
+# fires "when hygiene/tests complete" and publishes. It was not used. Four
+# reasons, in order of how much damage each would do:
+#
+#   1. `workflow_run` DOES NOT GATE ON THE RESULT. A `workflow_run` trigger
+#      fires on COMPLETION — success, failure or cancellation — and the
+#      triggering run's conclusion is a plain boolean the downstream job must
+#      remember to inspect. Get that check wrong, or let it drift, and the
+#      image publishes on a red run. `needs:` has no equivalent failure mode:
+#      a dependency that did not succeed does not run, full stop. The gate is
+#      structural rather than remembered.
+#   2. `workflow_run` MATCHES ON WORKFLOW NAME AND STATUS, NOT ON REVISION.
+#      Its `branches` filter selects which workflow runs can trigger it; it
+#      does not bind the downstream run to the SAME COMMIT SHA. Publishing then
+#      requires checking out `github.sha` and proving it equals the triggering
+#      run's sha — a manual, fallible, silently-wrong-if-omitted step. `needs:`
+#      runs in one workflow on one SHA, so "the image is built from the
+#      revision that passed" is true by construction.
+#   3. `workflow_run` RUNS ON A DIFFERENT WORKFLOW, WHICH FORCES A SECOND
+#      CHECKOUT AND A SECOND ARTIFACT HAND-OFF. To inspect the image that was
+#      tested, or to hand it to the publish job, something must cross the run
+#      boundary — and the only supported mechanism is an artifact upload whose
+#      provenance nobody checks. That is precisely the gap this workflow is
+#      built to close (see THE TWO-JOB BUILD/PUBLISH SPLIT below).
+#   4. `workflow_run` ALSO NEEDS A REST POLLING FALLBACK, or it silently stops
+#      working. Its `types` filter covers `completed` and `requested`; there is
+#      no "succeeded" event, so a workflow that only reacts to success has to
+#      detect failure some other way. `needs:` has one event and one meaning.
+#
+# The operator's instruction was also explicit: no `workflow_run`, no REST
+# polling. What follows is the dependency-graph version of the same idea.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# WHY THE TWO VERIFICATION WORKFLOWS LOST THEIR `push: branches: [main]`
+# ═════════════════════════════════════════════════════════════════════════════
+# Both hygiene.yml and tests.yml now declare `workflow_call` and NO `push`
+# trigger. On a PULL REQUEST they still run directly, exactly as before, so
+# review is entirely unaffected. On `main` this workflow calls them instead.
+#
+# Leaving the push triggers in place would have produced TWO full runs per merge
+# — one set triggered directly, one set nested inside release — meaning two
+# terraform validations, two suites, and two independent verdicts about one
+# revision, with no principled way to say which one actually gated the published
+# image. One event, one set of runs. The gates did not become optional on
+# `main`; they became BLOCKING (via `needs:`) instead of advisory.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# THE TWO-JOB BUILD/PUBLISH SPLIT — WHY IT IS TWO JOBS AND NOT ONE
+# ═════════════════════════════════════════════════════════════════════════════
+# THE PROBLEM THIS SOLVES. An image must be INSPECTED before it is PUBLISHED,
+# and inspection needs the image to exist somewhere inspectable. Building
+# straight to the registry with `push: true` makes the only inspectable copy
+# live in GHCR — so either the registry is trusted before it is verified, or the
+# image is rebuilt after verification, and a REBUILD IS NOT THE SAME IMAGE.
+# That second option is the trap: build twice, gate the first, push the second,
+# and the claim "we published what we inspected" is false in a way no log
+# reveals.
+#
+# THE SOLUTION. `build` loads the image into the runner's local Docker daemon,
+# inspects THAT image, and `docker save`s it to a tarball artifact. `publish`
+# downloads that exact tarball, loads it, and pushes it. The bytes that were
+# inspected and the bytes that are published are THE SAME BYTES, in the same
+# format, passed through a tarball. There is no rebuild and no second build
+# step, so "inspected == published" is not a claim this workflow makes — it is
+# a property it cannot violate.
+#
+# The `publish` job re-checks the loaded image's ID against the digest `build`
+# emitted. If the artifact were ever substituted, truncated, or resolved to a
+# different image, that comparison fails and nothing is pushed.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# PERMISSIONS — `packages: write` EXISTS ON EXACTLY ONE JOB
+# ═════════════════════════════════════════════════════════════════════════════
+#   hygiene, tests, build : contents: read
+#   publish               : contents: read, packages: write
+#
+# `build` runs third-party actions (docker/build-push-action and its setup
+# chain) and executes code from a repository that accepts pull requests. It
+# holds NO credential that could write a package, let alone one that could reach
+# AWS. The token that can push to GHCR is introduced for the first time in
+# `publish`, whose only step that could be influenced by untrusted code is
+# `docker load` of an artifact this workflow itself produced two jobs earlier —
+# not by anything from a pull request. A PR can never reach `publish` at all
+# (see THE PULL-REQUEST CANNOT PUBLISH section below).
+#
+# No job anywhere in this file holds `id-token: write`. There is no OIDC-to-AWS
+# exchange in this milestone's CI, and a credential-exchange permission must
+# never ride along on a build that has not measured its need for it. Stage 5 is
+# where deployment happens, and it will need to make that argument explicitly.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Workflow-level default is the most restrictive thing that still lets anything
+# run. Every job below either inherits this or narrows it.
+permissions:
+  contents: read
+
+# One release pipeline per ref at a time. A second push to main cancels the
+# first — which is safe precisely because nothing is published until every gate
+# has passed, and a cancelled run publishes nothing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ═════════════════════════════════════════════════════════════════════════
+  # GATES 1-2 — state-leak (both checks, one job) and terraform-validate.
+  # A job that calls a reusable workflow succeeds only if EVERY job inside it
+  # succeeded. `hygiene.yml` has exactly two jobs, so this single green job is
+  # gate 1 AND gate 2. See the load-bearing comment at the top of this file
+  # before removing this `needs:` entry or this `uses:` — dropping `hygiene`
+  # here silently deletes the terraform gate.
+  # ═════════════════════════════════════════════════════════════════════════
+  hygiene:
+    name: gates 1-2 (state-leak, secrets, terraform)
+    uses: ./.github/workflows/hygiene.yml
+    permissions:
+      contents: read
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # GATES 3-5 — tier classification, T1 (service-free), T2 (disposable
+  # pgvector). Same all-or-nothing property as `hygiene` above.
+  #
+  # T3 IS NOT RUN AT ALL — not a gate here, not a sixth gate anywhere. The 28
+  # live-stack tests are still not in CI, for the reasons tests.yml's header
+  # gives at length. A green run of this pipeline is therefore NOT a claim that
+  # all 146 tests pass. It is a claim about 118. (The sixth gate in this file is
+  # the image-content gate in the `build` job, which is a different thing
+  # entirely.)
+  # ═════════════════════════════════════════════════════════════════════════
+  tests:
+    name: gates 3-5 (tier classification, T1, T2)
+    uses: ./.github/workflows/tests.yml
+    permissions:
+      contents: read
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # BUILD + INSPECT — no publish credential on this job.
+  # ═════════════════════════════════════════════════════════════════════════
+  build:
+    name: build and inspect the image
+    needs: [hygiene, tests]
+    # contents: read ONLY. This job builds from a repository that accepts pull
+    # requests and runs vendored build actions. It must not be able to write a
+    # package — see "PERMISSIONS" above.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      repository: ${{ steps.refs.outputs.repository }}
+      sha_tag: ${{ steps.refs.outputs.sha_tag }}
+      main_tag: ${{ steps.refs.outputs.main_tag }}
+      image: ${{ steps.refs.outputs.image }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      # The registry name is derived, never typed, so a fork or a repository
+      # rename cannot leave a hardcoded owner in a file nobody re-reads.
+      # Lowercased because GHCR requires a lowercase path and a repository owner
+      # may contain uppercase characters.
+      - name: resolve the image reference
+        id: refs
+        # Via `env:`, never `${{ }}` interpolated into the script body — an
+        # expression pasted into a shell command is an injection seam, and this
+        # value never needs to be one.
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')"
+          repository="ghcr.io/${owner}/lemondrop-api"
+          sha_tag="${repository}:${GITHUB_SHA}"
+          main_tag="${repository}:main"
+          {
+            echo "repository=${repository}"
+            echo "sha_tag=${sha_tag}"
+            echo "main_tag=${main_tag}"
+            echo "image=${sha_tag}"
+          } >> "$GITHUB_OUTPUT"
+          echo "repository : ${repository}"
+          echo "sha tag    : ${sha_tag}"
+          echo "main tag   : ${main_tag}"
+
+      - name: set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── WHY `load: true` AND `push: false` ─────────────────────────────────
+      # `load: true` puts the finished image into this runner's local Docker
+      # daemon, which is what makes it INSPECTABLE: the content gate below runs
+      # `docker run` against the real, built, runnable image. `push: false` is
+      # what keeps the registry out of it. The previous design — build with
+      # `load: false`, then describe a filesystem scan — never said how the
+      # image became inspectable and never established that the inspected image
+      # was the published one.
+      #
+      # `provenance: false` is REQUIRED, not a nicety. Provenance/SBOM
+      # attestations are separate manifest entries in the OCI index that only
+      # exist on a PUSHED image; they are not preserved by `load: true`. Leaving
+      # them on would make buildkit print a digest for an artifact that does not
+      # describe the thing that was loaded, which is exactly the kind of
+      # confident, wrong digest that later gets written into a runbook.
+      #
+      # `context: ./api` is the primary control on what can enter the image:
+      # `models/`, `.git/`, `.terraform/` and the repository `.env` are outside
+      # the context and are unreachable by any COPY. `api/.dockerignore` is the
+      # second layer, covering a `.env` or key dropped into `api/app/`.
+      - name: build the image into the local daemon
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          file: api/Dockerfile
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ steps.refs.outputs.image }}
+
+      # ── GATE 6: THE IMAGE CONTENT GATE ─────────────────────────────────────
+      # Runs INSIDE the built image, with the image's own Python, against the
+      # image's own filesystem. `find` and `grep` may not exist in a
+      # python:3.12-slim image; `python` is guaranteed to.
+      #
+      # The gate is piped in on STDIN rather than bind-mounted. That is a
+      # deliberate choice, not a stylistic one: a mounted copy of the script
+      # would itself be a file inside the filesystem being scanned, and would
+      # then need to be excluded from its own scan — which is a blind spot
+      # written into the gate to accommodate the gate. On stdin the script
+      # never exists inside the scanned tree, so there is nothing to excuse.
+      #
+      # `set -euo pipefail` is what turns a red gate into a red JOB. Without it
+      # a non-zero from `docker run` would be discarded and this step would
+      # report success on a failed gate.
+      - name: image content gate
+        env:
+          IMAGE: ${{ steps.refs.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm -i --entrypoint python "$IMAGE" - \
+            < .github/workflows/image-content-gate.py
+
+      # The digest of the image that was just INSPECTED. `docker image inspect
+      # .Id` is the sha256 of the image config — a genuine content address of
+      # the exact bytes `docker save` serialises below, computed locally with no
+      # registry involved.
+      #
+      # STATED PRECISELY: this is NOT the registry manifest digest. Only
+      # `publish` can know that, and only `publish` records it. This value is
+      # used for the artifact-identity check between the two jobs, which is
+      # exactly what it is good for.
+      - name: record the inspected image digest
+        id: digest
+        env:
+          IMAGE: ${{ steps.refs.outputs.image }}
+        run: |
+          set -euo pipefail
+          digest="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
+          if [ -z "$digest" ]; then
+            echo "::error title=image digest::could not read a digest for $IMAGE; the artifact identity check in publish has nothing to compare against."
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### build"
+            echo
+            echo "- image: \`${IMAGE}\`"
+            echo "- inspected image ID (sha256 of the image config): \`${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── THE HAND-OFF ───────────────────────────────────────────────────────
+      # `docker save` + gzip + artifact upload is what makes "the bytes that
+      # were inspected are the bytes that get pushed" a mechanical fact rather
+      # than an intention. The alternative — letting `publish` build the image
+      # again — reintroduces the gap this split exists to close.
+      - name: export the inspected image for publish
+        env:
+          IMAGE: ${{ steps.refs.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker save "$IMAGE" | gzip -1 > "$RUNNER_TEMP/lemondrop-api-image.tar.gz"
+          ls -l "$RUNNER_TEMP/lemondrop-api-image.tar.gz"
+
+      - name: upload the image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lemondrop-api-image
+          path: ${{ runner.temp }}/lemondrop-api-image.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # PUBLISH — the only job holding `packages: write`.
+  # ═════════════════════════════════════════════════════════════════════════
+  publish:
+    name: publish to GHCR
+    needs: [build]
+
+    # ── A PULL REQUEST CAN NEVER PUBLISH ─────────────────────────────────────
+    # This workflow triggers on `push` to `main` and on `workflow_dispatch`.
+    # The first cannot fire for a pull request at all. The second COULD — a
+    # maintainer with write access can dispatch a workflow on any ref — so the
+    # ref check below is what makes the claim true rather than nearly true.
+    # Without it, this job would be one manual dispatch away from publishing an
+    # unmerged branch as `ghcr.io/.../lemondrop-api:main`, overwriting the tag
+    # every deployment resolves. A job that is SKIPPED is the right outcome: it
+    # says "this ref does not publish", loudly, without turning an exploratory
+    # manual run into a red build.
+    if: github.ref == 'refs/heads/main'
+
+    # The ONLY `packages: write` in this repository's CI. The token with
+    # package-write is introduced here and touches nothing but a `docker load`
+    # of the artifact `build` produced and gated two jobs earlier in the SAME
+    # run, on the SAME sha.
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    env:
+      SHA_TAG: ${{ needs.build.outputs.sha_tag }}
+      MAIN_TAG: ${{ needs.build.outputs.main_tag }}
+      EXPECTED_DIGEST: ${{ needs.build.outputs.digest }}
+    steps:
+      # `RUNNER_TEMP`, not the workspace: this is a multi-hundred-megabyte file
+      # and it has no business inside a checkout that `git status` will read.
+      - name: download the gated image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lemondrop-api-image
+          path: ${{ runner.temp }}
+
+      - name: load the exact artifact that was inspected
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lemondrop-api-image.tar.gz"
+          if [ ! -f "$archive" ]; then
+            echo "::error title=publish artifact::no image archive at $archive; refusing to build one, because a rebuild is not the image that was inspected."
+            exit 1
+          fi
+          gunzip -c "$archive" | docker load
+
+      # ── THE ARTIFACT IDENTITY CHECK ────────────────────────────────────────
+      # This is the step that makes the two-job split worth having. The loaded
+      # image must have the SAME ID as the image `build` inspected. If the
+      # artifact were substituted, truncated, or resolved to something else,
+      # this fails and nothing is pushed.
+      #
+      # Note what this step deliberately does NOT do: it does not rebuild. A
+      # `docker build` here would be a new image that merely looks like the
+      # gated one, which is the exact failure mode the split was designed to
+      # make impossible.
+      - name: verify the loaded artifact IS the inspected image
+        run: |
+          set -euo pipefail
+          actual="$(docker image inspect --format '{{.Id}}' "$SHA_TAG")"
+          echo "build inspected : ${EXPECTED_DIGEST}"
+          echo "publish loaded  : ${actual}"
+          if [ "$actual" != "$EXPECTED_DIGEST" ]; then
+            echo "::error title=artifact identity::the loaded image is NOT the image that passed the content gate (expected ${EXPECTED_DIGEST}, got ${actual}). Refusing to publish."
+            exit 1
+          fi
+          echo "artifact identity: PASS — the image about to be published is byte-for-byte the image the content gate inspected."
+
+      - name: log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: push the sha and main tags
+        run: |
+          set -euo pipefail
+          docker push "$SHA_TAG"
+          docker push "$MAIN_TAG"
+
+      # ── THE AUTHORITATIVE DIGEST ───────────────────────────────────────────
+      # After a successful push, the local image carries `RepoDigests`, whose
+      # first entry is `ghcr.io/<owner>/lemondrop-api@sha256:<manifest digest>`
+      # — the registry's own content address for what it just stored. That is
+      # the value worth recording, and it is recorded HERE because this is the
+      # only job that can observe it.
+      - name: record the pushed digest
+        run: |
+          set -euo pipefail
+          repo_digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$SHA_TAG" || true)"
+          if [ -z "$repo_digest" ] || [ "$repo_digest" = "<no value>" ]; then
+            echo "::warning title=pushed digest::could not read RepoDigests for ${SHA_TAG} after push. The push itself succeeded; the registry digest could not be read back on this runner."
+            repo_digest="(unavailable on this runner)"
+          fi
+
+          # ── WHAT THE SHA TAG IS, AND WHAT IT IS NOT ─────────────────────────
+          # `:${GITHUB_SHA}` is a NAMING CONVENTION, NOT AN IMMUTABILITY
+          # GUARANTEE. GHCR offers no immutability enforcement for container
+          # tags: `docker push` against an existing `:sha` tag SUCCEEDS and
+          # silently OVERWRITES the manifest that tag resolves to. Nothing in
+          # this workflow prevents that, and nothing in the registry prevents
+          # it either. Two pushes of the same tag to different content is a
+          # supported operation, not an error.
+          #
+          # That is exactly why the digest is recorded below and treated as the
+          # authoritative reference. A tag is a mutable POINTER; a digest is
+          # the CONTENT. `docker pull ghcr.io/.../lemondrop-api@sha256:...`
+          # resolves to the same bytes forever; `docker pull ...:<sha-tag>` does
+          # not, after a second push.
+          #
+          # WHAT FOLLOWS FOR STAGE 5, stated now so it is not discovered later:
+          # the deployable reference recorded on a host must be the DIGEST, not
+          # the tag. A deploy script that pins a tag and calls it immutable is
+          # citing a guarantee the registry does not make.
+          {
+            echo "### publish"
+            echo
+            echo "- sha tag:      \`${SHA_TAG}\`  (naming convention — **not** registry-enforced immutability; GHCR permits overwriting an existing tag)"
+            echo "- main tag:     \`${MAIN_TAG}\`  (moving pointer, convenience only — never deployable)"
+            echo "- **digest (authoritative):** \`${repo_digest}\`"
+            echo
+            echo "Record the digest, not the tag. A tag can be repointed by a second push; a digest cannot."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "published digest: ${repo_digest}"

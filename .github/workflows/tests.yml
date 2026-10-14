@@ -230,12 +230,34 @@ name: tests
 # an unassigned test that quietly lands in the wrong tier is worse than one that
 # turns the gate red.
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TRIGGERS — and why `push: branches: [main]` is GONE
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable workflow (`workflow_call`) as well as a directly triggered one. It
+# runs, unchanged and in full, in exactly two situations:
+#
+#   1. ON A PULL REQUEST — `pull_request:`, exactly as it always has. The tier
+#      gate and T1/T2 have always been what review depends on.
+#   2. ON A PUSH TO `main` — INDIRECTLY, via `.github/workflows/release.yml`,
+#      which triggers on `push` to `main` and calls this file with `uses:`.
+#
+# WHY THE DIRECT `push: branches: [main]` TRIGGER WAS REMOVED
+# Same reason as hygiene.yml, and the same argument. Leaving it in place would
+# run the whole suite TWICE per merge to main — once directly and once as
+# release.yml's `tests` job — which on this workflow means the 146 collected
+# tests execute twice, the disposable pgvector container is started twice, and
+# two independent verdicts exist about the same revision with no principled way
+# to say which one gated the published image. One event, one set of runs.
+# The suite did not become optional on `main`; `needs:` in release.yml makes it
+# BLOCKING for publication.
+#
+# This workflow is ALSO the one that will be read by somebody asking "did main
+# pass?" — and the answer must be a single, nameable run rather than whichever
+# of two duplicates finished last.
 on:
-  push:
-    branches:
-      - main
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 # Minimal by construction, matching hygiene.yml. This workflow reads the
 # repository, installs pinned public packages, starts a throwaway database and
