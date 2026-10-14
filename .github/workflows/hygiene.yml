@@ -586,6 +586,317 @@ jobs:
         with:
           args: -no-color -ignore SC2016
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Milestone 4 — the dependency-audit gate
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # WHAT IT ASSERTS
+  # That no package in the resolved dependency closure of
+  # `api/requirements-dev.txt` has a known published vulnerability, as of the
+  # moment this job runs. One job. It observes; it never repairs — no pin is
+  # bumped, no advisory is suppressed, no file is written.
+  #
+  # WHY THIS FILE AND NOT `tests.yml` OR A WORKFLOW OF ITS OWN
+  # `release.yml` calls this workflow WHOLE with `uses:`, and a reusable-workflow
+  # call succeeds only if EVERY job inside it succeeded. `build` already declares
+  # `needs: [hygiene, tests]`, and `publish` declares `needs: [build]`. So
+  # putting the gate here makes it block publication transitively, with ZERO
+  # change to the `needs:` graph in `release.yml` and none required. A separate
+  # workflow would need a new `uses:` line, a new `needs:` entry and a new
+  # position in the gate table; this needs the one-line display-name correction
+  # recorded in `release.yml`.
+  #
+  # WHY ONE JOB AND ONE FILE RATHER THAN TWO JOBS OVER BOTH REQUIREMENTS FILES
+  # `api/requirements-dev.txt` line 27 is `-r requirements.txt`, so it pulls in
+  # every runtime package transitively. Auditing it therefore STRICTLY DOMINATES
+  # auditing `api/requirements.txt` as well: it is a superset of the requirement
+  # set, so every finding the runtime-only audit would produce is also produced
+  # here. Two jobs would buy zero extra coverage and pay full resolution cost
+  # twice.
+  #
+  # THAT IS A COVERAGE ARGUMENT, NOT AN IDENTITY ARGUMENT, AND THE DIFFERENCE
+  # MATTERS. The runtime closure is a strict subset of the dev closure — measured
+  # on 2026-10-14, the runtime closure is 34 packages and the dev closure is 43,
+  # and the set difference in the runtime direction is empty — BUT THE TWO ARE
+  # RESOLVED AT DIFFERENT TIMES. pip-audit resolves each file independently, and
+  # an unpinned transitive is re-resolved against whatever the index holds at
+  # that moment. So the two audits are not guaranteed to agree package-for-
+  # package, and neither is a superset of the other in general: the runtime
+  # closure can pick up a version the dev closure did not, and vice versa. The
+  # one-file choice trades that second opinion away on purpose, because it buys
+  # nothing: a finding in the runtime closure is a finding in the dev closure,
+  # and the converse is what is being given up.
+  #
+  # ── THE OPERATIONAL PROPERTY THAT WILL SURPRISE THE FIRST READER ───────────
+  # THIS GATE CAN GO RED WITH NO COMMIT HAVING TOUCHED A REQUIREMENTS FILE.
+  #
+  # `api/requirements.txt` pins SEVEN direct dependencies with `==`. Its
+  # resolved closure is 34 packages. That leaves TWENTY-SEVEN of the thirty-four
+  # — everything except those seven direct pins — as TRANSITIVE PACKAGES THAT
+  # NO FILE IN THIS REPOSITORY PINS, and pip re-resolves them on every run against
+  # whatever PyPI currently serves. Concretely, from the resolution measured on
+  # 2026-10-14:
+  #
+  #     boto3==1.43.112   ← pinned, in api/requirements.txt
+  #     botocore 1.43.114 ← NOT pinned by anything; boto3's own ceiling only
+  #     urllib3  2.8.0    ← pinned by nobody anywhere in this repository
+  #
+  # `boto3` is an exact pin and its resolved `botocore` is not, because boto3
+  # declares a range for botocore and nothing here narrows it. So an advisory
+  # published against, say, `urllib3` can turn this gate red on a run whose diff
+  # touches nothing but a comment. THAT IS NOT A FLAKY GATE. It is the gate
+  # reporting a real change in what the application would actually install.
+  #
+  # Read the first red of this kind as an UPSTREAM EVENT, not as a defect in the
+  # commit that happened to trigger the run. The fix is necessarily a
+  # deliberate bump of whichever pin pulls the vulnerable package in — which is
+  # also, not coincidentally, exactly what `api/requirements.txt`'s "exact pins,
+  # no ranges" rule asks a human to do by hand. Do not reach for a suppression
+  # config to make it stop; see below.
+  #
+  # WHY `--strict`, AND WHAT IT IS NOT
+  # `--strict` is defined by pip-audit as "fail the entire audit if dependency
+  # collection fails on any dependency", and it is kept because it is free
+  # insurance. It is NOT what makes this audit trustworthy, and it must not be
+  # described as though it were — that premise was tested and is false. An
+  # UNRESOLVABLE requirement (two pins that cannot co-exist) exits 1 under
+  # `--strict` and under plain `pip-audit` alike, with pip's own
+  # `ResolutionImpossible` on stderr and ZERO BYTES on stdout. So `--strict`
+  # buys nothing on that failure class, which is the one a broken requirements
+  # file produces. What it does guard is narrower and later: collection failure
+  # AFTER a successful resolution. Keep it, and describe it as what it is.
+
+  dependency-audit:
+    name: dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      # ── THE INTERPRETER ─────────────────────────────────────────────────────
+      # 3.12, the same value `tests.yml` runs its whole suite on and the same
+      # interpreter `api/Dockerfile` ships (`FROM python:3.12-slim`). It is
+      # spelled out here rather than referenced so this job cannot drift from
+      # the image it is auditing the dependency set of.
+      - name: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ── WHY pip-audit IS PINNED TO AN EXACT VERSION ─────────────────────────
+      # `==2.10.1`, never a range and never `latest`, for the same reason this
+      # file pins actionlint at `1.7.12` and terraform at `1.16.5`: a floating
+      # tool version means the verdict recorded against `main` can change with
+      # no commit to account for it. A dependency gate whose failure depends on
+      # when it ran is not a gate.
+      #
+      # It is installed into the runner's `setup-python` interpreter and goes no
+      # further. It is NOT added to `api/requirements-dev.txt` and it is NOT
+      # added to the image: pip-audit audits a requirements FILE, it does not
+      # need to be a dependency of the application, and adding an audit tool to
+      # the runtime closure would widen the very attack surface this job exists
+      # to watch.
+      - name: install pip-audit
+        run: python -m pip install --disable-pip-version-check "pip-audit==2.10.1"
+
+      # `--format json` rather than the default table because the next step has
+      # to read it. The default `columns` output is for a human at a terminal;
+      # what this needs is a machine-readable report it can turn into one
+      # `::error::` annotation per finding, so each advisory is greppable in the
+      # log and attachable to a pull request — the same treatment the
+      # forbidden-paths gate gives at the `::error file=…` loop above.
+      #
+      # `--progress-spinner off` keeps carriage returns out of the CI log.
+      # `--strict` per "WHY `--strict`, AND WHAT IT IS NOT" above.
+      #
+      # The exit status is CAPTURED, NOT PROPAGATED. `pip-audit` exits 1 both
+      # when it finds something and when it cannot resolve the file at all, and
+      # those two want very different annotations. Letting `set -e` kill the step
+      # would collapse both into one opaque failure, and would also mean the
+      # report below never ran. `|| rc=$?` keeps the step green so the next one
+      # can read the report and say which of the two happened.
+      - name: dependency-audit
+        id: audit
+        run: |
+          set -euo pipefail
+
+          REPORT="${RUNNER_TEMP}/pip-audit-report.json"
+
+          rc=0
+          pip-audit --strict --progress-spinner off --format json \
+            --requirement api/requirements-dev.txt > "$REPORT" || rc=$?
+
+          echo "report=${REPORT}" >> "$GITHUB_OUTPUT"
+          echo "exit-code=${rc}" >> "$GITHUB_OUTPUT"
+          echo "pip-audit exited ${rc}. Report at ${REPORT}."
+
+      # ── WHY THE REPORT STEP EXISTS AT ALL ────────────────────────────────────
+      # pip-audit's own JSON is the finding, but a JSON blob is not a CI
+      # annotation: nothing highlights it, nothing attaches it to a PR, and a
+      # reader has to know the schema to read it. This step turns each finding
+      # into one `::error::` line, then decides the build's verdict.
+      #
+      # FIVE OUTCOMES, AND ALL FIVE WERE EXERCISED BEFORE THIS WAS MERGED —
+      # this is not defensive padding. Each branch was run against a report file:
+      #   findings found       → one annotation each, then exit 1
+      #   clean, exit 0        → a PASS line naming the closure size, exit 0
+      #   exit 1, empty stdout → annotation saying NOTHING WAS AUDITED, exit 1
+      #   exit 1, unparseable  → annotation quoting what was printed, exit 1
+      #   exit 1, zero vulns   → annotation naming it a collection failure
+      # The third is the one that matters most and is easiest to get wrong. An
+      # unresolvable requirements file produces NO JSON at all, so a parser that
+      # only ever reads JSON reports zero findings on it. Zero findings from a
+      # run that audited nothing is the worst possible failure mode for a
+      # security gate, and this step treats it as RED, not as clean.
+      #
+      # `AUDIT_REPORT` and `AUDIT_EXIT_CODE` arrive through `env:`, never
+      # interpolated into the script body — `release.yml` records why, at its
+      # `resolve the image reference` step. A `${{ }}` pasted into a shell
+      # command is an injection seam, and these values come from an earlier step
+      # of this same job rather than from anything a pull request controls, but
+      # the rule costs nothing here and is not worth breaking.
+      #
+      # No allowlist, no `--ignore-vuln`, no config file. There is deliberately
+      # NO `pip-audit.conf` and no ignore file in this repository, and this job
+      # does not create one. A suppression list shipped alongside the gate that
+      # reads it is a rubber stamp from the day it lands: it would have to be
+      # edited before anyone had ever seen this gate green, which is exactly
+      # when nobody is looking. If a future advisory genuinely needs an
+      # exception, that is a DELIBERATE, SEPARATE commit carrying one
+      # per-advisory `--ignore-vuln <ID>`, the written reason, and a review
+      # date — reviewed on its merits, not pre-authorised here.
+      #
+      # WHY NO DEPENDABOT, NO RENOVATE, NO `safety`
+      # Declined, not overlooked. This repository's stated policy is exact
+      # pinning with deliberate upgrades (`api/requirements.txt` lines 2-5), and
+      # an automated dependency updater proposes exactly the range-creating
+      # churn that rule exists to prevent — it opens pull requests against pins
+      # whose whole purpose is not to move without a human deciding they should.
+      # One audit that observes, and human judgement that decides, matches the
+      # policy the repository already has.
+      - name: report dependency-audit findings
+        env:
+          AUDIT_REPORT: ${{ steps.audit.outputs.report }}
+          AUDIT_EXIT_CODE: ${{ steps.audit.outputs.exit-code }}
+        run: |
+          set -euo pipefail
+          python - "$AUDIT_REPORT" "$AUDIT_EXIT_CODE" <<'PY'
+          import json, sys
+
+          report_path, raw_rc = sys.argv[1], sys.argv[2]
+          try:
+              rc = int(raw_rc)
+          except ValueError:
+              rc = -1
+
+          def esc(text):
+              # GitHub workflow commands: %, CR and LF are the three that break
+              # an annotation, and an advisory description contains all three.
+              return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+          def one_line(text, limit=240):
+              flat = " ".join(str(text).split())
+              if len(flat) > limit:
+                  flat = flat[: limit - 1].rstrip() + "..."
+              return flat
+
+          try:
+              with open(report_path, encoding="utf-8") as handle:
+                  raw = handle.read()
+          except OSError as exc:
+              print(
+                  "::error title=dependency-audit unreadable report::"
+                  f"could not read {report_path}: {exc}"
+              )
+              sys.exit(1)
+
+          report = None
+          if raw.strip():
+              try:
+                  report = json.loads(raw)
+              except ValueError as exc:
+                  print(
+                      "::error title=dependency-audit unparseable report::"
+                      f"pip-audit did not emit JSON on stdout ({exc}). "
+                      "First 500 bytes: " + one_line(raw, 500)
+                  )
+                  sys.exit(1)
+
+          if report is None:
+              print(
+                  "::error title=dependency-audit failed before reporting::"
+                  f"pip-audit exited {rc} without emitting a JSON report, so no "
+                  "package was audited. An unresolvable requirement fails here "
+                  "with empty stdout, and that is a red build, not a clean one. "
+                  "Read the step above for pip's own resolution error."
+              )
+              sys.exit(1)
+
+          if isinstance(report, dict):
+              entries = report.get("dependencies", [])
+          else:
+              entries = report
+          if not isinstance(entries, list):
+              print(
+                  "::error title=dependency-audit unexpected report shape::"
+                  f"expected a list of dependencies, got {type(entries).__name__}. "
+                  "This is a pip-audit output-format change, not a clean result."
+              )
+              sys.exit(1)
+
+          findings = 0
+          for dep in entries:
+              # pip-audit queries both the PyPI advisory service and OSV, so the
+              # SAME advisory arrives twice under one id. Dedupe per package, or
+              # a single CVE produces two annotations and the finding count in
+              # the summary stops matching the number of distinct problems.
+              seen = set()
+              for vuln in dep.get("vulns") or []:
+                  vid = str(vuln.get("id") or "<unknown-id>")
+                  if vid in seen:
+                      continue
+                  seen.add(vid)
+                  findings += 1
+                  aliases = ", ".join(vuln.get("aliases") or []) or "none reported"
+                  fixes = ", ".join(vuln.get("fix_versions") or []) or "no fix published"
+                  print(
+                      "::error file=api/requirements-dev.txt,"
+                      f"title=advisory {vid} affects {dep.get('name')} {dep.get('version')}::"
+                      + esc(
+                          one_line(
+                              f"{vid} (aliases: {aliases}; fixed in: {fixes}). "
+                              f"{one_line(vuln.get('description') or '', 200)} "
+                              "Resolve it by bumping the pin that pulls this package "
+                              "in, and suppress nothing."
+                          )
+                      )
+                  )
+
+          if findings:
+              print(
+                  "::error title=dependency-audit::FAILED — "
+                  f"{findings} advisory match(es) in the resolved dependency "
+                  "closure of api/requirements-dev.txt, listed one per line "
+                  "above. There is no ignore list: fix the pin, or record a "
+                  "deliberate, per-advisory exception."
+              )
+              sys.exit(1)
+
+          if rc != 0:
+              print(
+                  "::error title=dependency-audit::FAILED — pip-audit exited "
+                  f"{rc} with no advisory match. That is a collection failure "
+                  "under --strict, not a clean audit. Read the step above."
+              )
+              sys.exit(1)
+
+          print(
+              "dependency-audit: PASS — no known vulnerabilities in the "
+              f"{len(entries)}-package closure resolved from "
+              "api/requirements-dev.txt (pip-audit --strict, exit 0)."
+          )
+          PY
+
   # ── SCOPE: WHY `-ignore 'SC2016'` AND NOT `-shellcheck=` ────────────────────
   # This is the one judgement call in this job, so it is recorded here rather
   # than settled silently in a flag.
@@ -595,7 +906,16 @@ jobs:
   #     exit status 1, exactly TWO findings, both shellcheck, ZERO expression
   #     errors, zero syntax errors, zero unknown-key errors:
   #       .github/workflows/hygiene.yml:163:9   SC2016, script line 74 col 37
-  #       .github/workflows/release.yml:556:9   SC2016, script line 27 col 35
+  #       .github/workflows/release.yml:592:9   SC2016, script line 27 col 35
+  #
+  # RE-MEASURED, NOT ASSUMED, and still exactly TWO after the dependency-audit
+  # job landed — which is the point worth recording. Adding a job with a
+  # `python - <<'PY'` heredoc did not add a finding, so shellcheck is reading
+  # that block rather than skipping it. The `release.yml` line number MOVED when
+  # gate 7 was added above it (it was 556, then 581, and is 592 now); the
+  # finding itself is unchanged, because it is the same `sed` program. Line
+  # numbers in a file that is still being edited are a snapshot, not an
+  # invariant — re-measure them rather than trusting this block.
   #
   # BOTH ARE FALSE POSITIVES AND BOTH HAVE THE SAME ROOT CAUSE:
   # A BACKTICK INSIDE A SINGLE-QUOTED STRING.

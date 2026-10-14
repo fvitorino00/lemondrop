@@ -7,13 +7,13 @@ name: release
 # WHAT THIS WORKFLOW IS FOR
 #   On a merge to `main`, run every verification gate this repository has, and
 #   only then build the API image, inspect what was actually built, and publish
-#   THAT image to GHCR. The six gates are not advisory and not a parallel
+#   THAT image to GHCR. The seven gates are not advisory and not a parallel
 #   concern: publication is downstream of all of them by construction.
 #
 # ═════════════════════════════════════════════════════════════════════════════
-# THE SIX GATES, AND WHAT "ALL SIX PASSED" ACTUALLY MEANS HERE
+# THE SEVEN GATES, AND WHAT "ALL SEVEN PASSED" ACTUALLY MEANS HERE
 # ═════════════════════════════════════════════════════════════════════════════
-# A "gate" in this repository is a JOB. There are exactly six of them, in two
+# A "gate" in this repository is a JOB. There are exactly seven of them, in two
 # files, and they are listed here in `needs:` order:
 #
 #   ┌────┬────────────────────────┬──────────────┬────────────────────────────────┐
@@ -37,24 +37,29 @@ name: release
 #   │    │                        │              │ expression or unknown key     │
 #   │    │                        │              │ survives in ANY workflow, so  │
 #   │    │                        │              │ a malformed one is caught     │
+#   │ 7  │ dependency-audit       │ hygiene.yml  │ no package in the resolved     │
+#   │    │                        │              │ closure of the dev file has    │
+#   │    │                        │              │ a known published              │
+#   │    │                        │              │ vulnerability; no suppression  │
 #   └────┴────────────────────────┴──────────────┴────────────────────────────────┘
 #   (Job 1 runs TWO checks — forbidden-paths-tracked and secrets-in-tracked-
 #   content — as two steps. They are one job, so they are one gate here: the
-#   count of six is the count of JOBS, which is what `needs:` actually waits on.)
+#   count of seven is the count of JOBS, which is what `needs:` actually waits on.)
 #
-#   GATE 6 IS NUMBERED LAST BUT IT DOES NOT ARRIVE LAST. It is a job of
-#   `hygiene.yml`, so it is delivered by the FIRST reusable call in `needs:`,
+#   GATES 6 AND 7 ARE NUMBERED LAST BUT THEY DO NOT ARRIVE LAST. They are jobs
+#   of `hygiene.yml`, so they are delivered by the FIRST reusable call in `needs:`,
 #   together with gates 1 and 2 — which is why there are still exactly TWO
 #   reusable-workflow calls below and not three. A reader counting one call per
 #   gate would look for a third `uses:` and conclude a gate is missing. Nothing
-#   is missing: the three jobs of `hygiene.yml` are gates 1, 2 and 6, and they
+#   is missing: the four jobs of `hygiene.yml` are gates 1, 2, 6 and 7, and they
 #   are conjured together by a single green `hygiene` job. The numbering is
-#   `needs:` order for gates 1-5 and append-only for this one; the DELIVERY is
+#   `needs:` order for gates 1-5 and append-only for the rest; the DELIVERY is
 #   what the `uses:` line says, and the table above is a count of jobs.
 #
-# SEVENTH GATE, NOT ON `main`: T3 (the 28 live-stack tests) is still not in CI, for
-# the reasons tests.yml's header gives at length. A green release run is
-# therefore NOT a claim that all 146 tests pass. It is a claim about 118.
+# T3 IS NOT A GATE AT ALL, AND IS NOT ON `main`: the 28 live-stack tests are
+# still not in CI, for the reasons tests.yml's header gives at length. A green
+# release run is therefore NOT a claim that all 146 tests pass. It is a claim
+# about 118.
 #
 # ── WHY `terraform-validate` IS COVERED BY `needs: [hygiene]` ────────────────
 # THIS COMMENT IS LOAD-BEARING. DO NOT "OPTIMISE" THE TERRAFORM GATE AWAY.
@@ -64,20 +69,21 @@ name: release
 # correct — but it is also easy to misread this file as though the Terraform
 # gate were absent, and then to "simplify" `needs: [hygiene, tests]` down to
 # `needs: [tests]` or drop the `hygiene` call entirely as redundant-looking.
-# That edit would silently delete gates 2 and 6, and nothing in the resulting
+# That edit would silently delete gates 2, 6 and 7, and nothing in the resulting
 # file would still say so.
 #
 # The dependency is transitive and it is total: a job that calls a reusable
 # workflow with `uses:` succeeds ONLY IF EVERY JOB INSIDE THAT WORKFLOW
-# SUCCEEDED. `hygiene.yml` contains exactly three jobs — `state-leak-gate`
-# (gate 1), `terraform-validate` (gate 2) and `actionlint` (gate 6) — so a
-# green `hygiene` job here is a green terraform validation AND a green
-# workflow-compile check, not one or the other. There is no configuration of
-# the `hygiene` call that brings in one job and not the others; `uses:` is
+# SUCCEEDED. `hygiene.yml` contains exactly four jobs — `state-leak-gate`
+# (gate 1), `terraform-validate` (gate 2), `actionlint` (gate 6) and
+# `dependency-audit` (gate 7) — so a green `hygiene` job here is a green
+# terraform validation AND a green workflow-compile check AND a green dependency
+# audit, not one or the others. There is no configuration of the
+# `hygiene` call that brings in one job and not the others; `uses:` is
 # all-or-nothing per workflow. The same is true of `tests.yml`, which
 # contributes gates 3, 4 and 5.
 #
-# The six gates are therefore not "all" because they are listed six times
+# The seven gates are therefore not "all" because they are listed seven times
 # below. They are "all" because `build` needs BOTH reusable-workflow calls, and
 # each call is a conjunction over its own jobs. Removing any gate means editing
 # `hygiene.yml` or `tests.yml` — where the gate still has its own name,
@@ -201,24 +207,29 @@ defaults:
 
 jobs:
   # ═════════════════════════════════════════════════════════════════════════
-  # GATES 1, 2 AND 6 — state-leak (both checks, one job), terraform-validate,
-  # and actionlint. A job that calls a reusable workflow succeeds only if EVERY
-  # job inside it succeeded. `hygiene.yml` has exactly three jobs, so this
-  # single green job is gate 1 AND gate 2 AND gate 6. See the load-bearing
-  # comment at the top of this file before removing this `needs:` entry or this
-  # `uses:` — dropping `hygiene` here silently deletes the terraform gate AND
-  # the workflow-compile gate.
+  # GATES 1, 2, 6 AND 7 — state-leak (both checks, one job), terraform-validate,
+  # actionlint, and dependency-audit. A job that calls a reusable workflow
+  # succeeds only if EVERY job inside it succeeded. `hygiene.yml` has exactly
+  # four jobs, so this single green job is gate 1 AND gate 2 AND gate 6 AND gate
+  # 7. See the load-bearing comment at the top of this file before removing this
+  # `needs:` entry or this `uses:` — dropping `hygiene` here silently deletes the
+  # terraform gate AND the workflow-compile gate AND the dependency audit.
   #
-  # THE `name:` BELOW STILL READS "gates 1-2", AND THAT IS KNOWN, NOT AN
-  # OVERSIGHT. A job's `name:` is a functional value — it is what the run's UI
-  # displays — and this change is documentation-only, so it is left byte
-  # identical rather than quietly altered in a comment-only commit. The table
-  # at the top of this file is the authoritative statement of the gate
-  # accounting; this display name lags it by one job. Correcting the string
-  # belongs in its own commit, where the only change is the string.
+  # THE `name:` BELOW NAMES ALL FOUR, AND IT IS KEPT IN STEP WITH THE TABLE
+  # DELIBERATELY. A job's `name:` is a functional value — it is what the run's UI
+  # displays, and it is what an incident responder reads before scrolling. An
+  # earlier revision of this block left it reading "gates 1-2" while gates 6 and
+  # 7 already existed, and recorded that staleness here rather than fixing it,
+  # on the reasoning that a comment-only commit should change only a comment.
+  # That was defensible for a comment-only commit and it is wrong now: gate 7
+  # arrives in the same commit as its display name, so the two cannot drift. If a
+  # future gate is added to `hygiene.yml`, THIS STRING MUST BE CORRECTED IN THE
+  # SAME COMMIT THAT ADDS THE GATE. The table at the top of this file remains the
+  # authoritative statement of the gate accounting; this string is what the run
+  # shows, and the two are not allowed to disagree.
   # ═════════════════════════════════════════════════════════════════════════
   hygiene:
-    name: gates 1-2 (state-leak, secrets, terraform)
+    name: gates 1-2, 6-7 (state-leak, secrets, terraform, actionlint, deps)
     uses: ./.github/workflows/hygiene.yml
     permissions:
       contents: read
@@ -227,10 +238,10 @@ jobs:
   # GATES 3-5 — tier classification, T1 (service-free), T2 (disposable
   # pgvector). Same all-or-nothing property as `hygiene` above.
   #
-  # T3 IS NOT RUN AT ALL — not a gate here, not a seventh gate anywhere. The 28
+  # T3 IS NOT RUN AT ALL — not a gate here, not a gate anywhere. The 28
   # live-stack tests are still not in CI, for the reasons tests.yml's header
   # gives at length. A green run of this pipeline is therefore NOT a claim that
-  # all 146 tests pass. It is a claim about 118. (The seventh gate in this file is
+  # all 146 tests pass. It is a claim about 118. (The eighth gate in this file is
   # the image-content gate in the `build` job, which is a different thing
   # entirely.)
   # ═════════════════════════════════════════════════════════════════════════
@@ -552,7 +563,7 @@ jobs:
             org.lemondrop.alembic-head=${{ steps.schema.outputs.alembic_head }}
 
       # ── THE LABEL ASSERTION ─────────────────────────────────────────────────
-      # NOT A GATE. It is in this job, not in the six-gate accounting above, for
+      # NOT A GATE. It is in this job, not in the seven-gate accounting above, for
       # the same reason the digest step below is not a gate: it is a check on the
       # thing this job exists to produce. Nothing here changes what is published;
       # it changes whether this job claims to have produced something real.
