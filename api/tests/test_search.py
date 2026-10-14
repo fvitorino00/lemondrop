@@ -274,11 +274,29 @@ def _clean_probe_collection():
     with_database(lambda database: store.delete_collection(engine_of(database), collection=PROBE_COLLECTION))
 
 
-# ── 0. The funnel's configuration rules. No services required. ────────────────
+# ── 0. The funnel's configuration rules. A DATABASE is required. ──────────────
 #
-# These run on a machine where nothing is started, because they are pure
-# configuration logic and a test that needs a running stack to check an `if` is a
-# test that will not be run when the `if` is wrong.
+# These tests are pure configuration logic: they read two environment variables
+# and assert on an `if`. That is exactly why this banner used to say "No services
+# required", and why it was wrong — it was corrected in e3e7d25 together with this
+# module's docstring, and the correction is not confined to the docstring.
+#
+# They DO need a database. `_clean_probe_collection` above is declared
+# `@pytest.fixture(autouse=True)` and empties this file's probe collection before
+# AND after every test — these tests exactly as much as the live ones. With no
+# database reachable the fixture raises in SETUP and the test never reaches its
+# own body, so the purity of the body is irrelevant to whether the test can run.
+#
+# Measured on this host with a well-formed DSN pointed at a closed port: all 13
+# collected cases of this section ERROR AT SETUP. e3e7d25 measured the whole file
+# the same way and got 26 errors, because the fixture is autouse and the other 13
+# tests fail at setup for the same reason. This is why no test in this file is
+# declared T1 in `.github/workflows/tests.yml`, and why this section's five funnel
+# tests are declared in T2 — five declarations expanding to 13 collected cases,
+# all of them on the database side of that line.
+#
+# The distinction the old banner was reaching for, now stated accurately: no
+# running API, no llama.cpp worker and no model are needed here. A database is.
 
 
 @pytest.mark.parametrize(
