@@ -80,31 +80,76 @@ name: tests
 # stating here where a future editor will read them before changing the lists:
 #
 #   * `test_search.py` LOOKS like it has a service-free section. Its docstring
-#     says so ("Section 0 (the funnel's configuration rules) needs no services
-#     at all and passes on a machine where nothing is running"). It does not
-#     run on a machine where nothing is running: the module carries an AUT OUSE
-#     fixture (`_clean_probe_collection`, test_search.py:245) that empties a
-#     collection in the database before and after every single test, so with no
-#     database all 26 tests ERROR AT SETUP — including the 13 funnel-config ones.
-#     That is why 13 test_search tests are T2 and 0 are T1.
-#   * `test_db.py` is not service-free as a FILE. Three of its 13 tests connect
-#     to a real database. Two of those fail loudly when the database is absent,
-#     which is the good case. The third — and this is the one that matters —
-#     PASSES SILENTLY: `test_a_wrong_password_never_reaches_an_exception_a_log_
-#     or_a_repr` configures a deliberately wrong password, the connection is
-#     refused, `ping()` reports not-ready, and every "the password is not in
-#     this message" assertion then passes vacuously. Measured, not argued:
-#     `env -u DATABASE_URL ... pytest api/tests/test_db.py` fails 4 and passes 9;
-#     with a well-formed DSN pointing at a dead port, all 13 pass. So T1 selects
-#     test_db.py's 6 service-free tests BY NODE ID rather than taking the file,
-#     and T2 names its own 28 rather than taking these modules and subtracting —
-#     see `tier-classification`. That test is a KNOWN DEFECT, not a designed
-#     property: it passes for the wrong reason in T1 and is listed here so the
-#     next reader does not mistake its T2 green for a clean bill of health. It is
-#     precisely the M3 lesson (docs/verification-milestone-3.md §8.5, "An
-#     isolation test that was found BLIND"): a test that passes for the wrong
-#     reason is worse than no test, and a gate that runs it is worse than a gate
-#     that does not.
+#     USED TO say so — it carried the sentence "Section 0 (the funnel's
+#     configuration rules) needs no services at all and passes on a machine
+#     where nothing is running" — and e3e7d25 corrected that docstring. This
+#     paragraph quoted the old sentence as if it were current, and is the other
+#     half of the same correction. It does not run on a machine where nothing is
+#     running: the module carries an AUT OUSE fixture (`_clean_probe_collection`)
+#     that empties a collection in the database before and after every single
+#     test, so with no database all 26 tests ERROR AT SETUP — including the 13
+#     funnel-config ones, whose bodies are pure configuration logic. That is why
+#     13 test_search tests are T2 and 0 are T1.
+#   * `test_db.py` is not service-free as a FILE. Some of its tests do connect to
+#     a real database, which is why T1 selects test_db.py's 6 service-free tests
+#     BY NODE ID rather than taking the whole file, and T2 names its own 28
+#     rather than taking these modules and subtracting — see
+#     `tier-classification`, which is the authority on all of this.
+#
+#     One of those database tests, `test_a_wrong_password_never_reaches_an_
+#     exception_a_log_or_a_repr`, WAS a real defect. The paragraph that used to
+#     stand here described it wrongly, in two separate ways, and both errors are
+#     corrected here rather than quietly deleted — a reader comparing this prose
+#     against the tier lists below must find the two consistent:
+#
+#       1. IT WAS NEVER IN T1. It is declared in T2, and it has been in every
+#          commit that has ever contained this file; there is exactly one such
+#          commit, f56d7cd, and the node is in its T2 list there too. Read the
+#          `tier-classification` job for yourself: the node appears in T2 and in
+#          no other tier. Nothing was ever moved between tiers to fix this.
+#       2. IT NO LONGER PASSES VACUOUSLY. It used to. The old text said it
+#          "PASSES SILENTLY" and that it "passes for the wrong reason in T1";
+#          that was accurate about the DEFECT and wrong about the TIER.
+#
+#     THE DEFECT, as measured. The test configured a deliberately wrong password,
+#     the connection was refused, `ping()` reports not-ready for EVERY failure
+#     mode, and all four "the password is not in this message" assertions then
+#     passed against a `ConnectionRefusedError` that never contained a credential
+#     to leak. Pointed at a closed port it passed having asked nothing of any
+#     server. It existed to protect the authentication failure path and never
+#     reached it. That is the M3 lesson (docs/verification-milestone-3.md §8.5,
+#     "An isolation test that was found BLIND"): a test that passes for the wrong
+#     reason is worse than no test.
+#
+#     THE FIX — e3e7d25, and no workflow change was needed or made. A precondition
+#     now pings the endpoint with the REAL credential and requires `ok is True`,
+#     so a refused connection can no longer reach the redaction assertions at
+#     all; and the failure that follows is then required to be
+#     `asyncpg.InvalidPasswordError` SPECIFICALLY — the exception class name, never
+#     message text, because driver messages vary between versions. The test now
+#     fails loudly against a dead port instead of passing quietly. Because it
+#     genuinely requires a reachable endpoint it is a database-tier test — and it
+#     already was one, which is point 1 above.
+#
+#     HOW THAT WAS VERIFIED NOT TO BE VACUOUS, in both directions. Against a live
+#     pgvector container the corrected test passes. Pointed at a dead port it
+#     fails at the new precondition. And with the redaction path deliberately
+#     broken by an out-of-tree pytest plugin — `_redact` made an identity function
+#     and `_describe` forced to render the raw DSN, modelling a driver release
+#     that embeds the connection URL — it fails with the credential plainly
+#     visible in the log record. No tracked file is modified to produce that
+#     control.
+#
+#     THE LIMITS, stated rather than papered over. This test verifies the
+#     intended authentication-failure path and checks for credential exposure
+#     across the surfaces it inspects. It does NOT independently cover every
+#     possible redaction failure: breaking `_redact` on its own is caught by the
+#     SIBLING T1 test `test_the_redactor_removes_a_dsn_that_a_driver_quotes`,
+#     which feeds `_redact` a message that genuinely contains the credential, and
+#     not by this one — because asyncpg's current `InvalidPasswordError` message
+#     carries no DSN of its own. Verification also ran on CPython 3.14.4 while
+#     this workflow runs 3.12; that interpreter skew is real and unresolved, and
+#     is not resolved by this file.
 #
 # ── T3 IS DELIBERATELY NOT EXECUTED HERE ────────────────────────────────────
 # T3 needs the whole retrieval stack: the API, both llama.cpp workers, the
@@ -553,9 +598,9 @@ jobs:
       # from test_db.py. Whole-module where whole-module is honest (measured:
       # 40/40 and 44/44 in a network namespace with no interfaces, no database and
       # an empty environment); named nodes where it is not, because test_db.py is
-      # not a service-free file — see the header for why naming them is the only
-      # thing that keeps its silently-vacuous database test out of a tier that
-      # cannot run it.
+      # not a service-free file — see the header for the boundary this draws
+      # around test_db.py's database-backed tests, and for the corrected account
+      # of what the credential-leak test does and does not prove.
       #
       # The list arrives as JSON and is expanded through `mapfile`, so a node id
       # is never pasted into a command line by interpolation. `TIER_SELECTION` is
