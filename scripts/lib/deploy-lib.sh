@@ -247,7 +247,23 @@ validate_image_digest() {
 # human does with it at 3am, and adding a field is a one-line change to every
 # reader rather than a redefinition of every position.
 
-readonly RECORD_KEYS_RE='^(RECORD_VERSION|REVISION|SOURCE_REVISION|IMAGE_DIGEST|ALEMBIC_HEAD|DEPLOYED_AT_UTC|DEPLOYED_BY|VERIFICATION|VERIFIED_AT_UTC|ROLLBACK_TAG|PREVIOUS_REVISION|PREVIOUS_IMAGE_DIGEST|PREVIOUS_ALEMBIC_HEAD)='
+# `IMAGE_ID` is OPTIONAL, and it is the only key that is. It is written ONLY
+# when `IMAGE_DIGEST` is empty — the M3 legacy case, where the image was built on
+# this host and has no registry reference at all — because on a digest-bearing
+# record the digest already names the exact bytes, and a second identifier for
+# the same image is precisely the drift hazard this file refuses elsewhere (see
+# the published-digest note above). On a legacy adoption it is the ONLY thing in
+# the record that says which artifact is running: without it the record carries
+# an empty digest and, on an unlabelled image, an empty revision as well.
+#
+# It is deliberately NOT in either required-key tier below, for a reason that is
+# about the field and not about the format: every record already in the field
+# predates the key, and requiring it would make `record_is_valid` classify all of
+# them as TRUNCATED — which would make `schema_gate` refuse the next deploy on
+# every host that has ever been deployed to. An absent IMAGE_ID therefore means
+# "this record names its image by digest", and a reader that wants an image id
+# for such a record takes it from the digest.
+readonly RECORD_KEYS_RE='^(RECORD_VERSION|REVISION|SOURCE_REVISION|IMAGE_DIGEST|IMAGE_ID|ALEMBIC_HEAD|DEPLOYED_AT_UTC|DEPLOYED_BY|VERIFICATION|VERIFIED_AT_UTC|ROLLBACK_TAG|PREVIOUS_REVISION|PREVIOUS_IMAGE_DIGEST|PREVIOUS_ALEMBIC_HEAD)='
 
 # Exit 0 if the record is readable and well-formed. Prints why not on stderr.
 #

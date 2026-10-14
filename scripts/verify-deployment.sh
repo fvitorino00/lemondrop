@@ -32,6 +32,17 @@
 #   that was deployed. Nothing is corrupted, no error is raised anywhere, and
 #   the stack is healthy — it is simply not running what the record says it is.
 #   The DIVERGENCE line below is the only thing that makes that visible.
+#
+# ── THREE VERDICTS IN SECTION 3, AND WHY ───────────────────────────────────────
+# AGREE and DIVERGENCE are both comparisons: they say two things were compared
+# and whether they matched. UNPINNED (LEGACY) is the third state, and it says
+# NOTHING was compared — the record holds no digest and the image has no
+# RepoDigests, which is the M3 host that has been adopted. It is not a pass, it is
+# not a fail, and it exits 0: an empty-vs-empty comparison is not evidence of
+# anything, and calling it DIVERGENCE turns this report permanently red on a
+# healthy host. The same rule governs the provenance and schema blocks: when the
+# image carries no label, they print UNKNOWN. No block in this report is ever
+# allowed to be silent, because in a wall of green lines silence reads as a pass.
 
 set -Eeuo pipefail
 
@@ -52,7 +63,7 @@ say "── revision record ─────────────────�
 RECORD_OK=0
 if record_is_valid "$LEMDROP_RECORD_FILE"; then
   RECORD_OK=1
-  for k in REVISION IMAGE_DIGEST ALEMBIC_HEAD DEPLOYED_AT_UTC DEPLOYED_BY \
+  for k in REVISION IMAGE_DIGEST IMAGE_ID ALEMBIC_HEAD DEPLOYED_AT_UTC DEPLOYED_BY \
            VERIFICATION VERIFIED_AT_UTC ROLLBACK_TAG \
            PREVIOUS_REVISION PREVIOUS_IMAGE_DIGEST PREVIOUS_ALEMBIC_HEAD; do
     say "  $(printf '%-22s' "$k"): $(record_get "$k" "$LEMDROP_RECORD_FILE")"
@@ -135,12 +146,83 @@ say ""
 say "── do they agree? ────────────────────────────────────────────"
 if [ "$RECORD_OK" -eq 1 ] && [ -n "$RUNNING_IMAGE_ID" ]; then
   RECORDED_DIGEST="$(record_get IMAGE_DIGEST "$LEMDROP_RECORD_FILE")"
+  RECORDED_IMAGE_ID="$(record_get IMAGE_ID "$LEMDROP_RECORD_FILE")"
+
+  # ── THREE STATES, NOT TWO ──────────────────────────────────────────────────
+  # The original check was a single if/else over a digest comparison, and that
+  # collapses two genuinely different situations into one verdict:
+  #
+  #   the record names digest D and the image answers D   -> AGREE       (compared)
+  #   the record names digest D and the image answers E   -> DIVERGENCE  (compared)
+  #   the record names digest D and the image answers none-> DIVERGENCE  (compared)
+  #   the record names NO digest and the image has none   -> NEITHER. Nothing
+  #     was compared. There is no claim on either side to agree or disagree with.
+  #
+  # That last row is the M3 legacy host: the image was built on the box and the
+  # record was adopted without a registry reference. Calling it DIVERGENCE — which
+  # is what an empty-vs-empty comparison produces — reports a permanent false
+  # alarm on a healthy host, and a permanently-red report is a report nobody
+  # reads. Calling it AGREE would be worse: it would assert a check that was never
+  # performed. So it gets its own name, it is not a problem, and it exits 0.
+  #
+  # The detector is NOT blunted by this. A record that names an image id is a
+  # stronger statement than one that names nothing, and when that id does not
+  # match what is running the answer really is DIVERGENCE — that is exactly the
+  # reboot case, where the stack came back up on a different local build.
   if [ -n "$RECORDED_DIGEST" ] && printf '%s\n' "$RUNNING_DIGESTS" | grep -qxF "$RECORDED_DIGEST" 2>/dev/null; then
     say "  AGREE — the running image IS the one the record names."
+  elif [ -z "$RECORDED_DIGEST" ] && [ -z "$RUNNING_DIGESTS" ] \
+       && { [ -z "$RECORDED_IMAGE_ID" ] || [ "$RECORDED_IMAGE_ID" = "$RUNNING_IMAGE_ID" ]; }; then
+    say "  UNPINNED (LEGACY) — neither agreement nor divergence. NOTHING WAS COMPARED."
+    say "    record  : no digest recorded"
+    say "    running : no registry digest — a locally built image"
+    say ""
+    say "    This host is running the M3 arrangement: an image built on this"
+    say "    machine, adopted into the record without a registry reference. There"
+    say "    is no digest on either side, so there was nothing to compare and this"
+    say "    line is NOT a pass — it is an admission that the check could not run."
+    say ""
+    say "    How it is kept honest:"
+    if [ -n "$RECORDED_IMAGE_ID" ]; then
+      say "      The record pins the image ID, and it matches what is running:"
+      say "        ${RECORDED_IMAGE_ID}"
+      say "      That IS a comparison, and it is the only one a digest-less record"
+      say "      can support. If the image ID ever stops matching, this line"
+      say "      becomes DIVERGENCE instead."
+    else
+      say "      This record carries no IMAGE_ID either (it predates that key), so"
+      say "      nothing at all was established about WHICH bytes are running. The"
+      say "      host is not lying — it simply cannot be checked."
+      say "      Adopt it again with a database-verified alembic revision to record"
+      say "      one:"
+      say "        scripts/deploy.sh --adopt-current <db-verified-alembic-revision>"
+    fi
+    say ""
+    say "    The next deploy of a digest-pinned image replaces this line with a"
+    say "    real AGREE or DIVERGENCE."
+  elif [ -z "$RECORDED_DIGEST" ] && [ -z "$RUNNING_DIGESTS" ] \
+       && [ -n "$RECORDED_IMAGE_ID" ] && [ "$RECORDED_IMAGE_ID" != "$RUNNING_IMAGE_ID" ]; then
+    say "  DIVERGENCE — the record names an image ID and a DIFFERENT image is running."
+    say "    record  : $RECORDED_IMAGE_ID"
+    say "    running : $RUNNING_IMAGE_ID"
+    say ""
+    say "    This is the reboot case with a digest-less record. scripts/boot.sh step 4"
+    say "    rewrites .env on every boot, the api comes back as a fresh local build,"
+    say "    and the record's image ID is the only thing that can notice. It does."
+    say ""
+    say "    Do not assume the cause; compare the deploy log"
+    say "    ($LEMDROP_LOG_FILE) with the boot log (/var/log/lemondrop-boot.log)."
+    note_problem "the record's IMAGE_ID and the running image's ID disagree"
   else
     say "  DIVERGENCE — the record and the running image do not match."
-    say "    record  : $RECORDED_DIGEST"
+    say "    record  : ${RECORDED_DIGEST:-<the record names no digest>}"
     say "    running : $(printf '%s' "$RUNNING_DIGESTS" | tr '\n' ' ')"
+    if [ -z "$RECORDED_DIGEST" ]; then
+      say ""
+      say "    The record has nothing to say about a registry image. An image that"
+      say "    answers a RepoDigest did not come from this host's build, and"
+      say "    nothing in the record accounts for it."
+    fi
     say ""
     say "    Usual causes, most likely first:"
     say "      1. This host was REBOOTED. scripts/boot.sh step 4 copies"
@@ -171,6 +253,14 @@ if [ "$RECORD_OK" -eq 1 ] && [ -n "$RUNNING_IMAGE_ID" ]; then
   # baseline head match the schema the running image says it expects?". A tool
   # that collapsed them into one comparison would report most healthy hosts as
   # agreeing, because on most hosts both happen to be right together.
+  #
+  # ── SILENCE IS NOT A PASS ───────────────────────────────────────────────────
+  # Both blocks used to be wrapped in `if the label is present`, so on an
+  # unlabelled image — the M3 legacy host, and the one where adoption is exactly
+  # what the operator ran — this section printed NOTHING AT ALL. In a report that
+  # is otherwise a column of green lines, an absent block is read as a block that
+  # passed. Nothing was checked. Both branches now always speak, and an absent
+  # label says UNKNOWN rather than nothing.
   if [ -n "$RUNNING_IMAGE_ID" ]; then
     say ""
     if [ -n "$RUNNING_LABEL_REVISION" ]; then
@@ -196,6 +286,27 @@ if [ "$RECORD_OK" -eq 1 ] && [ -n "$RUNNING_IMAGE_ID" ]; then
           note_problem "the record's revision and the running image's revision label disagree"
         fi
       fi
+    else
+      # Nothing was compared, and this report must not leave that looking like a
+      # pass. Not a problem either — an unlabelled image is a fact about an image
+      # published before the release workflow stamped labels, not a fault on the
+      # host — but it is emphatically NOT agreement, and the record may well hold
+      # no revision to compare against either.
+      RECORDED_REVISION="$(record_get REVISION "$LEMDROP_RECORD_FILE" || true)"
+      say "  PROVENANCE UNKNOWN — nothing was compared."
+      say "              The running image carries no ${LABEL_REVISION} label,"
+      say "              so it cannot say which commit built it."
+      if [ "$RECORD_OK" -ne 1 ] || [ -z "$RECORDED_REVISION" ]; then
+        say "              The record carries no revision either, so there is no"
+        say "              claim on either side. This host's provenance is unknown,"
+        say "              not verified — and unknown is not the same as fine."
+      else
+        say "              The record names ${RECORDED_REVISION}, which this report"
+        say "              cannot corroborate from the image. It is recorded, not"
+        say "              confirmed."
+      fi
+      say "              Remove the ambiguity by deploying an image published by a"
+      say "              release run that stamps these labels."
     fi
 
     if [ -n "$RUNNING_LABEL_ALEMBIC_HEAD" ]; then
@@ -211,7 +322,7 @@ if [ "$RECORD_OK" -eq 1 ] && [ -n "$RUNNING_IMAGE_ID" ]; then
           say "  SCHEMA: the running image expects alembic head"
           say "          ${RUNNING_LABEL_ALEMBIC_HEAD}, but the record carries no baseline"
           say "          head. scripts/deploy.sh will refuse every deploy until one is"
-          say "          established with: scripts/deploy.sh --adopt-current"
+          say "          established with: scripts/deploy.sh --adopt-current <db-verified-alembic-revision>"
         elif [ "$RECORDED_HEAD" = "$RUNNING_LABEL_ALEMBIC_HEAD" ]; then
           say "  SCHEMA AGREE — the recorded baseline head and the running image's"
           say "          expected head are both ${RECORDED_HEAD}."
@@ -226,6 +337,28 @@ if [ "$RECORD_OK" -eq 1 ] && [ -n "$RUNNING_IMAGE_ID" ]; then
           note_problem "the record's alembic head and the running image's schema label disagree"
         fi
       fi
+    else
+      # The counterpart of PROVENANCE UNKNOWN, and for the same reason: the block
+      # above printed nothing at all on an unlabelled image, and a schema check
+      # that prints nothing is indistinguishable from a schema check that passed.
+      RECORDED_HEAD="$(record_get ALEMBIC_HEAD "$LEMDROP_RECORD_FILE" || true)"
+      say ""
+      say "  SCHEMA UNKNOWN FROM THE IMAGE — nothing was compared."
+      say "          The running image carries no ${LABEL_ALEMBIC_HEAD} label, so it"
+      say "          cannot say which schema its code expects."
+      if [ -n "$RECORDED_HEAD" ]; then
+        say "          The record's baseline is ${RECORDED_HEAD}. That is an"
+        say "          OPERATOR-SUPPLIED value — adopt_current requires it to be"
+        say "          verified out-of-band against the database — and this report"
+        say "          cannot corroborate it from the image. It is the database's"
+        say "          answer, not the image's, and it is not re-checked here."
+      else
+        say "          The record carries no baseline head either. The schema this"
+        say "          host expects is unknown from both sides, and scripts/deploy.sh"
+        say "          will refuse every deploy against an empty baseline."
+      fi
+      say "          This is NOT schema agreement. It is the absence of anything to"
+      say "          compare, said out loud instead of left as an empty section."
     fi
   fi
 elif [ "$RECORD_OK" -eq 1 ]; then

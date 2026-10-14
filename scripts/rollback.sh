@@ -27,6 +27,25 @@
 # TAG, not a digest, and re-tags it back to `lemondrop-api` so that compose's
 # default resolves to it.
 #
+# ── WHY A LEGACY RECORD DOES NOT REFUSE ANY MORE ──────────────────────────────
+# `deploy.sh --adopt-current` used to write the literal string
+# `unrecorded-local-image (sha256:…)` into IMAGE_DIGEST when the running image
+# had no RepoDigests. It was a placeholder that looked like a value, and every
+# consumer of it was wrong:
+#
+#   * a later deploy copied it into PREVIOUS_IMAGE_DIGEST, and the check below —
+#     `validate_image_digest` — refused it for the whitespace inside the
+#     parentheses. A host with a legacy record could therefore never be rolled
+#     back, which is precisely the situation a rollback exists for;
+#   * `verify-deployment.sh` compared it against a list of real digests, could
+#     never match, and reported DIVERGENCE forever on a healthy host.
+#
+# The record now carries an EMPTY IMAGE_DIGEST for that case (plus an IMAGE_ID
+# identifying the exact bytes), so this script reaches the legacy-tag branch
+# below, which is the branch that was written for it years before the placeholder
+# existed. The refusal below still stands for a genuinely malformed field — the
+# placeholder was a bug, not a licence to accept anything non-digest-shaped.
+#
 # ── WHEN TO USE THIS, DECIDED IN ADVANCE ──────────────────────────────────────
 # docs/m4-plan.md §4.4 item 4, restated here because a decision made mid-incident
 # is how bad calls get made:
@@ -122,6 +141,13 @@ main() {
   prev_digest="$(record_get PREVIOUS_IMAGE_DIGEST "$LEMDROP_RECORD_FILE")"
   prev_head="$(record_get PREVIOUS_ALEMBIC_HEAD "$LEMDROP_RECORD_FILE")"
   rollback_tag="$(record_get ROLLBACK_TAG "$LEMDROP_RECORD_FILE")"
+  # Absent on every record written before the key existed, and on every
+  # digest-bearing record by design — see the note on IMAGE_ID in
+  # scripts/lib/deploy-lib.sh. Used only as a cross-check below, never as a
+  # target: `record_get` returns empty when the key is absent or the value is,
+  # which is the correct reading for both.
+  local recorded_image_id
+  recorded_image_id="$(record_get IMAGE_ID "$LEMDROP_RECORD_FILE")"
 
   say "  RECORD SAYS"
   say "    currently deployed : ${cur_digest:-<unknown>} (revision ${cur_rev:-<unknown>}, head ${cur_head:-<unknown>})"
@@ -198,6 +224,7 @@ main() {
   # ── RESTORE ────────────────────────────────────────────────────────────────
   say "restoring $target …"
 
+  local restored_image_id=""    # the legacy path's only identity for what it restored
   if [ "$legacy" -eq 1 ]; then
     # Legacy: .env goes back to having NO API_IMAGE key, so compose resolves the
     # `lemondrop-api` name again — exactly the M3 wiring. Pointing API_IMAGE at
@@ -211,6 +238,30 @@ main() {
     docker tag "$target" lemondrop-api \
       || die "cannot re-tag $target as lemondrop-api (backup: $env_backup)"
     say "  re-tagged $target as lemondrop-api"
+
+    # Say WHICH BYTES those are, by image ID. A tag is a name; an image ID is the
+    # identity, and this is the only branch of this script where the target was
+    # never digest-verified — so naming the ID is what makes "I restored the
+    # right thing" a checkable statement rather than an assertion.
+    restored_image_id="$(docker image inspect -f '{{.Id}}' "$target" 2>/dev/null || true)"
+    say "  restored image id: ${restored_image_id:-<could not read>}"
+    if [ -n "$restored_image_id" ] && [ -z "$recorded_image_id" ]; then
+      say "  the record carries no IMAGE_ID to check that against (it names its"
+      say "  image by digest, or predates that key), so this is stated, not verified."
+    elif [ -n "$recorded_image_id" ]; then
+      if [ "$recorded_image_id" = "$restored_image_id" ]; then
+        say "  this is the image ID the adoption record pinned (${recorded_image_id})."
+      else
+        say ""
+        say "⚠️  IMAGE ID MISMATCH against the adoption record:"
+        say "    record says the deployed image was : ${recorded_image_id}"
+        say "    the rollback tag resolves to        : ${restored_image_id:-<unreadable>}"
+        say "    Continuing — a rollback is not the moment to stop — but the tag"
+        say "    and the record are describing different images. Re-adopt afterwards"
+        say "    with a database-verified revision."
+      fi
+    fi
+    say ""
     if grep -q '^API_IMAGE=' "$LEMDROP_APP_DIR/.env"; then
       # Remove the key rather than blanking it: an empty API_IMAGE is a
       # different thing from an absent one, and compose's `:-` treats them the
@@ -299,7 +350,8 @@ main() {
       say "        record carried no head for it. The record's ALEMBIC_HEAD is"
       say "        left EMPTY on purpose: a baseline this script cannot verify"
       say "        is not a baseline. scripts/deploy.sh will refuse against it"
-      say "        until an operator runs --adopt-current on the restored stack."
+      say "        until an operator runs --adopt-current <db-verified-alembic-revision>"
+      say "        on the restored stack."
     elif [ "$prev_head" != "$label_head" ]; then
       say ""
       say "⚠️  SCHEMA DISAGREEMENT between the record and the target image:"
@@ -357,20 +409,36 @@ main() {
       say "        is, is missing. scripts/verify-deployment.sh will report this."
     fi
   fi
-  write_record "$LEMDROP_RECORD_FILE" \
-    "RECORD_VERSION=1" \
-    "REVISION=${prev_rev}" \
-    "SOURCE_REVISION=${prev_rev}" \
-    "IMAGE_DIGEST=${digests_prev}" \
-    "ALEMBIC_HEAD=${prev_head}" \
-    "DEPLOYED_AT_UTC=$(date -u +%FT%TZ) (rolled back by scripts/rollback.sh)" \
-    "DEPLOYED_BY=${SUDO_USER:-${USER:-unknown}}" \
-    "VERIFICATION=PASS" \
-    "VERIFIED_AT_UTC=$(date -u +%FT%TZ)" \
-    "ROLLBACK_TAG=" \
-    "PREVIOUS_REVISION=" \
-    "PREVIOUS_IMAGE_DIGEST=" \
-    "PREVIOUS_ALEMBIC_HEAD=" \
+
+  # IMAGE_ID is written for exactly the records that have no digest to name the
+  # image with — see the note in scripts/lib/deploy-lib.sh. On the legacy path
+  # that is every record, and without it the rewritten record would describe a
+  # deployment it cannot identify at all: no digest, and on an unlabelled image
+  # no revision either.
+  local -a kv=(
+    "RECORD_VERSION=1"
+    "REVISION=${prev_rev}"
+    "SOURCE_REVISION=${prev_rev}"
+    "IMAGE_DIGEST=${digests_prev}"
+  )
+  if [ -z "$digests_prev" ]; then
+    if [ -z "$restored_image_id" ]; then
+      restored_image_id="$(docker image inspect -f '{{.Id}}' "$target" 2>/dev/null || true)"
+    fi
+    kv+=("IMAGE_ID=${restored_image_id}")
+  fi
+  kv+=(
+    "ALEMBIC_HEAD=${prev_head}"
+    "DEPLOYED_AT_UTC=$(date -u +%FT%TZ) (rolled back by scripts/rollback.sh)"
+    "DEPLOYED_BY=${SUDO_USER:-${USER:-unknown}}"
+    "VERIFICATION=PASS"
+    "VERIFIED_AT_UTC=$(date -u +%FT%TZ)"
+    "ROLLBACK_TAG="
+    "PREVIOUS_REVISION="
+    "PREVIOUS_IMAGE_DIGEST="
+    "PREVIOUS_ALEMBIC_HEAD="
+  )
+  write_record "$LEMDROP_RECORD_FILE" "${kv[@]}" \
     || die "the rollback WORKED and the record could not be updated. The service is correct; the record is stale. Do not delete it — reconcile it by hand."
 
   say ""

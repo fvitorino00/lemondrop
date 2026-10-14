@@ -3,7 +3,7 @@
 # lemondrop — deploy a published api image to THIS host. (M4 Stage 5)
 #
 #   sudo ./scripts/deploy.sh <registry>/<repo>@sha256:<64-hex> [source-git-revision]
-#   sudo ./scripts/deploy.sh --adopt-current
+#   sudo ./scripts/deploy.sh --adopt-current <database-verified-alembic-revision>
 #
 # ── WHAT THIS REPLACES ────────────────────────────────────────────────────────
 # Boot-time deployment: `git clone` at branch tip, then `docker compose up
@@ -76,7 +76,7 @@ usage() {
   cat <<'EOF'
 Usage:
   deploy.sh <registry>/<repository>@sha256:<64-hex-digest> [source-git-revision]
-  deploy.sh --adopt-current
+  deploy.sh --adopt-current <database-verified-alembic-revision>
 
 Deploys a published, tested api image to this host and records what it deployed.
 
@@ -100,12 +100,28 @@ Deploys a published, tested api image to this host and records what it deployed.
                       picking one. That check is worth more than the argument's
                       disappearance.
 
-  --adopt-current     Write an initial revision record describing what is
+  --adopt-current <database-verified-alembic-revision>
+                      Write an initial revision record describing what is
                       running RIGHT NOW, changing nothing. For the one-time
                       M3 -> M4 transition on a host that has never had a
                       record. Refuses if a record already exists. This is not a
                       way to skip the schema check: there is no comparison to
                       skip when there is no baseline. See adopt_current() below.
+
+                      <database-verified-alembic-revision> is REQUIRED, with no
+                      default and no fallback — running this without it refuses.
+                      It is the alembic revision actually at the RDS instance,
+                      as read out of band (see api/alembic/README.md), because
+                      that is the number every later deploy's fail-closed schema
+                      gate is measured against. This host cannot read it: the
+                      EC2 role holds the application secret only and lemondrop_app
+                      has no DDL rights (infra/iam.tf). It is NOT taken from the
+                      git tree — the checkout is routinely AHEAD of the database
+                      or behind it, and either way it answers a different
+                      question ("what does this code expect?") than the one the
+                      record means ("what is the database at?"). An image's
+                      org.lemondrop.alembic-head label is not a substitute either
+                      and is not used as one: it says what the image EXPECTS.
 
 Only the `api` service is recreated. The embedder, the reranker, their loaded
 models and the database are not touched.
@@ -335,7 +351,7 @@ schema_gate() {
     say "schema gate: no usable baseline. Deploying without one would mean"
     say "  deploying without knowing what the database currently is."
     say "  If this host has never been deployed to, run:"
-    say "      scripts/deploy.sh --adopt-current"
+    say "      scripts/deploy.sh --adopt-current <db-verified-alembic-revision>"
     say "  once, by hand, having looked at what it reports."
     return 1
   fi
@@ -376,7 +392,8 @@ schema_gate() {
   say "       workstation — see api/alembic/README.md. Never from EC2."
   say "       (Whichever direction this is: a target BEHIND the recorded head"
   say "       means the database has moved on and this image is too old.)"
-  say "    3. Re-run scripts/deploy.sh --adopt-current to record the new"
+  say "    3. Re-run scripts/deploy.sh --adopt-current <the new head you just"
+  say "       applied to the database, verified out of band> to record the new"
   say "       baseline, then deploy."
   say "    4. Check whether '$recorded_head' -> '$target_head' is backward"
   say "       compatible BEFORE assuming a rollback to '$recorded_head' is still"
@@ -388,6 +405,88 @@ schema_gate() {
   return 1
 }
 
+# Is this string shaped like something alembic could call a revision?
+#
+# SHAPE ONLY, and the omission is deliberate: the value is NOT looked up in the
+# checkout. The entire reason this argument exists is that the answer comes from
+# the database, and the database is frequently not what the tree says — a
+# migration applied out of band with the RDS master credential is the normal way
+# this host's schema moves, and boot.sh clones --depth 1 of whatever main was at
+# boot. A checkout that could confirm the value would be a checkout that could
+# contradict it, which is the confusion this argument was added to remove.
+#
+# What IS rejected is anything that could not be a revision id at all, plus the
+# three symbolic names alembic itself reserves. A value that survives this is not
+# proven correct — nothing on this host can prove that — it is merely not
+# malformed, and the record says which of the two it is.
+validate_alembic_revision_id() {
+  local id="${1-}"
+
+  if [ -z "$id" ]; then
+    say ""
+    say "refusing: no alembic revision was given."
+    say "  --adopt-current requires the revision the DATABASE is at, read out of"
+    say "  band, because this host cannot read it: the EC2 role holds the"
+    say "  application secret only and lemondrop_app has no DDL rights"
+    say "  (infra/iam.tf)."
+    say ""
+    say "  Read it from the RDS instance (api/alembic/README.md) and pass it:"
+    say "    scripts/deploy.sh --adopt-current <alembic-revision>"
+    say ""
+    say "  It is deliberately NOT read from the git tree: the checkout answers"
+    say "  'what schema does this code expect', and this argument is 'what"
+    say "  schema is the database at'. Those differ whenever a migration has been"
+    say "  applied out of band, which is the normal way this host's schema moves."
+    return 1
+  fi
+
+  if [ "${#id}" -gt 64 ]; then
+    say ""
+    say "refusing: '${id}' is ${#id} characters long."
+    say "  An alembic revision identifier is a short opaque string. A value this"
+    say "  long is a paste of something else — a sentence, a command, a URL."
+    return 1
+  fi
+
+  # Identifier characters only. This is what rejects whitespace (which is what
+  # would otherwise end up inside the record and make a later reader choke on it),
+  # shell metacharacters, path separators and a quoted string pasted whole.
+  case "$id" in
+    *[!A-Za-z0-9._-]*)
+      say ""
+      say "refusing: '${id}' is not a plausible alembic revision identifier."
+      say "  Expected letters, digits, '.', '_' and '-' only, up to 64 characters."
+      say "  Got: $(printf '%s' "$id" | tr -c '[:print:]' '?')"
+      return 1 ;;
+  esac
+
+  # Must BEGIN with an alphanumeric. A leading '-', '.' or '_' is not a revision
+  # id but is exactly the shape of a CLI flag, a path fragment or a placeholder
+  # someone typed to mean "no value" — and all three would otherwise pass a
+  # character-class check.
+  case "$id" in
+    [A-Za-z0-9]*) : ;;
+    *)
+      say ""
+      say "refusing: '${id}' does not start with a letter or a digit."
+      say "  An alembic revision identifier starts with an alphanumeric character."
+      return 1 ;;
+  esac
+
+  # alembic's own symbolic names. They are not revision ids, and writing one into
+  # the baseline would be a value no migration can ever be compared against.
+  case "$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')" in
+    head|heads|base)
+      say ""
+      say "refusing: '${id}' is an alembic symbolic name, not a revision id."
+      say "  'head', 'heads' and 'base' move as the history moves. The baseline"
+      say "  has to be a value that means one specific schema."
+      return 1 ;;
+  esac
+
+  return 0
+}
+
 # --adopt-current. Records what is running now, and changes nothing at all.
 #
 # This exists because the very first deployment on an existing M3 host has no
@@ -395,12 +494,49 @@ schema_gate() {
 # the database is at". The alternatives were to refuse forever, or to invent one.
 # Inventing one is wrong; the operator looks, confirms, and writes down what is
 # true.
+#
+# ── TWO FACTS, AND NEITHER OF THEM IS GUESSED ──────────────────────────────────
+#
+#   ALEMBIC_HEAD   comes from the OPERATOR, who read it out of the database with
+#                  a credential this host does not have. Mandatory argument, no
+#                  default, no derivation from git. The database is the
+#                  authority: it is what every later deploy's schema gate
+#                  compares against, so anything the tree says about it is a
+#                  different fact, not a fallback for it.
+#
+#   REVISION       comes from the IMAGE, if the image can say. When it cannot,
+#                  the record says so — by carrying no revision — rather than
+#                  carrying the checkout's HEAD. The checkout is what boot.sh
+#                  last cloned; on a host whose checkout has moved since the
+#                  image was built, HEAD is a statement about the tree on disk,
+#                  not about the bytes that are running, and recording it would
+#                  assert a provenance nobody established. An unknown revision is
+#                  a fact a reader can act on. An invented one is not.
+#
+# WHY THIS FUNCTION NO LONGER CALLS `resolve_deploy_facts`. It used to, with
+# `git rev-parse HEAD` in the operator-argument slot. That was wrong twice over:
+# for an unlabelled image it fed the checkout in as if it were evidence, and for
+# a labelled one it made the checkout a COMPETING assertion, so a host whose
+# checkout was ahead of the image it was running got a PROVENANCE CONFLICT
+# refusal — a contradiction manufactured out of a number that was never a claim
+# about the image. Adoption records what is RUNNING; a deploy resolves what is
+# ABOUT TO RUN. Those are different questions and they now have different code.
+
 adopt_current() {
+  local db_head="${1-}"
   say "── adopting the current state as the first recorded deployment ──"
   if [ -f "$LEMDROP_RECORD_FILE" ]; then
     say "REFUSING: a record already exists at $LEMDROP_RECORD_FILE."
     say "  Adopting over a real record would destroy the rollback point it holds."
     say "  To deploy a new revision, run deploy.sh <digest> <source-revision>."
+    return "$EX_REFUSED"
+  fi
+
+  # Validated BEFORE anything is read from docker, so a mistyped argument costs a
+  # message and not a look at the host.
+  if ! validate_alembic_revision_id "$db_head"; then
+    say ""
+    say "NOT ADOPTED. Nothing has been changed."
     return "$EX_REFUSED"
   fi
 
@@ -416,74 +552,123 @@ adopt_current() {
     return "$EX_REFUSED"
   fi
 
-  local digest
-  digest="$(image_repo_digests "$image_id" | head -n 1)"
-  [ -n "$digest" ] || digest="unrecorded-local-image (${image_id})"
+  # ── WHAT THE IMAGE SAYS ABOUT ITSELF ───────────────────────────────────────
+  # Read, never derived. A labelled image is authoritative about what it is and
+  # its label is used as it stands; an unlabelled image is recorded as unlabelled.
+  #
+  # NOTHING IS SUBSTITUTED FOR A MISSING LABEL. Not the checkout's HEAD, not a
+  # timestamp, not a guess: an image with no org.opencontainers.image.revision
+  # genuinely does not carry its provenance, and a record that says so is a record
+  # a reader can reason about. `scripts/verify-deployment.sh` reports it as
+  # PROVENANCE UNKNOWN, and `scripts/deploy.sh` treats the next deploy's own
+  # labels as the first real provenance this host will have.
+  local rev="" rev_source="" label_rev
+  label_rev="$(image_source_revision "$image_id")"
+  if [ -n "$label_rev" ]; then
+    rev="$label_rev"
+    rev_source="image-label (${LABEL_REVISION})"
+  else
+    rev=""
+    rev_source="UNKNOWN — the image carries no ${LABEL_REVISION} label"
+  fi
 
-  # WHAT IS RUNNING is a property of the IMAGE, not of the checkout. The
-  # checkout's HEAD is whatever `boot.sh` last cloned, which is not
-  # necessarily the commit this image was built from — so where the image can
-  # describe itself, the image is asked first and the checkout is the fallback.
-  #
-  # The same resolution deploy.sh uses for a deploy, deliberately: adoption
-  # writes the baseline every later deploy is measured against, and a baseline
-  # derived by a different rule than the deploy path would produce a baseline
-  # that fails closed against a correct image.
-  #
-  # `git rev-parse HEAD` is the fallback argument. It is empty on a host that is
-  # not a checkout, which `resolve_deploy_facts` then refuses — the same refusal
-  # this function already made below when no head could be determined, so the
-  # adopt-only path has not changed shape, only gained a better source.
-  local rev head
-  rev="$(git -C "$LEMDROP_APP_DIR" rev-parse HEAD 2>/dev/null || echo '')"
-  if ! resolve_deploy_facts "$image_id" "$rev"; then
+  # ── THE IMAGE'S SCHEMA LABEL vs THE DATABASE ────────────────────────────────
+  # The label says what the code EXPECTS; the operator's value says what the
+  # database IS. When those differ, the api that is running right now expects a
+  # schema the database is not at — which is either an incident in progress or a
+  # database that has moved on without the host noticing, and neither is a state
+  # to write a schema baseline into. Refused, with both values named, because the
+  # alternative is a baseline that will make every later deploy compare against a
+  # contradiction.
+  local label_head
+  label_head="$(image_alembic_head "$image_id")"
+  if [ -n "$label_head" ] && [ "$label_head" != "$db_head" ]; then
     say ""
-    say "NOT ADOPTED: the running image cannot be described well enough to be"
-    say "  recorded, and a record of something half-known is worse than none —"
-    say "  every later deploy would use it as its schema baseline."
+    say "════════ SCHEMA DISAGREEMENT — REFUSING ════════"
+    say "  the running image's ${LABEL_ALEMBIC_HEAD} label says : ${label_head}"
+    say "  the revision you verified in the database says       : ${db_head}"
+    say ""
+    say "  The label is what this image's code EXPECTS. Your value is what the"
+    say "  database IS. They differ, so the api that is running right now expects"
+    say "  a schema it is not being served — which is either a migration applied"
+    say "  out of band without the api being redeployed, or the wrong revision"
+    say "  recorded."
+    say ""
+    say "  Re-read the revision from the database and check which of the two is"
+    say "  right before adopting. Nothing has been changed."
+    say "═════════════════════════════════════════════════════"
     return "$EX_REFUSED"
   fi
-  rev="$DEPLOY_SOURCE_REVISION"
-  head="$DEPLOY_ALEMBIC_HEAD"
+
+  # ── THE DIGEST, OR AN HONEST EMPTY ──────────────────────────────────────────
+  # An image built on this host has no RepoDigests and no registry reference to
+  # find. There was a placeholder here — the string "unrecorded-local-image
+  # (<id>)" — and it was wrong twice over: `verify-deployment.sh` compared it
+  # against a list of real digests, could never match, and reported DIVERGENCE on
+  # a host that was running exactly what the record described; and
+  # `rollback.sh` carried it into PREVIOUS_IMAGE_DIGEST, where
+  # `validate_image_digest` refused it for the whitespace in the parentheses —
+  # blocking the one operation that exists to recover this host.
+  #
+  # The empty field is correct and is load-bearing: it is what lets
+  # verify-deployment.sh report "nothing was compared" (UNPINNED (LEGACY)) rather
+  # than a permanent false alarm, and what lets rollback.sh take its documented
+  # legacy-tag path. IMAGE_ID carries the identity the digest cannot.
+  local digest
+  digest="$(image_repo_digests "$image_id" | head -n 1)"
 
   local verified=UNKNOWN
   say ""
   say "  container   : $cid"
   say "  image id    : $image_id"
-  say "  digest      : $digest"
-  say "  revision    : ${rev:-<none>}  (from: ${DEPLOY_REVISION_SOURCE})"
-  say "  alembic head: ${head:-<none>}  (from: ${DEPLOY_HEAD_SOURCE})"
+  if [ -n "$digest" ]; then
+    say "  digest      : $digest"
+  else
+    say "  digest      : <none> — this image was built on this host and has no"
+    say "                registry reference. IMAGE_DIGEST is recorded EMPTY, which"
+    say "                is what makes verify-deployment.sh report UNPINNED (LEGACY)"
+    say "                and what sends a later rollback down its legacy-tag path."
+    say "                The running bytes are identified by IMAGE_ID instead."
+  fi
+  say "  revision    : ${rev:-<unknown>}  (from: ${rev_source})"
+  if [ -z "$rev" ]; then
+    say "                Recorded as unknown, on purpose. The checkout's HEAD is"
+    say "                not evidence of what built these bytes: it is whatever"
+    say "                boot.sh last cloned, and on this host it is ahead of the"
+    say "                running image's own tree."
+  fi
+  say "  alembic head: $db_head  (from: operator-supplied, verified out-of-band"
+  say "                against the database — this script did not read the database"
+  say "                and cannot: lemondrop_app has no DDL rights, infra/iam.tf)"
   say ""
   say "  This is what is being recorded. Nothing was changed: adoption only"
   say "  reads. If any of it is wrong, fix the cause and delete the record — do"
   say "  not hand-edit it into something truer."
 
-  # An empty ALEMBIC_HEAD here is not a schema gate bypass — the gate refuses
-  # an empty baseline (see schema_gate), so a host adopted without a readable
-  # head simply cannot be deployed to until an operator records one. Failing to
-  # find out is worse than failing to deploy.
-  if [ -z "$head" ]; then
-    say ""
-    say "  NOT ADOPTED: no alembic head could be determined, and every future"
-    say "  deploy would refuse against an empty baseline. Fix the checkout or"
-    say "  record the head by hand, then re-run."
-    return "$EX_REFUSED"
+  local -a kv=(
+    "RECORD_VERSION=1"
+    "REVISION=${rev}"
+    "SOURCE_REVISION="
+    "IMAGE_DIGEST=${digest}"
+  )
+  if [ -z "$digest" ]; then
+    # Only when the digest cannot name the image. See the note on IMAGE_ID in
+    # scripts/lib/deploy-lib.sh: on a digest-bearing record the digest IS the
+    # identity, and a second identifier for the same bytes is a drift hazard.
+    kv+=("IMAGE_ID=${image_id}")
   fi
-
-  write_record "$LEMDROP_RECORD_FILE" \
-    "RECORD_VERSION=1" \
-    "REVISION=${rev}" \
-    "SOURCE_REVISION=" \
-    "IMAGE_DIGEST=${digest}" \
-    "ALEMBIC_HEAD=${head}" \
-    "DEPLOYED_AT_UTC=ADOPTED (not deployed by this script)" \
-    "DEPLOYED_BY=${SUDO_USER:-${USER:-unknown}}" \
-    "VERIFICATION=UNKNOWN" \
-    "VERIFIED_AT_UTC=" \
-    "ROLLBACK_TAG=" \
-    "PREVIOUS_REVISION=" \
-    "PREVIOUS_IMAGE_DIGEST=" \
-    "PREVIOUS_ALEMBIC_HEAD=" \
+  kv+=(
+    "ALEMBIC_HEAD=${db_head}"
+    "DEPLOYED_AT_UTC=ADOPTED (not deployed by this script)"
+    "DEPLOYED_BY=${SUDO_USER:-${USER:-unknown}}"
+    "VERIFICATION=${verified}"
+    "VERIFIED_AT_UTC="
+    "ROLLBACK_TAG="
+    "PREVIOUS_REVISION="
+    "PREVIOUS_IMAGE_DIGEST="
+    "PREVIOUS_ALEMBIC_HEAD="
+  )
+  write_record "$LEMDROP_RECORD_FILE" "${kv[@]}" \
     || fail "could not write $LEMDROP_RECORD_FILE"
 
   say ""
@@ -492,7 +677,7 @@ adopt_current() {
 }
 
 main() {
-  local target="" source_rev=""
+  local target="" source_rev="" adopt_head=""
 
   case "${1-}" in
     -h|--help) usage; exit "$EX_OK" ;;
@@ -505,7 +690,20 @@ main() {
       usage
       exit "$EX_REFUSED" ;;
     --adopt-current)
-      [ $# -eq 1 ] || { usage; fail "--adopt-current takes no other arguments." "$EX_REFUSED"; }
+      # 1 argument is a refusal, not a default. The baseline alembic head has no
+      # derivable source on this host — see validate_alembic_revision_id — so
+      # there is nothing to fall back to, and exiting 0 here would leave the
+      # operator believing a baseline was written when none was.
+      case $# in
+        1)
+          say "refusing: --adopt-current requires the database-verified alembic revision."
+          usage
+          exit "$EX_REFUSED" ;;
+        2) adopt_head="$2" ;;
+        *)
+          usage
+          fail "--adopt-current takes one argument, the alembic revision the database is at (got $#)." "$EX_REFUSED" ;;
+      esac
       mkdir -p "$LEMDROP_STATE_DIR" || fail "cannot create $LEMDROP_STATE_DIR"
       acquire_lock || exit "$EX_LOCKED"
       # Explicit status capture rather than `adopt_current; exit $?`: under
@@ -514,7 +712,7 @@ main() {
       # whose control flow depends on that subtlety is a script nobody should
       # have to read twice.
       set +e
-      adopt_current
+      adopt_current "$adopt_head"
       local rc=$?
       set -e
       exit "$rc"
@@ -837,6 +1035,18 @@ main() {
 #    check is what turns "a reboot quietly reverted us" from an invisible event
 #    into a reported one. That second half is the whole reason the divergence
 #    check exists and the reason this comment is here.
+#
+# 4. THE FOUR FILES ARE ONE UNIT WHEN THE RECORD FORMAT CHANGES, and this
+#    version is such a change. `--adopt-current` now writes an `IMAGE_ID` key
+#    on records that carry no digest (see the note on that key in deploy-lib.sh).
+#    The key is deliberately NOT in the required-key tier, so every record that
+#    predates it still validates — but a record that CONTAINS it is refused by a
+#    reader whose `RECORD_KEYS_RE` predates it: the old `verify-deployment.sh`
+#    reports the record as MALFORMED and the old `rollback.sh` refuses outright.
+#    Measured, not assumed (see the harness case X1).
+#    So: deliver `deploy.sh`, `verify-deployment.sh`, `rollback.sh` AND
+#    `lib/deploy-lib.sh` together, in one operation, on every host. A partial
+#    delivery is worse than a late one.
 #
 # NOT WRITTEN HERE, ON PURPOSE: any SSM transport, any `aws ssm send-command`
 # wrapper, any CI job. Deploying this code to a host, and running it there, are
