@@ -268,7 +268,7 @@ jobs:
           source_url="${SERVER_URL}/${REPO_NAME}"
           # The full, unabbreviated commit. `github.sha` for a `push` to main is
           # the merge commit that was pushed; `GITHUB_SHA` is the same value by
-          # definition and is used here so this step has no `${{ }}` anywhere.
+          # definition and is used here so no expression syntax appears here.
           # An abbreviated sha would be a strictly worse label — several
           # repositories will grow commits sharing a short prefix, and an
           # unresolvable "which tree is this?" is the problem labels exist to
