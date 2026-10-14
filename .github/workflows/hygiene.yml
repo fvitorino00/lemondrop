@@ -584,7 +584,7 @@ jobs:
       - name: actionlint
         uses: docker://rhysd/actionlint:1.7.12
         with:
-          args: -no-color -ignore 'SC2016'
+          args: -no-color -ignore SC2016
 
   # ── SCOPE: WHY `-ignore 'SC2016'` AND NOT `-shellcheck=` ────────────────────
   # This is the one judgement call in this job, so it is recorded here rather
