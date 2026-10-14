@@ -311,7 +311,31 @@ services:
     build: ./api
     # Name the built image so it is identifiable in `docker images` and
     # referenceable by name rather than only by this project.
-    image: lemondrop-api
+    #
+    # ── WHY THIS IS PARAMETERISED (M4 Stage 4) ─────────────────────────────────
+    # `${API_IMAGE:-lemondrop-api}` is the M3 behaviour, EXACTLY, when API_IMAGE
+    # is unset: the `:-` default is the literal string this line used to hold,
+    # so every existing workflow — `docker compose up --build` on a developer's
+    # machine, the M3 verification runs, the boot script — resolves to exactly
+    # the same image name it always did. Nothing about M3 changes.
+    #
+    # Its purpose is Stage 5, and it is added here only so Stage 5 can exist.
+    # Today the only value that can ever resolve is `lemondrop-api`, because
+    # nothing in this repository sets API_IMAGE. When Stage 5 deploys an image
+    # that CI published to GHCR, it exports
+    # `API_IMAGE=ghcr.io/<owner>/lemondrop-api@sha256:<manifest digest>` —
+    # the DIGEST, never the `:main` tag and never the `:sha` tag — so that two
+    # deploys of "the same" tag cannot resolve to different bytes. See the SHA
+    # tag discussion in .github/workflows/release.yml: a tag is a mutable
+    # pointer, and GHCR does not enforce immutability on one.
+    #
+    # This line changes NOTHING about the build. `build: ./api` above is
+    # untouched, so with no API_IMAGE set the image is still built from source
+    # exactly as before; the parameter only decides what the built image is
+    # CALLED. Stage 5 will need a deploy path that does not rebuild at all
+    # (`docker compose up --no-build`), and that is a Stage 5 decision, not one
+    # made here. Nothing is deployed by this change.
+    image: ${API_IMAGE:-lemondrop-api}
 
     # The only `ports:` key in this file. Host side from .env so the door can be
     # moved without editing this file; container side from .env to match the port

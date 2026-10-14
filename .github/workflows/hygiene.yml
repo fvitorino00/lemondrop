@@ -20,12 +20,39 @@ name: hygiene
 # Step 1 catches the wrong path. Step 2 catches the innocuous path. A `.md` full
 # of AWS IAM prose passes step 1 and can still fail step 2.
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TRIGGERS — and why `push: branches: [main]` is GONE
+# ─────────────────────────────────────────────────────────────────────────────
+# This workflow is a REUSABLE WORKFLOW (`workflow_call`) as well as a directly
+# triggered one. It runs, unchanged and in full, in two situations:
+#
+#   1. ON A PULL REQUEST — `pull_request:`, exactly as it always has. The gates
+#      in this file are what review depends on, and they must keep running on
+#      every PR with no change to their behaviour whatsoever.
+#   2. ON A PUSH TO `main` — but INDIRECTLY. `.github/workflows/release.yml`
+#      triggers on `push` to `main` and calls THIS file with `uses:`. The gates
+#      run, in the same run, as `state-leak-gate` and `terraform-validate`.
+#
+# WHY THE DIRECT `push: branches: [main]` TRIGGER WAS REMOVED
+# Keeping both triggers is not "belt and braces", it is a duplicated run. With
+# `push: main` still declared here, every merge to main produced:
+#     (a) a full `hygiene` run triggered directly by the push, AND
+#     (b) a full `release` run whose `hygiene` job calls this file again.
+# Two terraform validations, two state-leak scans, two sets of logs to read, and
+# — far worse — two independent verdicts about the SAME revision. When they
+# disagree (a flaky provider download, a cancelled run) there is no principled
+# way to say which one gated the published image, and the answer would be
+# "whichever one finished last", which is not a rule.
+# Removing the push trigger makes the run count EXACTLY ONE per event. The
+# gates did not become optional on `main`; they became part of the release
+# pipeline, where `needs:` makes them blocking rather than advisory.
+#
+# `workflow_dispatch:` is kept: a human must be able to run these gates by hand,
+# and release.yml's manual trigger cannot be the only way to re-check `main`.
 on:
-  push:
-    branches:
-      - main
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 # Minimal by construction. This workflow reads the repository and nothing else.
 # `packages: write` and `id-token: write` belong to the image-build/publish

@@ -1,0 +1,92 @@
+# api/.dockerignore — defence in depth, NOT the primary control.
+#
+# ── WHAT THE PRIMARY CONTROL ACTUALLY IS ─────────────────────────────────────
+# The build CONTEXT. `.github/workflows/release.yml` builds with `context: ./api`,
+# and a Docker build cannot COPY a byte that the context does not contain. So
+# `models/` (304 MB of .gguf), `.git/`, `.terraform/`, `.env`, `crash.log` and
+# everything else at the REPOSITORY ROOT are already unreachable from this
+# Dockerfile by construction. That is the real boundary, and it is a property of
+# the context path, not of any list in this file.
+#
+# ── WHY THIS FILE EXISTS ANYWAY ──────────────────────────────────────────────
+# Because the context is a property of the BUILD INVOCATION, not of this
+# directory. The context is written in one place — release.yml's build job — and
+# the Dockerfile cannot enforce it. Change that one line to `context: .` and
+# every forbidden artifact in the repository becomes COPY-able in a single edit,
+# with no other file objecting.
+#
+# The concrete hole this closes TODAY, with no context change at all: the
+# Dockerfile does `COPY app/ ./app/`, so ANY `.env`, `*.pem`, `*.key`, `*.gguf`
+# or `.tfstate` dropped into `api/app/` — by a developer debugging locally, by a
+# stray editor backup, by a test fixture someone forgot to delete — is swept into
+# the image by that one line. This file makes that impossible regardless of what
+# the context is.
+#
+# It is a second line of defence behind the context, never in front of it. If
+# the context ever stops being `./api`, this file is what stands between the
+# repository's secrets and a published image — and the image-content gate
+# (`.github/workflows/image-content-gate.py`) is the third layer, which checks
+# the BUILT image rather than the context.
+#
+# ── WHY `**/` IS REPEATED ON EVERY PATTERN ───────────────────────────────────
+# Docker matches these patterns with `filepath.Match` semantics, where `*` does
+# NOT cross a path separator: `*.gguf` matches `/models/x.gguf` no more than it
+# matches `/app/deep/x.gguf`. Every pattern that must hold at any depth is
+# therefore written twice, once bare and once with the `**/` prefix. This is the
+# same basename-vs-full-path trap Stage 1's hygiene gate documents, and getting
+# it wrong is silent.
+#
+# ── `.env` IS ANCHORED EXACTLY, LIKE THE HYGIENE GATE'S ─────────────────────
+# `.env.example` is a committed, credential-free template and must keep being
+# COPY-able if a build ever wants it. Matching `.env*` would be the wrong rule.
+
+# ── Rule 1: forbidden names, mirroring the image-content gate exactly ────────
+.git
+**/.git
+*.gguf
+**/*.gguf
+*.tfstate
+**/*.tfstate
+*.tfstate.*
+**/*.tfstate.*
+.env
+**/.env
+*.pem
+**/*.pem
+*.key
+**/*.key
+crash.log
+**/crash.log
+
+# Terraform provider cache and state, which live at the repo root and could be
+# reached by any future edit that widens the context.
+.terraform
+**/.terraform
+
+# ── Build and interpreter residue ────────────────────────────────────────────
+# Not a secret class. These are artefacts of running tests on a workstation, and
+# they are currently being baked into the published image: `api/app/__pycache__`
+# exists on disk right now with CPython 3.14 bytecode in it, which this
+# python:3.12-slim image can never use and which would ship a second, stale
+# copy of every module alongside the real one.
+__pycache__
+**/__pycache__
+*.pyc
+**/*.pyc
+*.pyo
+**/*.pyo
+.pytest_cache
+**/.pytest_cache
+
+# Editor and OS droppings.
+.DS_Store
+**/.DS_Store
+*.swp
+**/*.swp
+*~
+
+# ── WHAT IS DELIBERATELY NOT EXCLUDED ────────────────────────────────────────
+# `app/` itself, `requirements.txt`, `Dockerfile`, `alembic/`, `alembic.ini` and
+# `tests/` are all still COPY-able. Nothing in this file may make the image
+# unbuildable, and an exclusion that broke `COPY requirements.txt ./` would trade
+# a leak for an outage.
