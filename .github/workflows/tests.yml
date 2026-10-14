@@ -518,6 +518,53 @@ jobs:
           sys.exit(1 if errors else 0)
           PY
 
+      # ── M4 STAGE 6: THE DIAGNOSTIC SCRIPTS ────────────────────────────────────
+      # Syntax and self-test for `scripts/diagnose.sh` and `scripts/diagnose.ps1`,
+      # then both of their test drivers, then the cross-language heading-parity
+      # check between the two reports.
+      #
+      # WHY THESE STEPS ARE IN *THIS* JOB AND NOT A NEW ONE. This job already
+      # declares itself the place that needs no services, and the diagnostics need
+      # exactly none: the Bash half substitutes `curl` and `docker` on PATH, the
+      # PowerShell half reads fixture files through LEMDROP_DIAGNOSE_HTTP_STUB.
+      # No daemon, no network, no AWS, no root, no pytest collection. A separate
+      # job would have restated a property this one already has.
+      #
+      # WHY THEY ARE HERE AT ALL, which is the narrower claim §10 item 1 records:
+      # until Stage 6 nothing in CI touched `scripts/**`, so the deploy tooling's
+      # control flow was unexercised. That is still true of deploy.sh,
+      # rollback.sh, verify-deployment.sh and deploy-lib.sh — these two steps
+      # change nothing about them, because diagnose.sh only SOURCES deploy-lib.sh
+      # for `say`, `api_base_url` and the EX_* constants, and its own test never
+      # runs it against a host. What these steps cover is diagnose.sh and
+      # diagnose.ps1, which are now executed.
+      #
+      # `pwsh` is preinstalled on ubuntu-latest. It is PowerShell 7; Windows
+      # PowerShell 5.1 cannot run on Linux at all, so nothing here claims 5.1 was
+      # verified. See the header of scripts/diagnose.ps1.
+      - name: diagnostics — syntax and self-test (both languages)
+        run: |
+          set -euo pipefail
+          bash -n scripts/diagnose.sh
+          ./scripts/diagnose.sh --selftest
+          pwsh -NoProfile -Command '
+            $errs = $null; $toks = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              "scripts/diagnose.ps1", [ref]$toks, [ref]$errs) | Out-Null
+            if ($errs) {
+              $errs | ForEach-Object { "::error title=diagnose.ps1 parse::$($_.Extent.StartLineNumber): $($_.Message)" }
+              exit 1
+            }
+            "diagnose.ps1: parses clean"'
+          pwsh -NoProfile -File scripts/diagnose.ps1 -SelfTest
+
+      - name: diagnostics — stubbed end-to-end, both languages, and heading parity
+        run: |
+          set -euo pipefail
+          ./scripts/test-diagnose.sh
+          pwsh -NoProfile -File scripts/test-diagnose.ps1
+          ./scripts/test-diagnose-parity.sh
+
   # ═════════════════════════════════════════════════════════════════════════
   t1-service-free:
     name: T1 (service-free)

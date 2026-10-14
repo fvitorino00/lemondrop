@@ -13,7 +13,7 @@ Every claim in this document is either (a) read directly out of a file in this r
 
 ### 0.1 What the deploy tooling is
 
-Three bash scripts, plus one shared library:
+Three bash scripts, plus one shared library, plus the two Stage 6 diagnostic scripts:
 
 | File | Role |
 |---|---|
@@ -21,8 +21,13 @@ Three bash scripts, plus one shared library:
 | `scripts/rollback.sh` | Returns the host to the previously recorded deployment. Takes no arguments. |
 | `scripts/verify-deployment.sh` | Read-only. Reports what is running and whether it matches the record. |
 | `scripts/lib/deploy-lib.sh` | Sourced by all three. Image-reference validation, the record format, the HTTP probes, the lock. |
+| `scripts/diagnose.sh` | **Read-only diagnostic (Linux/WSL).** Service status from Docker, HTTP health, timestamped report. |
+| `scripts/diagnose.ps1` | **Read-only diagnostic (Windows).** HTTP health only — deliberately no Docker — timestamped report. |
+| `scripts/test-diagnose.sh`, `scripts/test-diagnose.ps1`, `scripts/test-diagnose-parity.sh` | The diagnostics' own tests. No framework, no services, no network. |
 
 The scripts run **on the EC2 host**, not in CI. That is deliberate: `scripts/deploy.sh`, in the block headed `── WHY THIS SCRIPT RUNS ON THE HOST AND NOT IN CI ──` — "because a deployment is a decision, and CI turning 'we deployed' into 'it deployed' makes the first bad deploy invisible." A human runs it, having looked at what is being deployed.
+
+The two `diagnose` scripts are the exception to "runs on the host", and each runs where its operator is: `diagnose.sh` on the host (it needs `docker`), `diagnose.ps1` on a Windows workstation (it has no Docker there and reports the application's own view instead). Both are also executed by the `tier-classification` job in `tests.yml`, against stubs — §10 item 1 records exactly what that does and does not prove.
 
 ### 0.2 The paths that matter
 
@@ -33,6 +38,8 @@ Defaults from `scripts/lib/deploy-lib.sh`, the `readonly LEMDROP_*` defaults at 
 | Application checkout | `/opt/lemondrop` |
 | State directory | `/var/lib/lemondrop` |
 | Revision record | `/var/lib/lemondrop/deployed-revision.env` |
+| **Diagnostic reports (Bash)** | `/var/lib/lemondrop/diagnostics/` — override with `--report-dir` |
+| **Diagnostic reports (PowerShell)** | `%LOCALAPPDATA%\lemondrop\diagnostics\` — override with `-ReportDir` |
 | Deployment lock | `/var/lock/lemondrop-deploy.lock` |
 | Deploy log | `/var/log/lemondrop-deploy.log` |
 | Boot log | `/var/log/lemondrop-boot.log` |
@@ -44,6 +51,8 @@ Defaults from `scripts/lib/deploy-lib.sh`, the `readonly LEMDROP_*` defaults at 
 | Lock wait timeout | 300 s |
 
 The record lives **outside** the checkout on purpose (in `deploy-lib.sh`, under `WHY THE RECORD LIVES OUTSIDE THE CHECKOUT`). Nothing in the deploy path writes inside `/opt/lemondrop`.
+
+The diagnostic reports live outside the checkout **for the same reason**, and both scripts refuse a report directory inside it rather than quietly writing there. A report is run-specific output like the record — it is worthless in a pull request, it is deleted by the next `git clean -fdx`, and inside the tree it is exactly the untracked-file clutter the record's header describes.
 
 ### 0.3 Exit codes
 
@@ -1270,7 +1279,14 @@ If `build:` is removed and `.env` still said `API_IMAGE=lemondrop-api`, boot ste
 
 This codebase's value is that its documentation is trustworthy. That means the limitations have to be as prominent as the features.
 
-**1. These three scripts have never been executed against a host with a real Docker daemon.** I searched the whole repository: **no test file references `deploy.sh`, `rollback.sh`, `verify-deployment.sh` or `deploy-lib.sh`**, and no workflow in `.github/workflows/` invokes them. Every `docker pull`, `docker tag`, `docker compose up`, `docker inspect` and `docker manifest inspect` call in these paths is therefore **unexercised in CI and unexercised on a live host**. The control flow, the argument handling, the record format and the HTTP probes have been read, and the logic is defensible — but the destructive paths are unproven. **The first deploy onto a real host is an experiment. Do it on a throwaway host.**
+**1. These three scripts have never been executed against a host with a real Docker daemon.** **No test file invokes `deploy.sh`, `rollback.sh` or `verify-deployment.sh`**, and no workflow in `.github/workflows/` runs them. Every `docker pull`, `docker tag`, `docker compose up`, `docker inspect` and `docker manifest inspect` call in these paths is therefore **unexercised in CI and unexercised on a live host**. The control flow, the argument handling, the record format and the HTTP probes have been read, and the logic is defensible — but the destructive paths are unproven. **The first deploy onto a real host is an experiment. Do it on a throwaway host.**
+
+    **⚠️ NARROWED BY STAGE 6, TWICE OVER. This item's evidence sentence was "**no test file references** `deploy.sh`, `rollback.sh`, `verify-deployment.sh` or `deploy-lib.sh`". Both halves of that are now wrong, in different ways, so it is restated above and the corrections are recorded here rather than left to rot.**
+
+    - **THE WORDS NOW APPEAR; THE SCRIPTS ARE STILL NOT INVOKED.** `scripts/test-diagnose.sh` greps `diagnose.sh`'s source for the strings `deploy.sh` / `rollback.sh` / `verify-deployment.sh` — an assertion that it invokes none of them — and both diagnostics' reports *name* `verify-deployment.sh` in the line that says the comparison is not performed. So `grep` for those filenames across tracked files now returns hits. What is unchanged, and what the item actually asserts, is that **nothing runs them**.
+    - **`deploy-lib.sh` IS NOW EXERCISED, PARTIALLY.** `scripts/diagnose.sh` sources it (the same three lines `verify-deployment.sh` uses) and the `tier-classification` job in `tests.yml` runs that on every pull request, so its `LEMDROP_*` defaults, its `readonly EX_*` constants and its `log`/`say`/`die` definitions are now **loaded** in CI. The three functions `diagnose.sh` actually *calls* — `say`, `api_base_url`, and `env_get` through `api_base_url` — **execute** too.
+    - **EVERYTHING ELSE IN IT IS STILL UNEXERCISED, and that is the whole point of the item.** `deploy.sh`, `rollback.sh` and `verify-deployment.sh` are untouched by CI. And no *function body* in `deploy-lib.sh` that touches Docker, the lock, the record or the network has been called: not `known_good_search`, `verify_stack`, `wait_for_ready`, `restore_previous`, `env_restore`, `api_container_id` or `record_is_valid`. Sourcing a file defines functions; it does not run them.
+    - **NOT CLAIMED BY STAGE 6:** none of it exercises a Docker daemon, a real `/health/ready`, or Windows PowerShell 5.1. The `diagnose.sh` tests substitute a stub `curl` and a stub `docker` on `PATH`; the `diagnose.ps1` tests substitute fixture files through `LEMDROP_DIAGNOSE_HTTP_STUB`. The stubs make the scripts' *control flow* testable and nothing more — which is why this item survives Stage 6 rather than being withdrawn by it. `scripts/diagnose.ps1` is **executed on PowerShell 7.4.6 and written for 5.1; 5.1 cannot run on Linux and was not executed** — the header of that file says so, and nothing in this document should be read as having verified it.
 
 **2. Every destructive path is a code path nobody has watched fail.** Specifically unproven: that `restore_previous` actually restores a working service when compose fails mid-way; that `env_restore` succeeds when `.env` has been chmod-ed; that `flock` behaves as intended under SSM `SendCommand`'s process model; that the ERR trap fires on every failure it is supposed to.
 
@@ -1376,6 +1392,10 @@ Tick every box before touching anything. Each line is a fact you observed, not a
 # What is running?
 sudo /opt/lemondrop/scripts/verify-deployment.sh
 
+# Read-only diagnostic, on the host: containers + health + a timestamped report
+# in /var/lib/lemondrop/diagnostics/. Mutates nothing; runs no known-good search.
+sudo /opt/lemondrop/scripts/diagnose.sh [--base-url URL] [--report-dir DIR]
+
 # Deploy (one argument is enough on a labelled image; the 2nd cross-checks it — §4.4)
 sudo /opt/lemondrop/scripts/deploy.sh <registry>/<repo>@sha256:<64-hex> [<40-char-sha>]
 
@@ -1391,6 +1411,11 @@ sudo /opt/lemondrop/scripts/rollback.sh
 # The record
 sudo cat /var/lib/lemondrop/deployed-revision.env
 sudo grep '^IMAGE_DIGEST=\|^ALEMBIC_HEAD=\|^PREVIOUS_IMAGE_DIGEST=' /var/lib/lemondrop/deployed-revision.env
+
+# Read-only diagnostic, on a WINDOWS workstation. HTTP only — no Docker, because
+# the stack is not there. Writes to %LOCALAPPDATA%\lemondrop\diagnostics\.
+# §10 item 1: executed on PowerShell 7.4.6; written for 5.1; 5.1 NOT verified.
+powershell -NoProfile -File C:\path\to\lemondrop\scripts\diagnose.ps1 [-BaseUrl URL] [-ReportDir DIR]
 
 # Logs
 sudo tail -n 200 /var/log/lemondrop-deploy.log
