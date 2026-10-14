@@ -246,23 +246,194 @@ jobs:
         # Via `env:`, never `${{ }}` interpolated into the script body — an
         # expression pasted into a shell command is an injection seam, and this
         # value never needs to be one.
+        #
+        # SOURCE_URL is derived the same way REPOSITORY is, and for the same
+        # reason: it becomes `org.opencontainers.image.source` on the published
+        # image, which is a machine-readable pointer at the code an image came
+        # from. A hardcoded `https://github.com/fvitorino00/lemondrop` would be
+        # wrong the moment this repository is cloned by anyone else, and it would
+        # be wrong INSIDE the published artifact, where nobody would be left to
+        # notice and correct it. SERVER_URL rather than a literal scheme+host,
+        # because GitHub Enterprise Server has a different one.
         env:
           REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
           owner="$(printf '%s' "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')"
           repository="ghcr.io/${owner}/lemondrop-api"
           sha_tag="${repository}:${GITHUB_SHA}"
           main_tag="${repository}:main"
+          source_url="${SERVER_URL}/${REPO_NAME}"
+          # The full, unabbreviated commit. `github.sha` for a `push` to main is
+          # the merge commit that was pushed; `GITHUB_SHA` is the same value by
+          # definition and is used here so this step has no `${{ }}` anywhere.
+          # An abbreviated sha would be a strictly worse label — several
+          # repositories will grow commits sharing a short prefix, and an
+          # unresolvable "which tree is this?" is the problem labels exist to
+          # remove.
+          source_revision="${GITHUB_SHA}"
           {
             echo "repository=${repository}"
             echo "sha_tag=${sha_tag}"
             echo "main_tag=${main_tag}"
             echo "image=${sha_tag}"
+            echo "source_url=${source_url}"
+            echo "source_revision=${source_revision}"
           } >> "$GITHUB_OUTPUT"
-          echo "repository : ${repository}"
-          echo "sha tag    : ${sha_tag}"
-          echo "main tag   : ${main_tag}"
+          echo "repository      : ${repository}"
+          echo "sha tag         : ${sha_tag}"
+          echo "main tag        : ${main_tag}"
+          echo "source url      : ${source_url}"
+          echo "source revision : ${source_revision}"
+
+      # ── THE ALEMBIC SCHEMA HEAD, DERIVED AT BUILD TIME ─────────────────────
+      # ── WHY THIS STEP EXISTS, AND WHY IT IS NOT OPTIONAL ───────────────────
+      # scripts/deploy.sh has to answer one question before it will deploy
+      # anything: "does this image expect a database schema different from the
+      # one this host is already at?" It cannot ask the image (api/Dockerfile
+      # copies `app/` only, and alembic is deliberately absent from
+      # api/requirements.txt, so the image holds no migration tooling and no
+      # `alembic/versions/`), it cannot ask the database (this role has no DDL
+      # credential and must never have one — see infra/iam.tf), and it will not
+      # guess. So it falls back to reading the schema out of a named source
+      # revision's git tree, which means the operator has to NAME that revision
+      # on the command line.
+      #
+      # Labelling the image removes that requirement, and ONLY if the label is
+      # the real schema head. A hardcoded head is not a label, it is a stale
+      # constant that agrees with the image until the first migration lands and
+      # then fails closed forever, in a way nobody can see from the image.
+      # Hence: computed here, from this tree, by the migration tooling itself.
+      #
+      # ── WHY `alembic heads` AND NOT A REIMPLEMENTATION ──────────────────────
+      # The set of `revision` values minus the set of non-None `down_revision`
+      # values is a two-line `sed` pipeline, and it is what
+      # scripts/lib/deploy-lib.sh:alembic_head_at_revision does on the deploy
+      # host. It was not used here. Two reasons, and the first is the one that
+      # matters:
+      #
+      #   1. It is a reimplementation of alembic's graph walk, so it agrees with
+      #      alembic until it does not — a `down_revision` written as a tuple, a
+      #      `depends_on`, a merge migration, a `base` root. At which point the
+      #      label and the deploy host's answer are two different numbers for the
+      #      same tree, and the deploy refuses for a reason nobody can reconstruct.
+      #   2. `alembic heads` is the project's own tooling reading its own config
+      #      (api/alembic.ini), its own `script_location`, its own
+      #      `file_template`. It is also the command an operator runs to ask
+      #      this question by hand, so a label and a manual check cannot diverge
+      #      because they are not the same code path.
+      #
+      # It opens no database and does not run `env.py` — it walks the script
+      # directory — so no `ALMBIC_DATABASE_URL` is needed or consulted. Proven
+      # locally: `alembic -c api/alembic.ini heads` exits 0 on a tree whose only
+      # migration is `0001`.
+      #
+      # ── WHY NOT `-r api/requirements-dev.txt` ───────────────────────────────
+      # It would work, and it is the obvious thing to reach for. It also
+      # installs fastapi, uvicorn, httpx, pytest and requests to answer a
+      # question none of them participate in. Those five are ~15MB of download
+      # and a class of failure (a transitive resolution problem in a package the
+      # label does not depend on) that would break the release for a reason that
+      # has nothing to do with the image.
+      #
+      # So only what alembic needs is installed, at the SAME pins the repository
+      # already declares — and because a pin written twice is a pin that will
+      # drift, the first thing this step does is ASSERT that the pins it is
+      # about to use are still the pins in api/requirements-dev.txt and
+      # api/requirements.txt. If someone bumps alembic there and forgets this
+      # file, the release fails with a sentence about that, instead of quietly
+      # computing a head with a different version of the migration tooling than
+      # the one the project develops against.
+      #
+      # SQLAlchemy is installed because `import alembic` imports it — verified:
+      # `pip install --no-deps alembic` produces a ModuleNotFoundError before
+      # `heads` ever runs. Its version does not affect the answer (the command
+      # walks the script directory), but an unpinned transitive in a repository
+      # whose stated rule is "exact pins, no ranges, ever" is not acceptable
+      # just because it happens not to matter today.
+      #
+      # ── WHY INSTALLING ANYTHING HERE IS ACCEPTABLE ──────────────────────────
+      # This is a BUILD STEP on the RUNNER. The venv lives in a temp directory
+      # on the runner's filesystem and is thrown away; nothing from it enters
+      # the image, because api/Dockerfile installs api/requirements.txt and
+      # nothing else, and the build context is `./api`. The only thing that
+      # crosses from this step into the image is three strings, passed as
+      # `--label` metadata below. A build job having more Python available than
+      # the artifact it builds is the normal case, not a leak.
+      - name: resolve the alembic schema head
+        id: schema
+        # Via `env:`, never `${{ }}` in the script body — the same injection-seam
+        # rule the step above states.
+        env:
+          SOURCE_REVISION: ${{ steps.refs.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+
+          # ── THE PIN-DRIFT ASSERTION, FIRST ──────────────────────────────────
+          # Before the venv exists, so a drifted pin costs nothing.
+          grep -qE '^alembic==1\.20\.0$' api/requirements-dev.txt || {
+            echo "::error title=schema head::api/requirements-dev.txt no longer pins alembic==1.20.0; the pins this step installs are now a second, drifting copy of the same fact. Update them together."
+            exit 1
+          }
+          grep -qE '^SQLAlchemy(\[[^]]*\])?==2\.0\.54$' api/requirements.txt || {
+            echo "::error title=schema head::api/requirements.txt no longer pins SQLAlchemy==2.0.54; same drift problem as alembic above. Update them together."
+            exit 1
+          }
+
+          venv="$(mktemp -d)"
+          trap 'rm -rf "$venv"' EXIT
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --quiet --disable-pip-version-check \
+            "alembic==1.20.0" "SQLAlchemy==2.0.54"
+
+          # ── THE ANSWER, AND THE ASSERTION THAT MAKES IT AN ANSWER ───────────
+          # Every failure below is a build failure, not a warning. The whole
+          # point of this change is that a deploy host must not have to be told
+          # a schema head by a human; a build that quietly ships an image whose
+          # schema label is empty, or says "base", or is one of two heads of a
+          # branched history, reintroduces exactly the operator-supplied-argument
+          # problem this label exists to remove — with the extra damage of
+          # looking like it was solved.
+          heads_output="$("$venv/bin/alembic" -c api/alembic.ini heads 2>&1)" || {
+            echo "::error title=schema head::\`alembic -c api/alembic.ini heads\` failed; the alembic history of this tree could not be read."
+            printf '%s\n' "$heads_output"
+            exit 1
+          }
+          printf 'alembic heads : %s\n' "$heads_output"
+
+          # EXACTLY ONE head. Zero means the tree declares no migrations at all
+          # (an empty `api/alembic/versions/`) — verified against a real empty
+          # tree, where `alembic heads` prints nothing and exits 0, which is
+          # precisely why "exited 0" is not an assertion. More than one means a
+          # branched migration history, which has no single head to put in a
+          # label at all; both are refusals, and neither is a warning.
+          head_count="$(printf '%s\n' "$heads_output" | grep -c '(head)$' || true)"
+          if [ "$head_count" -ne 1 ]; then
+            echo "::error title=schema head::expected exactly 1 alembic head in this tree, found ${head_count}. A branched or empty migration history cannot be expressed as one label."
+            printf '%s\n' "$heads_output"
+            exit 1
+          fi
+
+          # Strip the ` (head)` suffix alembic prints, and reject anything that
+          # is not a single plausible revision identifier. This is the last
+          # chance to notice that the parsing — not alembic — is what went
+          # wrong.
+          alembic_head="$(printf '%s\n' "$heads_output" | sed -n 's/^\([A-Za-z0-9_.-]\{1,\}\) (head)$/\1/p' | head -n 1)"
+          case "$alembic_head" in
+            ''|base)
+              echo "::error title=schema head::the resolved alembic head is '${alembic_head:-<empty>}', which is not a real revision id."
+              exit 1 ;;
+          esac
+
+          echo "alembic_head=${alembic_head}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### schema head"
+            echo
+            echo "- source revision (\`org.opencontainers.image.revision\`): \`${SOURCE_REVISION}\`"
+            echo "- alembic head (\`org.lemondrop.alembic-head\`): \`${alembic_head}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: set up buildx
         uses: docker/setup-buildx-action@v3
@@ -287,6 +458,60 @@ jobs:
       # `models/`, `.git/`, `.terraform/` and the repository `.env` are outside
       # the context and are unreachable by any COPY. `api/.dockerignore` is the
       # second layer, covering a `.env` or key dropped into `api/app/`.
+      #
+      # ── THE LABELS ─────────────────────────────────────────────────────────
+      # Three strings. What each one is FOR is the whole content of this block,
+      # because the tempting mistake here is to squeeze two different facts into
+      # one label and let the deploy host work out which one it got.
+      #
+      # `org.opencontainers.image.revision` — PROVENANCE. Which commit's tree
+      # this image was built from. Standard, in the standard vocabulary, and
+      # derived from `github.sha`, never typed.
+      #
+      # `org.opencontainers.image.source` — the repository the code came from.
+      # Standard, and derived from `github.server_url` + `github.repository`
+      # rather than hardcoded, so a fork's published image points at the fork
+      # instead of at a URL that describes someone else's code.
+      #
+      # `org.lemondrop.alembic-head` — SCHEMA COMPATIBILITY. Which alembic
+      # revision's schema this image's code expects to find in the database.
+      #
+      # ── WHY THE SCHEMA LABEL IS NOT AN `org.opencontainers.*` ANNOTATION ────
+      # Because the git commit SHA IS NOT AN ALEMBIC REVISION, and every pair of
+      # those labels describes two independent facts:
+      #
+      #   * provenance answers "what code is this?" — a VCS identity, resolvable
+      #     in a browser, meaningful to a human reading a digest on a registry
+      #     page years later;
+      #   * schema compatibility answers "what table shape does this code need?"
+      #     — an identity in a SEPARATE versioning scheme, whose values are
+      #     chosen by migration authors and mean nothing whatsoever outside this
+      #     repository's `api/alembic/versions/`.
+      #
+      # A commit can ship without moving the head (a revert, a squashed branch, a
+      # README change) and a single commit can move the head more than once. So
+      # the mapping between the two is neither injective nor total, and any
+      # consumer that derives one from the other is deriving a guess. Both facts
+      # are therefore carried, and scripts/lib/deploy-lib.sh reads them as two
+      # separate things and refuses when they disagree.
+      #
+      # `org.opencontainers.image.version` is the specific trap avoided here. It
+      # is the conventional place for "the version of this software", it is what
+      # scanners and dashboards read, and a consumer seeing `0001` there would
+      # reasonably conclude that every `0002` is a release. This repository has
+      # no release numbering of its own and CI does not invent one, so writing a
+      # schema revision into the version field would be a claim about the
+      # software's identity that is not true. Hence a Lemondrop-specific key in
+      # Lemondrop's own namespace: unowned, unambiguous, and impossible to
+      # confuse with a standard annotation by a tool that only knows the
+      # standard ones.
+      #
+      # Labels are OCI image CONFIG metadata — plain strings in the config JSON,
+      # set by the builder and carried by `docker save`/`docker load` and by
+      # `docker push`. They are NOT attestations: `provenance: false` above is
+      # unaffected by this, and nothing here is a cryptographic claim. These are
+      # statements the builder makes, which is why the assertion step below
+      # checks that the builder actually made them.
       - name: build the image into the local daemon
         uses: docker/build-push-action@v6
         with:
@@ -296,6 +521,99 @@ jobs:
           push: false
           provenance: false
           tags: ${{ steps.refs.outputs.image }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.refs.outputs.source_revision }}
+            org.opencontainers.image.source=${{ steps.refs.outputs.source_url }}
+            org.lemondrop.alembic-head=${{ steps.schema.outputs.alembic_head }}
+
+      # ── THE LABEL ASSERTION ─────────────────────────────────────────────────
+      # NOT A GATE. It is in this job, not in the five-gate accounting above, for
+      # the same reason the digest step below is not a gate: it is a check on the
+      # thing this job exists to produce. Nothing here changes what is published;
+      # it changes whether this job claims to have produced something real.
+      #
+      # WHY THE STEP ABOVE'S ASSERTION IS NOT ENOUGH. Resolving the head in the
+      # shell proves a string was computed. It does not prove the string reached
+      # the image: a typo in a label key, a `labels:` block that build-push-action
+      # silently ignores, an empty step output, and every one of them produce a
+      # perfectly good image carrying NO schema label — which is precisely the
+      # state this change exists to end. So the assertion is made against the
+      # built artifact, by the same mechanism scripts/deploy.sh will use to read
+      # it (`docker image inspect` over `.Config.Labels`), so a build that would
+      # not serve the deploy host is a build that fails here.
+      #
+      # BOTH FACTS ARE CHECKED, AND NEITHER IS CHECKED AGAINST THE OTHER. The
+      # revision is compared against the value the previous step resolved; the
+      # head is compared against its own. `revision == head` is neither expected
+      # nor tested — they are different namespaces and comparing them would be
+      # the conflation this whole change is written to avoid.
+      - name: assert the built image carries its labels
+        env:
+          IMAGE: ${{ steps.refs.outputs.image }}
+          EXPECTED_REVISION: ${{ steps.refs.outputs.source_revision }}
+          EXPECTED_SOURCE: ${{ steps.refs.outputs.source_url }}
+          EXPECTED_ALEMBIC_HEAD: ${{ steps.schema.outputs.alembic_head }}
+        run: |
+          set -euo pipefail
+          failed=0
+
+          # `range` over `.Config.Labels`, so ONE `docker image inspect` renders
+          # every label and the three checks below share it. `{{index .Config.Labels
+          # "k"}}` also works — verified on Docker 29.8.2 against an image whose
+          # labels map is nil, where it returns empty and exits 0 — but it is one
+          # inspect call per label.
+          #
+          # `|| true` because `docker image inspect` exits non-zero for an image
+          # that is not here, and the interesting failure below is precisely
+          # "the labels are not what I expected", which must be a readable
+          # error and not a `set -e` abort on the pipeline.
+          actual="$(
+            docker image inspect \
+              --format '{{range $k, $v := .Config.Labels}}{{printf "%s=%s\n" $k $v}}{{end}}' \
+              "$IMAGE" 2>/dev/null || true
+          )"
+          label_value() {
+            printf '%s\n' "$actual" | sed -n "s/^${1}=//p" | head -n 1
+          }
+
+          {
+            echo "### image labels"
+            echo
+            if [ -n "$actual" ]; then
+              printf '%s\n' "$actual" | sed 's/^/- `/;s/$/`/'
+            else
+              echo "- \<none — this image carries no labels at all\>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for check in \
+            "org.opencontainers.image.revision:${EXPECTED_REVISION}" \
+            "org.opencontainers.image.source:${EXPECTED_SOURCE}" \
+            "org.lemondrop.alembic-head:${EXPECTED_ALEMBIC_HEAD}"
+          do
+            key="${check%%:*}"
+            want="${check#*:}"
+            got="$(label_value "$key")"
+            if [ -z "$got" ]; then
+              echo "::error title=image label::${IMAGE} has no '${key}' label. A deploy host would have to be told this by hand, which is the limitation these labels remove."
+              failed=1
+            elif [ "$got" != "$want" ]; then
+              echo "::error title=image label::${IMAGE} carries '${key}=${got}' but the build resolved '${want}'."
+              failed=1
+            fi
+          done
+
+          # Belt and braces on the one label whose absence is a SCHEMA problem
+          # rather than a convenience problem. An empty alembic-head must never
+          # survive this step: scripts/deploy.sh treats an empty label as "this
+          # image predates label support" and falls back, which is the correct
+          # behaviour for an old digest and the wrong behaviour for a new one.
+          if [ "$(label_value 'org.lemondrop.alembic-head')" = "" ]; then
+            echo "::error title=image label::refusing to publish an image with an empty schema label."
+            failed=1
+          fi
+
+          exit "$failed"
 
       # ── GATE 6: THE IMAGE CONTENT GATE ─────────────────────────────────────
       # Runs INSIDE the built image, with the image's own Python, against the
