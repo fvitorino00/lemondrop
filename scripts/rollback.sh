@@ -47,7 +47,7 @@
 # placeholder was a bug, not a licence to accept anything non-digest-shaped.
 #
 # ── WHEN TO USE THIS, DECIDED IN ADVANCE ──────────────────────────────────────
-# docs/m4-plan.md §4.4 item 4, restated here because a decision made mid-incident
+# `docs/deployment.md` §4.1, restated here because a decision made mid-incident
 # is how bad calls get made:
 #
 #   /health or /search fails within the wait  -> rollback. No judgement call.

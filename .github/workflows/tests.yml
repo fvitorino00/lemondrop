@@ -173,8 +173,8 @@ name: tests
 # cross-encoder ranking, index mapping and the /health contracts. Those are
 # verified locally against the real stack and, at the time of writing, are not
 # covered by any automated gate. That is a KNOWN GAP, recorded here on purpose.
-# `docs/m4-plan.md` §3.1 recommends a `workflow_dispatch`-only T3 job as a
-# follow-up; it is NOT implemented in Stage 3 and is a later decision, because
+# A `workflow_dispatch`-only T3 job is a plausible follow-up; it is NOT
+# implemented in Stage 3 and is a later decision, because
 # a manual job that needs 325 MB of weights and two inference services is not
 # a thing that can be written without being measured.
 #
