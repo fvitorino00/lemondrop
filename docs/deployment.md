@@ -229,9 +229,16 @@ sudo chmod 0644 /opt/lemondrop/scripts/lib/deploy-lib.sh   # sourced, not execut
 
 **A note on the repository's own state, which affects Option A specifically.** `docs/boot-script.md:204-207` records that boot step 3 **currently fails on boot** because the clone target is a private GitHub repository that the instance cannot authenticate to, and `infra/variables.tf:619-622` says the same. But `docs/verification-milestone-3.md` §12 records a working deployed stack, which implies the clone succeeded at some point. **The tracked documents do not agree on this point** and I cannot resolve it from the files: the only two that speak to visibility are `docs/verification.md:148`, which records the repository as *private*, and `docs/boot-script.md:204-207`, which records the clone failing against a private repository — there is **no tracked document asserting the opposite**, so this is a gap in the record rather than a contradiction between two of them. So: check §2.2's `rev-parse` output rather than assuming, and if `/opt/lemondrop/.git` is absent, Option A is not available and Option B is the only path.
 
-### 2.4 The source revision must be fetchable on the host
+### 2.4 The source revision: required on an unlabelled image, optional on a labelled one
 
-Independent of the scripts, the schema gate needs the target commit's **source tree** present in `/opt/lemondrop`:
+**On an image published by a release run — every image since commit `05d37bb` — the schema gate does not need the source tree at all.** The head comes from the image's own `org.lemondrop.alembic-head` label, read after the pull. The source tree is a **fallback** for an image that carries no labels, and a **cross-check** that is skipped when the tree cannot answer.
+
+⚠️ **An earlier draft of this section said the gate "needs the target commit's source tree present in `/opt/lemondrop`", full stop. That is true only of the unlabelled image, and §4.4 and §4.5 say the correct thing — this section was the outlier.** Read from the code:
+
+- **Unlabelled image — the tree is required.** On the last-resort path, when the image carries no `org.lemondrop.alembic-head` label, `resolve_deploy_facts()` calls `alembic_head_at_revision()` and fails if the tree cannot answer (`deploy-lib.sh`, `resolve_deploy_facts()`, the label-absent `else` branch at `deploy-lib.sh:766-771`).
+- **Labelled image — the tree is optional, on both passes.** The authoritative gate runs on the label (`deploy.sh` step 6c). The early pre-pull gate consults the tree only when an operator supplied a revision, and when the tree cannot answer it prints *"Skipping the pre-pull schema gate"* and **continues** (`deploy.sh:793-826`; the continuing message is at `deploy.sh:816`, and `deploy.sh`'s own comment says the check "saves a download by refusing early" and "the decision belongs to the authoritative gate after the pull"). The one other use — a cross-check of the label against the tree at the named revision — is wrapped in `2>/dev/null || true`, so a `--depth 1` clone that cannot answer is not an error (`deploy-lib.sh:787`).
+
+**So the check below matters for an unlabelled image, and for the cross-check when you choose to pass the revision** (§4.4). It is not a prerequisite for the ordinary one-argument deploy:
 
 ```bash
 sudo git -C /opt/lemondrop cat-file -e <40-char-sha>^{commit} && echo present
@@ -245,7 +252,7 @@ sudo git -C /opt/lemondrop fetch --depth 1 origin <40-char-sha>
 
 The deploy script will not fetch for you. `deploy-lib.sh`, `alembic_head_at_revision()`: "deploy.sh will not fetch for you: it reaches the registry and nothing else." This is almost always necessary on a host cloned `--depth 1`.
 
-**Why a source tree is needed at all:** the published image cannot report its own schema. `api/requirements.txt` deliberately excludes alembic (it is in `requirements-dev.txt`) and `api/Dockerfile` copies only `app/`, so the image contains neither the migration tooling nor `api/alembic/versions/` (stated in `deploy-lib.sh`, in `alembic_head_at_revision()`, under `── WHY NOT \`alembic heads\` INSIDE THE IMAGE ──`). And it cannot be read from the database, because the host has no DDL credential (§1.3). So the head is read from git with `git show`, deriving it the way alembic does: the set of `revision` values minus the set of non-`None` `down_revision` values (`deploy-lib.sh`, `alembic_head_at_revision()`). Zero heads and more than one head are both refusals, not "compatible" (`deploy-lib.sh`, `revisions_agree()`).
+**Why the image cannot derive its own head, and why the tree is the fallback.** The published image contains no alembic tooling: `api/requirements.txt` deliberately excludes alembic (it is in `requirements-dev.txt`) and `api/Dockerfile` copies only `app/`, so the image contains neither the migration tooling nor `api/alembic/versions/` (stated in `deploy-lib.sh`, in `alembic_head_at_revision()`, under `── WHY NOT \`alembic heads\` INSIDE THE IMAGE ──`). It cannot be read from the database either, because the host has no DDL credential (§1.3). A labelled image therefore carries the head as a **build-time label** (`org.lemondrop.alembic-head`, §4.4); only when that label is absent does the head have to be read from the source tree with `git show`, deriving it the way alembic does: the set of `revision` values minus the set of non-`None` `down_revision` values (`deploy-lib.sh`, `alembic_head_at_revision()`). Zero heads and more than one head are both refusals, not "compatible" (`deploy-lib.sh`, `revisions_agree()`).
 
 ---
 
