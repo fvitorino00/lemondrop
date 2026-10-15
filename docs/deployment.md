@@ -1330,6 +1330,45 @@ This codebase's value is that its documentation is trustworthy. That means the l
 
 **14. The 204-byte `user_data` headroom** (§9.1) means the boot script is close to EC2's 16,384-byte ceiling. `docs/boot-script.md:520-528` gives the exact measurement command. Anything added to the heredoc must be measured, not eyeballed.
 
+**15. ⚠️ UNSAFE AND UNVERIFIED — the legacy rollback branch of `rollback.sh` can start an image that is not the rollback target, and its own checks will not notice.** This is not a "may have issues" note, and nothing else in this section softens it. The branch is **defective by reading the code**, **has never been executed**, and **must not be rehearsed until it is fixed.** Fixing it is deliberately **out of scope for Milestone 4**; §6.4 and §6.5 are left exactly as written and this item is where the correction lives.
+
+    **The defect, in three steps.** The legacy branch does two things that were mutually consistent when they were written and are not any more:
+
+    1. It **re-tags** the rollback target under the bare local name — `rollback.sh:238`, `docker tag "$target" lemondrop-api`.
+    2. It then **removes** the `API_IMAGE` key from `.env` — `rollback.sh:265-281`, which ends at `say "  removed the API_IMAGE key from .env (legacy wiring restored)"`.
+    3. With `API_IMAGE` absent, compose interpolates its **default**, and that default is a digest-pinned GHCR reference — `docker-compose.yml:436`, `image: ${API_IMAGE:-ghcr.io/fvitorino00/lemondrop-api@sha256:0bdb7afa566bbff0c8db481cd78a048b130bb8fc8531739530d98fe3cde42986}`.
+
+    **So the `docker tag` at `:238` is inert.** Compose is never asked to resolve the name `lemondrop-api` at all; it is handed the pinned default, and because the recreate at `rollback.sh:367` passes `--no-build`, the pinned digest is what the `api` container starts. The tag `:238` creates sits unused. The compose file says as much in the comment immediately above the pin — `docker-compose.yml:425-427`: *"the qualified digest below was already the default, so removing `build:` did not have to also change this line to be safe."*
+
+    **The rationale is written into the script, and the script's own sentence is what makes this diagnosable.** `rollback.sh:229-231` says:
+
+    ```
+        # Legacy: .env goes back to having NO API_IMAGE key, so compose resolves the
+        # `lemondrop-api` name again — exactly the M3 wiring. Pointing API_IMAGE at
+    ```
+
+    *"so compose resolves the `lemondrop-api` name again"* is **false against the current compose file**. The sentence holds only if the default at `docker-compose.yml:436` is the bare name, and it is not — it is a digest pin. **A comment that was correct when written is still a wrong instruction**, and this one now describes the failure rather than preventing it.
+
+    **What the branch's own check looks at, and it is not the container.** `rollback.sh:246` computes the identity it goes on to report:
+
+    ```
+      restored_image_id="$(docker image inspect -f '{{.Id}}' "$target" 2>/dev/null || true)"
+    ```
+
+    On this branch `$target` is the **rollback tag** — `rollback.sh:173`, `target="$rollback_tag"` — not a container and not the image compose actually started. Nothing between `:238` and `:367` inspects the running container, and `:367` (`compose up -d --no-build --no-deps --force-recreate api`) is the only `compose up` in the script. So `:246` reports **what the operator asked for.** The comparison at `:251-263` can therefore print `say "  this is the image ID the adoption record pinned (${recorded_image_id})."` — `rollback.sh:253` — **while a different image is serving.** The check names an image ID and never asks which image is running.
+
+    **Confirmed as asked, and the answer is worse than a weak check: when the record carries no `IMAGE_ID`, the comparison is SKIPPED ENTIRELY.** `rollback.sh:248` is `if [ -n "$restored_image_id" ] && [ -z "$recorded_image_id" ]; then`. What follows is prose, not a comparison — `:249-250` reports that the id *"is stated, not verified"*. The `elif` at `:251` is `elif [ -n "$recorded_image_id" ]; then`, so on a record with no `IMAGE_ID` **no comparison is attempted and no mismatch warning can be emitted from this block at all.** It is not a check that can fail; it is a branch that is never entered. `rollback.sh:150` reads that key from the **pre-rollback** record, so this is precisely the M3-era record §6.4 is about.
+
+    **The rollback's own re-verification cannot see it either.** `rollback.sh:376` calls `verify_stack()`, which is `assert_probe_is_grounded`, then `wait_for_ready`, then `known_good_search` — `deploy-lib.sh:1093-1104`. **All three are content checks; none is an identity check.** A healthy service answering a grounded search is equally true of the wrong image, so a legacy rollback that started the pinned default would exit 0 and report success. The failure message at `rollback.sh:379` — `say "  The container is now running $target, which is what the record asked"` — asserts a property of a container nobody inspected.
+
+    **The digest-bearing branch is UNAFFECTED, and it is the one that was verified in practice.** `rollback.sh:163-190` is the target-selection block: when `PREVIOUS_IMAGE_DIGEST` is non-empty it validates the digest (`:165`) and sets `target="$prev_digest"` (`:171`); only the `elif` at `:172` sets `legacy=1` (`:174`). The `docker tag` at `:238` sits inside `if [ "$legacy" -eq 1 ]` (`:228`) and **does not execute on the digest path at all.** That path writes `API_IMAGE` explicitly — `rollback.sh:292`, `env_set "$LEMDROP_APP_DIR/.env" API_IMAGE "$target"` — so compose resolves the digest and never the default. **This branch was exercised live: a real rollback to `sha256:6036f724…`, SSM command `4450c9b0-edd0-4d83-8632-3d64f9e72630`, SUCCESS.** Every rollback claim elsewhere in this runbook — §6.1, §6.2, §6.3, §6.5, §7.4 — selects that path and inherits that result. `docs/verification-milestone-4.md` is the record.
+
+    **What might still catch it afterwards, and what is NOT ESTABLISHED.** A *separate* `scripts/verify-deployment.sh` invocation compares the record against the **running container** — `verify-deployment.sh:93` (`RUNNING_IMAGE_ID="$(running_image_id "$CID" || true)"`), `:149`, and `:203-215`. Because the pinned default carries `RepoDigests`, `RUNNING_DIGESTS` would be non-empty, that block's condition at `:203-204` would not be met, and control would reach the `else` at `:216` and print `DIVERGENCE`. **That is a reading of the code, not an observation: the legacy branch has never been executed, so nobody has watched it happen.** Treat it as a mitigation that is plausible and unproven — **not as a reason to go and run it.**
+
+    **What to do instead, today.** Do not rehearse the legacy path — not on a throwaway host, not on a sacrificial one. §6.5's rehearsal is sound **for the digest branch**, and its step 4 ("Deploy revision B over revision A") writes a `PREVIOUS_IMAGE_DIGEST`, which is what selects the digest path; that is the rehearsal to run. Rehearing the legacy branch would mean deliberately constructing a record with no `PREVIOUS_IMAGE_DIGEST` plus a local rollback tag, and there is no reason to manufacture that state until the branch is fixed. Until it is: **treat `rollback.sh` on a legacy host as having no working rollback**, and make the digest path available on that host first (§7.1).
+
+    **This item narrows §10 item 1, and only item 1.** Item 1 asserts that `deploy.sh`, `rollback.sh` and `verify-deployment.sh` "have never been executed against a host with a real Docker daemon". **That is no longer true** — they were executed live during Milestone 4, and `docs/verification-milestone-4.md` is the record — so of item 1's *"unexercised in CI and unexercised on a live host"*, only the CI half still stands. What remains unexercised is the legacy branch above, and the mutating control flow generally: **no test suite invokes any of the three scripts, and their first live use was this milestone.** Item 1 is left in place rather than rewritten, per the convention item 7 sets.
+
 ---
 
 ## 11. Pre-flight checklist
