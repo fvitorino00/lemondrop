@@ -1121,7 +1121,7 @@ openssl crl2pkcs7 -nocrl -certfile "$CA_BUNDLE" \
 
 `--proto '=https'` forbids a redirect to plaintext, and curl validates the TLS chain against your system trust store, so the download is itself authenticated. **The two checks after it are not ceremony:** a bundle that is empty or truncated produces a TLS error whose message says nothing about certificates, and a `grep -c` of `0` is the only thing that distinguishes the two.
 
-The URL is the one already recorded at `RUNBOOK.md:149`. **Nothing secret is in it and nothing secret comes out of it** — the bundle is public, and you can delete it when you are done.
+The URL is the one already recorded in `RUNBOOK.md`'s troubleshooting table, under the row *"psql fails with a TLS verification error"*. **Nothing secret is in it and nothing secret comes out of it** — the bundle is public, and you can delete it when you are done.
 
 > ⚠️ **If the connection fails on certificate verification, do not "fix" it by weakening `sslmode`.** `sslmode=require` encrypts without verifying anything, including which server you encrypted to. `docs/verification-milestone-3.md` §12.1.1 names the failure this procedure exists to avoid: connecting a forwarded socket so that `verify-full` ends up verifying a certificate against `127.0.0.1` "either fails outright or, **worse, is satisfied by loosening the check until it passes**." A downgraded `sslmode` is indistinguishable, after the fact, from a correct one. Fix the bundle or fix the name.
 
