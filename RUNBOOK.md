@@ -11,6 +11,31 @@ Operational runbook for the Milestone 2 AWS stack. All commands assume the
 > configuration**, and one of them (the RDS master username) is not merely stale
 > but contradicts another file in this repository. Discover values; do not copy
 > them. `docs/deployment.md` §1.1, §1.3, §7.1.1 and §10 item 11 are the routes.
+>
+> **And which values, specifically, so that "discover, do not copy" is actionable
+> rather than a slogan.** Five literals remain in this file. None of them is the
+> authority for anything, and each has a route:
+>
+> | Literal still written here | Where | Why it is not the authority | Route to the real value |
+> |---|---|---|---|
+> | the instance id | §4, §5 | the M2 record of the host `lemondrop-dev` ran on | `docs/deployment.md` §7.1.1 step 1 — `describe-instances` filtered on the `Role=application-host` tag, which `infra/compute.tf` sets |
+> | the ALB DNS name | §3 | the same M2 record | `docs/deployment.md` §5.3 — `elbv2 describe-load-balancers --names <name_prefix>-alb` |
+> | `lemondrop-tfstate-filipe` | §2a, §2b | a bucket name recorded once, in one account | `aws s3api list-buckets`, and the `bucket` argument at `infra/versions.tf:42`, which is the value `terraform init` actually reads |
+> | `213.22.54.159/32` | §2c | your address is not the address you had in Milestone 2, and a wrong one locks you out of the API rather than failing loudly | `infra/variables.tf`'s `allowed_api_cidr` — **no default on purpose** — is where the rule lives: read your own address at apply time |
+> | `t3.micro` | §2c, §2c's variable table | the host was resized after this was written | `aws ec2 describe-instances … --query 'Reservations[].Instances[].InstanceType'` |
+>
+> **None of these five is an input to a deploy, a verification or a rollback**, and
+> no procedure in `docs/deployment.md` requires a value from this file. The first two
+> were required by it once and no longer are — §1.1 and §5.3 discover both. The last
+> three are inputs to §2's `terraform plan` / `apply`, which is the provisioning path,
+> and `docs/deployment.md` §10 item 18 records that no procedure in this repository
+> invokes Terraform at all.
+>
+> **What `docs/deployment.md` does cite this file for:** AWS access *mechanics* — the
+> profile and region in the header, the CLI prerequisite, the SSM command pair — and the
+> RDS CA bundle URL. Both survive a value going stale. §10 item 11 of that document
+> cites one value here, `app_instance_type`, **as the example of a stale one**, which is
+> the opposite of depending on it.
 
 ## 1. Prerequisites
 

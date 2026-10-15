@@ -102,7 +102,7 @@ $ git status --short --branch
 | AWS CLI v2 | SSM, and reading Terraform output | `RUNBOOK.md:9` |
 | AWS credentials for profile `lemondrop` | — | `RUNBOOK.md:4` — all AWS commands assume this profile and region `eu-west-1` |
 | Region `eu-west-1` | — | `RUNBOOK.md:4`; `infra/versions.tf` backend block per `RUNBOOK.md:29-38` |
-| The EC2 instance id | target of every SSM call | `i-0c3155b1b6bb31298` per `RUNBOOK.md:92`; also `terraform output ec2_instance_id` (`infra/outputs.tf:172-175`). **Confirm it is current before using it** — `RUNBOOK.md` is a Milestone 2 document and `i-0c3155b1b6bb31298` is the value it recorded then. §12.1 row 1 of `docs/verification-milestone-3.md` records that the instance id was *unchanged* across the Milestone 3 resize to `t3.small`, which is the reason this runbook still quotes it. |
+| The EC2 instance id | target of every SSM call | **Discovered, not quoted** — `aws ec2 describe-instances --filters 'Name=tag:Role,Values=application-host' 'Name=instance-state-name,Values=running' --query 'Reservations[].Instances[].InstanceId' --output text` (§7.1.1 step 1 gives the full query, with the `ManagedBy=terraform` filter that stops it matching a second stack). `terraform output ec2_instance_id` (`infra/outputs.tf:172-175`) is a second route and needs state access (§7.1.1's note). ❗ **`RUNBOOK.md` records `i-0c3155b1b6bb31298` and this runbook does not depend on it.** `docs/verification-milestone-3.md` §12.1 row 1 records that the instance id was *unchanged* across the Milestone 3 resize, which is why the value still appears in that file — and why it is the value that would fool you. **Read it from AWS.** |
 | Docker, with Compose v2 (`docker compose`, not `docker-compose`) | To resolve a digest, and if you verify from your own machine | `README.md` (Prerequisites) — the stack was built and verified against Compose v5.5.1 |
 | `jq` (optional) | Only if you read Secrets Manager by hand | Not needed by any step in this runbook. The host resolves the database credential itself. |
 
@@ -121,11 +121,12 @@ Split carefully, because these are two different systems and conflating them is 
 | `ssm:GetCommandInvocation` | the instance | Reading the result of a `SendCommand` |
 | `ssm:ListCommands` / `ssm:ListCommandInvocations` | the instance | Finding a previous command id |
 | `ssm:GetParameter` / `ssm:GetParameters` | `/aws/service/ami-amazon-linux-latest/*`, and this stack's DB host/port parameters | Only if you run Terraform. **Not needed for a deploy — and equally not needed to read the database revision, because §7.1.1's primary route uses `rds:DescribeDBInstances`.** The SSM-parameter alternative in §7.1.1 needs only the two DB parameters. |
-| `ec2:DescribeInstances` | — | Confirming the instance id — **and §7.1.1 step 1 uses the same call to discover it** |
+| `ec2:DescribeInstances` | — | Confirming the instance id — **and §7.1.1 step 1 uses the same call to discover it, which is now how §1.1 says to obtain it** |
+| `elasticloadbalancing:DescribeLoadBalancers` | — | ⚠️ **§5.3's ALB reachability check only.** It is how the ALB's DNS name is discovered, which §5.3's check needs and **which nothing on the host can supply**. **Not needed for a deploy, for a verification against localhost, or for a rollback** — only for the one check that answers "will the load balancer route to it?", which is a different question from "is the process serving correct results?" (§5.3's table). The action is ELBv2's and the CLI call is `aws elbv2 describe-load-balancers` — **not `aws ec2 describe-load-balancers`, which is not an EC2 API and does not exist.** |
 | `rds:DescribeDBInstances` | the DB instance | ⚠️ **Reading the database revision only (§7.1.1).** Nothing in the deploy path needs it. |
 | `secretsmanager:GetSecretValue` | **the RDS master secret** | ⚠️ **Reading the database revision only (§7.1.1). This is a grant on YOUR principal, not on the instance — §7.1.1 and §1.3 say why the instance role cannot have it.** Nothing in the deploy path needs it. |
 
-`ssm:SendCommand` + `ssm:GetCommandInvocation` is the minimum for the workflow in this runbook; the exact pair `RUNBOOK.md:98-106` uses.
+`ssm:SendCommand` + `ssm:GetCommandInvocation` is the minimum for the workflow in this runbook; the exact pair `RUNBOOK.md:160-168` uses. **The three read-only `Describe*` calls above are the discovery routes, not deploy permissions**: `ec2:DescribeInstances` for the instance id (§1.1, §7.1.1 step 1), `elasticloadbalancing:DescribeLoadBalancers` for the ALB DNS name (§5.3), `rds:DescribeDBInstances` for the database endpoint, port, db name, master secret ARN and master username (§7.1.1 step 1). **None of them is used by anything on the host**, and none is used by `deploy.sh`, `rollback.sh` or `verify-deployment.sh`.
 
 **GitHub (your account):**
 
@@ -757,13 +758,31 @@ sudo docker compose -p lemondrop exec -T api \
 
 ### 5.3 Check ALB reachability separately — and know what it does not prove
 
+**Discover the DNS name from AWS. Do not read it out of a file, and do not use Terraform to get it.**
+
 ```bash
-ALB=$(aws ec2 describe-load-balancers --names "$(terraform output alb_dns_name)" --region eu-west-1 \
+# The load balancer's name is "${project_name}-${environment}-alb" by construction —
+# `name = "${local.name_prefix}-alb"` on `aws_lb.main`, and `local.name_prefix` is
+# "${var.project_name}-${var.environment}" (infra/locals.tf:11). With the variable
+# defaults that is `lemondrop-dev-alb`.
+
+ALB=$(aws elbv2 describe-load-balancers --names lemondrop-dev-alb \
       --query 'LoadBalancers[0].DNSName' --output text)
+
+test -n "$ALB" || { echo "no load balancer by that name — is the environment dev?"; exit 1; }
+
 curl -i "http://$ALB/health/ready"
 ```
 
-The DNS name is also recorded literally in `RUNBOOK.md:75`.
+**Three things about that command line, each of which was wrong or missing before.**
+
+- ⚠️ **It is `aws elbv2 describe-load-balancers`, not `aws ec2 describe-load-balancers`.** The second is not an EC2 API and does not exist. `DescribeLoadBalancers` belongs to ELBv2 and the IAM action is **`elasticloadbalancing:DescribeLoadBalancers`** — which was absent from §1.2's table while this section called for it. It is there now.
+- ⚠️ **It does not need Terraform, and therefore does not need state access.** An earlier version of this section ran `terraform output alb_dns_name`, which requires **read access to the S3 state backend** — the bucket named in the `backend "s3"` block at `infra/versions.tf:41-55`, which `terraform output` reads through `s3:ListBucket` and `s3:GetObject` on that bucket (and, because the block sets `use_lockfile = true`, `s3:PutObject` / `s3:DeleteObject` on the same bucket's `.tflock` objects — **there is no DynamoDB lock table in this stack, and `infra/versions.tf:47-48` says so**). **§1.2's table does not grant any of that, and nothing in this runbook provisions it**, which made this the one step whose value had no documented route for an operator holding only §1.2. It has one now.
+- ⚠️ **`--names` takes the ALB's name, not the DNS name**, so the argument is derived from the stack's naming convention rather than from the answer. If your stack was applied with non-default `project_name` / `environment`, substitute them; the defaults are `lemondrop` and `dev` (`infra/variables.tf:44`, `:50`) and `environment` is constrained to `dev`, `staging` or `prod` (`:47-55`). **If `describe-load-balancers` returns nothing, that is a naming question, not a missing load balancer** — `aws elbv2 describe-load-balancers --query 'LoadBalancers[].{N:LoadBalancerName,D:DNSName}' --output table` lists all of them and answers it in one call.
+
+**`terraform output alb_dns_name` remains a valid second route** (`infra/outputs.tf:161-165`) if you already have state access, and the two are worth cross-checking when you have both — §7.1.1's note on the Terraform outputs says the same about the RDS values. **The rule is the same in both places: the outputs are a second route, not a prerequisite.**
+
+The DNS name is also recorded literally in `RUNBOOK.md:114`, ⚠️ **as a Milestone 2 record and not as the authority** — that file's own header says its values are M2-era records and that `docs/deployment.md` §5.3 is the route.
 
 **A passing `localhost:8000` check does NOT prove the ALB will route to it.** They are different questions:
 
