@@ -1033,6 +1033,146 @@ document, not something this exercise found, and it must not be entered in §10 
 exercise finding.** If the reviewer independently raises it, record it — but note where
 it came from.
 
+### §17.1 — Choosing who runs it: an independent engineer, or an independent agent
+
+**This section sits below the fence on purpose.** It concerns how the evaluator conducts
+and reads the run. It is not handed to the reviewer, and **it does not tell the reviewer
+which sort of reviewer they are** — that is briefed separately, per §17 step 7.
+
+**Reviewer type is a different axis from variant, and the two must not be conflated.**
+§3 decides *what the reviewer does* — derive the procedure only, or derive it and then
+deploy, verify and roll back. **This section decides *who reads the repository*.** Either
+reviewer type can be run under either variant, including a Variant B run performed by an
+agent, which would change host state exactly as §3 describes. **The two fields answer
+different questions and neither substitutes for the other**: the variant records *what
+happened to the environment*, and the reviewer type records *who perceived it*. Both are
+recorded in §6.
+
+> **A naming collision to be careful with on this page.** §3's **Variant A** and
+> **Variant B** are the *exercise* variants — cold-reader walkthrough, and live
+> deployment. The **A** and **B** used in the headings and table below are *reviewer
+> types*. **The same two letters mean different things in different parts of this
+> document.** Read "Variant B" as the live-deployment variant and "B" as the agent
+> reviewer, and never write one where the other is meant.
+
+#### The two reviewer types are not two runs of one test
+
+They yield different evidence. The difference is not a matter of degree, and an agent run
+is not a cheap approximation of a human one — it is a **narrower question**, asked
+cleanly.
+
+| | **A — a human engineer who has never seen this system** | **B — a fresh, context-isolated engineering agent** |
+|---|---|---|
+| Independence | Social and real | Real from the conversation; questionable from the build |
+| Availability | On request, on someone's schedule | Immediate, reproducible, resettable, cheap |
+| How it reads | Under time pressure — skims, assumes, misses sections | Exhaustively — no deadline, no skim |
+| Can it resist asking the author? | Yes, and whether it does **is** the measurement | No such temptation exists |
+| What it establishes | The strongest evidence available for this criterion | Whether the procedure is **derivable** from the repository |
+
+#### A — a human engineer with no prior exposure
+
+**What it establishes.** The strongest form of the evidence this criterion admits. A
+distinct person, no prior exposure to the system or the repository, working from the
+repository alone and nothing else — **which is the closest available realisation of the
+criterion's own words.** Where a human run passes, the argument that the information is
+self-sufficient is as strong as it can be made without the author in the room.
+
+**What it cannot establish, stated plainly:**
+
+- **Availability and scheduling.** It requires a person who is willing to spend real time
+  on a procedure that may be long, and whose time is not yours to spend. This is a
+  genuine operational constraint, and **it is the reason an agent-run protocol is worth
+  having at all** — an agent reviewer is answerable at once, when no person is.
+- **Access parity is not free.** The reviewer may not hold the same infrastructure access
+  you do. **Provisioning it changes the environment under test**, and therefore changes
+  what the exercise measures. Provision for the reviewer as §4 requires, no more; and for
+  a Variant A run, no host control at all.
+- **Social interest biases the result, and the bias runs in two opposite directions.**
+  Some reviewers suppress a question they should have asked, because asking would look
+  like not understanding. Others ask the author things the repository could have answered,
+  because the author is present and available. **These two failures look similar from the
+  outside and you cannot tell them apart without reading §9 carefully** — §9's *asked* /
+  *almost asked* distinction and its third column are precisely what separates a genuine
+  finding from a socially awkward silence.
+- **A human reads the way a human reads.** Under time pressure, people skim, assume, and
+  miss a section that an exhaustive search would find. **Their failures are the most
+  informative failures available**, and that cuts both ways: a missed section is a real
+  finding about the runbook, and a suppressed question is a real finding about how
+  hostile the runbook is to use.
+
+#### B — a fresh, context-isolated engineering agent
+
+**What it establishes.** Whether the procedure is **derivable** from the repository by an
+independent reader with no access to the author's conversation, notes, or terminal
+history. Nothing more, and that is a genuinely useful thing to know: it is available
+immediately, reproducible, resettable, and cheap. **Those are real advantages, and they
+are the reason it is worth doing even when a human reviewer is available** — a gap found
+by an agent is a gap found before anyone has spent an afternoon on the exercise.
+
+**What it cannot establish. None of these are softened here, and none should be:**
+
+- ❗ **It is not a second person.** The criterion says *"a second engineer."* An agent is
+  a reader, not a colleague. Whatever else it does, it does not supply the thing the
+  criterion names.
+- ❗ **Context isolation is not the same as independence.** A fresh agent spawned from the
+  same session, running the same model, carrying the same priors, is isolated from *the
+  conversation* but not from *how the system was built*. **It may reproduce the author's
+  own search strategies, including their blind spots, and succeed where a human would
+  not.** Isolation of context is not isolation of perspective.
+- ❗ **It is not under realistic pressure.** A human is time-boxed and will skim; an agent
+  will search exhaustively and keep going. **A pass by an agent is therefore weaker
+  evidence than the same pass by a person**, because it does not demonstrate that a person
+  under time pressure would find the same thing — and finding it under time pressure is
+  the entire practical content of the criterion.
+- ❗ **It cannot be socially independent in the way that matters.** The measurement turns
+  on a reviewer choosing *not* to ask the author. An agent has no such temptation to
+  resist, and therefore cannot demonstrate the property the criterion is really about,
+  however cleanly it runs.
+- **Its findings are evidence about the documentation, not about what an engineer can do.**
+  A gap an agent finds is a real gap in the runbook. It is not evidence about the
+  capability the criterion asserts, and it must not be written up as if it were.
+
+#### What each one establishes, stated without softening either
+
+**Neither reviewer type, on its own, proves that a second person executed a live
+deployment. Only Variant B, with a person, does that** — §3 and §12, which are the two
+places this is stated and both of which this section does not weaken.
+
+- **An agent run is evidence about the documentation's self-sufficiency** — whether the
+  procedure can be derived at all — **and a weaker proxy for the criterion than a human
+  run.** A clean agent run is not a clean result under §11; it is a narrower observation
+  that constrains what the runbook can be shown to contain.
+- **A human run is the stronger evidence**, and where it is available it supersedes the
+  agent run for the purposes of this criterion.
+- **If the human surfaces a question the agent did not, that question is real and the
+  agent pass does not cover it.** An agent pass is not a prior that excuses a later
+  finding; it is one observation, and a better-informed reader can always find more.
+
+#### A recommendation, and what it leaves open
+
+**If no human reviewer is available, run the agent reviewer first.** It costs nothing,
+it touches nothing, and it will surface documentation gaps cheaply and early — which is
+the failure mode that actually matters (§11's disqualifier). **A human run supersedes it
+when one becomes available**, and **any gap the agent missed but the human hits is a
+genuine finding**, recorded as such.
+
+**Record which type was used in §6.** That section is blank and waits for this; the
+reviewer fields were written for a person, so for an agent run say plainly what kind of
+reviewer it was. **Do not record an agent run as a human run** — in the same way, and for
+the same reason, **a Variant A result may not be recorded as a Variant B result** (§3).
+
+**One thing to keep straight.** **The variant decision (§3) and the decision about what
+the criterion requires both belong to the assessor, and this section says nothing about
+which variant governs or how the criterion should be read.** Choosing *who* runs the
+exercise is an operator decision — a scheduling and capability decision, not a judgement
+about the system. Choosing *what the criterion demands* is not an operator decision, and
+nothing in this section should be cited toward it.
+
+**Nothing in this section has been run.** Both reviewer types are described from
+protocol. **No reviewer of either type has been identified, neither variant has been run,
+and §6, §9, §10 and §12 remain exactly as blank as they were before this section was
+written.**
+
 ---
 
 > ## Closing status, restated so it cannot be missed
