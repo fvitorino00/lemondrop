@@ -597,7 +597,7 @@ and **§4.5** for the ordered sequence of what the script does and what you will
 >
 > This is a live hazard on this exact path, not a theoretical one — it occurred in
 > practice during Milestone 4 and is recorded at `docs/verification-milestone-4.md:314`
-> and `docs/deployment.md:1440` (§10 item 16). **For a Variant B run, the operator decides
+> and `docs/deployment.md:1859` (§10 item 16). **For a Variant B run, the operator decides
 > before the exercise whether to accept this risk; that decision belongs to the
 > operator, not to the reviewer, and it is made here in advance rather than in the
 > middle of the exercise.**
@@ -625,7 +625,7 @@ for what it does in order.
 - **Record what the rollback selected and why**, before you run it. The target comes
   from the record, not from you.
 - ⚠️ **There is a known, unsafe branch in the rollback script.**
-  `docs/deployment.md:1401` (**§10 item 15**) is the record: the legacy branch **can
+  `docs/deployment.md:1820` (**§10 item 15**) is the record: the legacy branch **can
   start an image that is not the rollback target, and its own checks will not notice.**
   It has never been executed and **must not be rehearsed.** §10 item 15 and §6.4 say
   what to do instead. **If your rollback lands on that branch, stop and escalate — do
@@ -1266,8 +1266,20 @@ individually, so that what was closed and what was not is checkable:
 | **G-7** | `docs/deployment.md` §3.4, *What a **tested revision** is*, plus the unpushed-HEAD trap it records. | The criterion's central term now has an operational definition. |
 | **G-8** | `docs/deployment.md` §10 item 17, conditionally. | ❗ **Recorded, not solved.** The repository now says plainly that **no rehearsal host has ever been described, named, or confirmed to exist**, and states what each variant is blocked by. **Nothing in this pass creates a host** — `docs/verification-milestone-4.md` §13.1 says so in terms: this is an infrastructure limitation, not a documentation one. |
 
-**G-3, G-4 and G-5 are not closed by that pass and are not claimed to be.** They are
-unchanged, and a re-run would still encounter them.
+**G-3, G-4 and G-5 were not closed by that pass.** They were closed by **a later one** —
+commit `9b8fcf0`, *"close G-3, G-4 and G-5 with discovery routes, not stale literals"* —
+which closed each with a **discovery route** rather than a corrected literal:
+
+- **G-4** — §5.3 no longer routes the ALB check through `terraform output`, so the check no
+  longer needs the S3 state-backend access §4's list does not grant. The ALB's DNS name is
+  discovered with `aws elbv2 describe-load-balancers` (`docs/deployment.md:791-802`).
+- **G-5** — `RUNBOOK.md`'s header tabulates the five M2-era literals that remain in that
+  file, each against the route that supersedes it (`RUNBOOK.md:15-38`).
+- **G-3** — the §1.2 permission table gained the `elasticloadbalancing:DescribeLoadBalancers`
+  row it was missing, and §5.3's `aws ec2 describe-load-balancers` call was corrected to
+  `aws elbv2 describe-load-balancers` (`docs/deployment.md:129`, `:801`). ⚠️ **§10's G-3
+  cell words this contradiction around the DB-read step; the pass closed the same kind of
+  table/step contradiction on §5.3's ALB step.**
 
 **3. A fresh cold-reader run is required, for two reasons, and both are structural:**
 
@@ -1279,7 +1291,7 @@ unchanged, and a re-run would still encounter them.
   was `678cef3bf46a3e15d79dbc20064f0ea43f22dca8` (§5); the five repairs above landed after
   it. **The finding that Q4, Q5, Q8 and Q15 were unanswerable was true of that revision and
   is not true of the current tree** — which is precisely why re-running is the only way to
-  learn whether the remaining gaps (G-3, G-4, G-5) and the correctly-external routes now
+  learn whether the repaired routes and the correctly-external ones now
   hold up.
 
 **And the re-run must be with a reviewer who has not been exposed to this run**, per §11's
@@ -1373,7 +1385,8 @@ verdict rests on.**
 >   still blank.**
 > - ⚠️ **Five of the eight gaps in §10 were closed by a documentation repair pass after
 >   that FAIL was written — G-1, G-2 (the ⛔ blocking one), G-6, G-7 and G-8 — and the
->   repository has since changed under it.** **G-3, G-4 and G-5 are not closed.** ❗
+>   repository has since changed under it.** **G-3, G-4 and G-5 were closed by a later
+>   pass, `9b8fcf0` — see §12.** ❗
 >   **G-1's closure did not involve staging `docs/m3-study-guide/` or `docs/m4-plan.md`;
 >   both remain untracked, and nothing in this document may be read as committing them.**
 > - ❗ **NOTHING WAS DEPLOYED.** No AWS call, no SSM command, no container operation, no
@@ -1387,8 +1400,8 @@ verdict rests on.**
 > - **Variant A is not proof that a second person deployed anything. Variant B is the
 >   only one of the two that is.** Neither result may be reported as the other.
 > - **Two known defects sit on this path**, both recorded and neither repaired: the
->   redundant-deploy guard that does not exist (`docs/deployment.md:1440`), and
->   the legacy rollback branch that can start the wrong image (`docs/deployment.md:1401`).
+>   redundant-deploy guard that does not exist (`docs/deployment.md:1859`), and
+>   the legacy rollback branch that can start the wrong image (`docs/deployment.md:1820`).
 >   **The reviewer recorded both of these as live hazards it had to route around rather
 >   than execute** (Q9).
 > - **Writing this document executed nothing. Running the Variant A exercise executed
