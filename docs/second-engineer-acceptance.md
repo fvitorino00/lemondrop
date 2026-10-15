@@ -98,6 +98,44 @@
 > test suite was run for this purpose, and nothing was pushed. The only repository
 > operations were read-only inspections and this one new file.
 
+> ### 📋 Dated note — 2026-10-15 — a **second** Variant A run was carried out, and **§11 returns PASS**
+>
+> **A second cold-reader run was carried out on 2026-10-15**, against the **repaired tree**
+> and against §11's **revised** wording. **It returns PASS on all four conditions** — with
+> the Q6 adjudication and the agent caveat attached (§11, §12). Like the first run, it is a
+> **Variant A** exercise by an **AI agent, context-isolated** (§6): the reviewer produced a
+> complete derived procedure and **executed nothing**.
+>
+> | Fact about the second run | State |
+> |---|---|
+> | Exercise executed | **Yes — 2026-10-15, Variant A (cold-reader documentation walkthrough)** |
+> | Reviewer type | **An AI agent, context-isolated (§6). Not a person.** |
+> | Revision under test | `9fc2518ed9092f4696e41cebeab84066560908d7` (§5) — the pushed `main` |
+> | Deployments performed | **None** |
+> | Rollbacks performed | **None** |
+> | AWS calls made | **None** |
+> | SSM commands issued | **None** |
+> | Containers or Terraform touched | **None** |
+> | **§11 applied to the submitted evidence** | **✅ PASS — all four conditions. Never recorded bare: it carries the Q6 adjudication and the agent caveat.** (§11, §12) |
+> | **Verdict of the acceptance criterion** | **NOT YET TESTED — reserved to the assessor (Moe). Not recorded here.** (§12) |
+>
+> ❗ **NO DEPLOYMENT OCCURRED, in either run.** Nothing was deployed, no AWS call was made,
+> no SSM command was issued, no container was touched, no rollback was performed, and no
+> Terraform was run. **Neither run may be reported as a live-deployment demonstration, and
+> neither is evidence that a second engineer deployed anything.**
+>
+> ❗ **This run, like the first, was an AI agent's.** Per the reviewer-type subsection in §3,
+> an agent run is evidence about the documentation's **self-sufficiency** and is a **weaker
+> proxy** for the acceptance criterion than a human run: it shares the author's model
+> lineage and priors, so **context isolation is not perspective isolation.** §3, §6, §8 and
+> §12 repeat that caveat. **(The dispatch refers to this as the "§17.1 caveat"; its tracked
+> home is §3, and there is no §17.1 in this document.)**
+>
+> **What is now current, and what is retained.** §11 (revised) now returns **PASS** on the
+> second run's evidence; **the first run's FAIL is retained in full** as the record of what
+> happened against the previous wording and the unrepaired tree. **The Verdict field in §12
+> is still blank, and it is still the assessor's.**
+
 ---
 
 ## §0 — What this document is
@@ -155,6 +193,23 @@ this document for a record.
 > ❗ **Per §3 an agent run is a weaker proxy for the acceptance criterion than a human
 > run.** The agent shares the author's model lineage and priors: it is isolated from the
 > conversation, not from how the system was built.
+
+> ### 📋 Dated note — 2026-10-15 — a **second** Variant A run. `UNTESTED` above still stands.
+>
+> **The retained note above describes the first run. A second Variant A run was carried out
+> on 2026-10-15**, against the repaired tree and §11's revised wording, by **an AI agent,
+> context-isolated** (§6). **§11 applied to it returns PASS on all four conditions**, with
+> the Q6 adjudication and the agent caveat attached (§11, §12). **The rows in the table
+> below describe the first run and are retained as written; the second run's record is in
+> §§5, 6, 8, 9, 10, 11 and 12.**
+>
+> ❗ **No deployment occurred, in either run.** No AWS call, no SSM command, no container,
+> no rollback, no Terraform. **Neither run is evidence that a second engineer deployed
+> anything.**
+>
+> ❗ **Per §3 an agent run is a weaker proxy for the acceptance criterion than a human
+> run.** This run shares the author's model lineage and priors: context isolation is not
+> perspective isolation.
 
 | Element | State |
 |---|---|
@@ -450,6 +505,38 @@ revision recorded here. If the reviewer's checkout drifted mid-exercise, the two
 records must disagree visibly rather than silently — and in that case the result
 describes a test of something other than what this section says it tests.
 
+### 📋 The second run's revision — 2026-10-15
+
+**Filled in from the second run of 2026-10-15. The first run's §5 record above is retained
+unchanged; this is the second run's pin, added alongside it so the two are distinguishable.**
+
+| Field | Value |
+|---|---|
+| Repository | `https://github.com/fvitorino00/lemondrop.git`, read locally at `/home/zaratustra0/Projects/lemondrop` |
+| Commit SHA under test | `9fc2518ed9092f4696e41cebeab84066560908d7` — **full 40 characters. Confirmed by the reviewer itself**, with `git log -1 --format=%H`. |
+| Date pinned | **2026-10-15** |
+| Pinned by | **The evaluator.** The revision was pinned to the pushed `main` for this run. **No person's name is invented here** — the evidence names the pinning party as the evaluator, and no other individual. |
+
+**Facts the reviewer confirmed and recorded about this pin:**
+
+- The revision is `main`, and `main` is level with `origin/main` — `git branch -vv` shows
+  `main [origin/main]` with no ahead/behind annotation, and `git status` reports *"Your
+  branch is up to date with 'origin/main'"*. (Verified after the run: `origin/main...main`
+  is `0 0`.) The commit subject is `docs(acceptance): re-resolve two citations shifted by
+  the §13.1 insert`.
+- **This is not the first run's pin.** The first run's revision
+  (`678cef3bf46a3e15d79dbc20064f0ea43f22dca8`, above) is an ancestor; the tree has since
+  moved on, and the repairs the closing note below says a fresh run must be against are all
+  present. ⚠️ **The reviewer's submission states the repository "has moved on by 15
+  commits"; the verified count is 19** (`git rev-list --count 678cef3bf46a3e15d79dbc20064f0ea43f22dca8..9fc2518ed9092f4696e41cebeab84066560908d7`
+  = `19`). The reviewer's figure is recorded as submitted and corrected here rather than left
+  standing; the substance — that this run is against the *repaired* tree, not the first run's
+  tree — is unaffected.
+- **CI on this revision** — run `38793650721`, all nine jobs green, and local `actionlint`
+  v1.7.12 exited 0. These were reported by the evaluator and are **not derivable from the
+  repository**: the reviewer could not read GitHub Actions and recorded that limit clearly.
+  They are recorded here as **evaluator-supplied** facts, not as the reviewer's findings.
+
 ## §6 — Reviewer details
 
 **Filled in from the run of 2026-10-15. The reviewer was not a person, and no field
@@ -518,6 +605,52 @@ A reviewer with incidental exposure is a weaker version of the same problem, not
 different one. **Record the exposure honestly and let the result be read against it.**
 Do not approach a candidate with a briefing that creates exposure; the exposure is the
 thing being measured.
+
+### 📋 The second run's reviewer — 2026-10-15
+
+**Filled in from the second run of 2026-10-15. The first run's §6 record above is retained
+unchanged. The reviewer was again not a person, and no field below invents one.**
+
+| Field | Value |
+|---|---|
+| Reviewer name | **No name — there is no person.** The reviewer was **an AI agent**: a fresh, context-isolated engineering agent. |
+| Role / team | **AI agent (context-isolated).** No role, no team, no employer, no human affiliation exists for this reviewer, and **none is invented here.** |
+| Date of the exercise | **2026-10-15** |
+| **Prior exposure to this system** | **No conversational context, by construction** — the agent received only the repository and a reviewer-facing brief. It saw no evaluator answer key, no prior review, and no part of the author's conversation or terminal history. ⚠️ **But it shares the author's model lineage and priors. This is not a clean bill of independence — see the caveat below.** |
+| Prior exposure to this repository | **None beyond the repository itself.** It read only within `/home/zaratustra0/Projects/lemondrop`, and was told explicitly not to read outside it. |
+| Prior exposure to this stack's tooling | **None.** It read the repository's *documentation* of the tooling and the tooling's source. **It executed no tooling, and operated no AWS, SSM, Docker or Terraform surface.** |
+| Variant performed | **A — cold-reader documentation walkthrough. NO DEPLOYMENT OCCURRED.** |
+| Assessed by | **Not assessed. No verdict is recorded.** The criterion's verdict is the assessor's (Moe) — see §12. |
+
+> ### ❗ The reviewer was an AI agent, in both runs. This is recorded precisely and is not softened.
+>
+> **Per the reviewer-type subsection in §3, an agent run is evidence about the
+> documentation's self-sufficiency, and is a weaker proxy for the acceptance criterion than
+> a human run.** The consequences, none of which is softened:
+>
+> - ❗ **It is not a second person.** The criterion says *"a second engineer."* An agent is a
+>   reader, not a colleague. It does not supply the thing the criterion names.
+> - ❗ **Context isolation is not perspective isolation.** This reviewer shares the model
+>   lineage and the priors of the session that built the system. It was isolated from *the
+>   conversation*; it was **not** isolated from *how the system was built*. **It may
+>   reproduce the author's own search strategies and blind spots, and succeed where a human
+>   would not.**
+> - ❗ **It is not under realistic pressure.** A human is time-boxed and will skim; an agent
+>   searches exhaustively. **A pass by an agent is weaker evidence than the same pass by a
+>   person.**
+> - ❗ **It cannot be socially independent in the way the measurement turns on.** The
+>   measurement turns on a reviewer choosing *not* to ask the author. An agent has no such
+>   temptation to resist, and so cannot demonstrate that property, however cleanly it runs.
+> - ❗ **It is not evidence that a second engineer performed a deployment.** **No deployment
+>   occurred. Nothing was deployed, no AWS call was made, no SSM command was issued, no
+>   container was touched, no rollback was performed and no Terraform was run.** §3 forbids
+>   reporting a Variant A result as a Variant B result, and that separation holds here
+>   without exception.
+>
+> **Its findings are evidence about the documentation, not about what an engineer can do.**
+> The findings in §10 are real defects in the runbook. **They are not evidence about the
+> capability the criterion asserts, and nothing in this record may be written up as if they
+> were.**
 
 ## §7 — Test procedure
 
@@ -727,6 +860,150 @@ it.** This is Variant A, and §3 defines that variant as a reading exercise.
   operator transcribing the reviewer's own record.** No row may be reconstructed,
   inferred, or filled in afterwards from memory.
 
+### 📋 The second run — 2026-10-15
+
+**Filled in from the second run of 2026-10-15. Variant A: every action recorded here was
+read-only. The first run's §8 record above is retained unchanged.**
+
+**What the reviewer actually did.** Its commands were **read-only repository operations**:
+`git log`, `git status`, `git branch -vv`, `grep`, `wc`, `find`/glob, and file reads. **It
+made no AWS call, issued no SSM command, performed no deployment, operated no container,
+and ran no Terraform.** The files it reported reading were
+`docs/second-engineer-acceptance.md`; `RUNBOOK.md`; `docs/deployment.md` (end to end, in
+four passes); `scripts/deploy.sh`, `scripts/rollback.sh`, `scripts/verify-deployment.sh`,
+`scripts/lib/deploy-lib.sh`; `.github/workflows/release.yml`; `api/alembic/README.md`;
+`infra/variables.tf`, `infra/outputs.tf`, `infra/iam.tf`, `infra/README.md`;
+`docs/verification-milestone-4.md`, `docs/verification-milestone-3.md`, `docs/verification.md`;
+`docker-compose.yml`, `.env.example` and `README.md`.
+
+### A — The outcome of the second run
+
+| # | Deliverable | Result |
+|---|---|---|
+| O-1 | **A complete derived procedure**, in the reviewer's own order | **Yes** — a six-phase procedure: (0) baseline → (1) determine the revision and its digest → (2) determine the live database revision → (3) deploy → (4) verify → (5) roll back, **plus** (6) the recovery path. Covering deploy, verification and rollback. **The reviewer was not told what to look at.** |
+| O-2 | **A prerequisites table** | **Yes — thirteen** prerequisites, each marked provisioned or discoverable, each with the tracked source that says so (below). |
+| O-3 | **An authoritative-sources table** | **Yes** — a source named for each value the procedure needs, plus the correctly-external values and the values the repo warns are not authoritative (below). |
+| O-4 | **Questions asked and classified** | **Yes — sixteen**, each framed verbatim and classified. See §9. |
+| O-5 | **Assumptions** | **Yes — eight**, each with what it rests on (below). |
+| O-6 | **Items it could not find** | **Yes — ten**, stated plainly rather than worked around (below). |
+| O-7 | **Observations on ambiguity / staleness** | **Yes — sixteen** (below). |
+
+**The revision it worked from**, confirmed by the reviewer itself, is recorded in §5. It
+recorded explicitly that **no value it needed was supplied, confirmed or corrected by the
+operator.**
+
+### B — Prerequisites (the reviewer's own table)
+
+**Notation: [P] = operator-provisioned (not discoverable from the repository); [D] =
+discoverable at run time from an authoritative source.**
+
+| # | Prerequisite | Provisioned / discoverable | Where the repo says so |
+|---|---|---|---|
+| 1 | AWS CLI v2, credentials for profile **`lemondrop`**, region **`eu-west-1`** | [P] credentials; profile/region named in repo | `RUNBOOK.md:4`, `docs/deployment.md` §1.1 |
+| 2 | Session Manager plugin for the AWS CLI | [P] (tooling) | `RUNBOOK.md:49`, `docs/deployment.md` §4 item 6 |
+| 3 | IAM grants on the operator principal: `ssm:StartSession`, `ssm:SendCommand`, `ssm:GetCommandInvocation` (+ `ssm:ListCommands/ListCommandInvocations`); `ec2:DescribeInstances`; `elasticloadbalancing:DescribeLoadBalancers`; `rds:DescribeDBInstances`; **`secretsmanager:GetSecretValue` on the RDS master secret** (operator-side, not the instance role); `ssm:GetParameter` (only for the no-Terraform DB route) | [P] | `docs/deployment.md` §1.2, §7.1.1; `infra/iam.tf:530-545` |
+| 4 | RDS **master** credential, reachable from the workstation — **highest sensitivity** | [P] — never written into any document, incl. the protocol | protocol §4 item 4; `docs/deployment.md` §7.1.1 |
+| 5 | Repository read access (GitHub, **private**) and ability to read Actions logs/job summaries | [P] | `docs/deployment.md` §1.2; `docs/verification.md:148` |
+| 6 | Local tooling: **`psql`, `jq`, `curl`, `openssl`**, and **Docker with Compose v2** | [P] (tooling) | `RUNBOOK.md:44-45`, `docs/deployment.md` §1.1, protocol §4 item 5 |
+| 7 | The four deploy files present and current under `/opt/lemondrop/scripts/` | [D] — check on the host | `docs/deployment.md` §2.2, §4.4 |
+| 8 | GHCR package **anonymously readable**; otherwise a GitHub token with `read:packages` **on the host** | [P] if the setting changes | `docs/deployment.md` §1.2, §3.3, §10 item 7 |
+| 9 | EC2 instance id | [D] — `ec2:DescribeInstances` on `Role=application-host`+`ManagedBy=terraform` | `docs/deployment.md` §1.1, §7.1.1 step 1 |
+| 10 | RDS endpoint, port, db name, master secret ARN, master username | [D] — `rds:DescribeDBInstances` | `docs/deployment.md` §7.1.1 step 1 |
+| 11 | Live database alembic revision | [D] — read from RDS out of band | `docs/deployment.md` §7.1, §7.1.1 |
+| 12 | Registry manifest digest for the revision | [D] — CI `publish` job summary/log | `docs/deployment.md` §3.3 |
+| 13 | A **rehearsal/throwaway host** | **Not available** — the repository states plainly that none is described | `docs/deployment.md` §6.5, §10 item 17 |
+
+### C — Authoritative sources (the reviewer's own table)
+
+| Value the procedure needs | Authoritative source | Where the repository says so |
+|---|---|---|
+| Revision under test | A commit on `origin/main` with a green `release` run (`publish` not skipped) | `docs/deployment.md` §3.4; `.github/workflows/release.yml` |
+| Registry manifest digest | The `publish` job's job summary (step `record the pushed digest`) or its log line `published digest:` | `docs/deployment.md` §3.3; `release.yml:891-959` |
+| Pullability of a digest, on the day | `docker manifest inspect` succeeding | `docs/deployment.md` §3.3 |
+| AWS profile / region | `RUNBOOK.md:4` (profile `lemondrop`, region `eu-west-1`) | `docs/deployment.md` §1.1 |
+| EC2 instance id | `aws ec2 describe-instances` tag filters; `terraform output ec2_instance_id` second route | `docs/deployment.md` §1.1, §7.1.1 step 1; `infra/outputs.tf:172-175` |
+| ALB DNS name | `aws elbv2 describe-load-balancers --names <name_prefix>-alb`; `terraform output alb_dns_name` second route | `docs/deployment.md` §5.3; `infra/outputs.tf:161-165` |
+| RDS endpoint/port/dbname/secret ARN/username | `aws rds describe-db-instances` `DBInstances[0].{Endpoint.Address,Endpoint.Port,DBName,MasterUserSecret.SecretArn,MasterUsername}` | `docs/deployment.md` §7.1.1 step 1; §10 item 11 |
+| RDS host/port without `rds:` perms | SSM parameters `/<project_name>/<environment>/db/host` and `/port` | `docs/deployment.md` §7.1.1 step 1; `infra/iam.tf:821-847` |
+| (Non-)authoritative: `/…/db/secret-arn` | It is the **application** ARN, **not** the master — do not use it to read the master secret | `docs/deployment.md` §7.1.1; `infra/iam.tf:849-878` |
+| Live database alembic revision | The RDS instance, read via §7.1.1's `SELECT version_num FROM public.alembic_version` | `docs/deployment.md` §7.1.1; `api/alembic/README.md` |
+| Current schema head the record compares against | The record's `ALEMBIC_HEAD` (operator-supplied, db-verified) | `docs/deployment.md` §4.6, §7.1 |
+| Record path and keys | `deploy-lib.sh` defaults (`/var/lib/lemondrop/deployed-revision.env`) | `deploy-lib.sh:56-61,266`; `docs/deployment.md` §0.2, §4.6 |
+| Known-good search probe | `deploy-lib.sh` `LEMDROP_PROBE_*`, re-grounded against `data/corpus.json` | `deploy-lib.sh:96-98,980-1003,1041-1088` |
+| Migration procedure (out of band only) | `api/alembic/README.md`, "Against RDS, later" | `docs/deployment.md` §1.3, §7.1 |
+
+**Values correctly external by construction (not in the tree, and the repo says so):** the
+digest, the live DB revision, the live AWS resource identifiers, the operator's IAM grant.
+**Values the repo explicitly warns are NOT authoritative:** every M2-era literal in
+`RUNBOOK.md`, and the digest pinned in `docker-compose.yml`/`.env.example`.
+
+### D — The eight assumptions the reviewer recorded
+
+1. **That the running/"production" host is the `lemondrop-dev` stack.** Rests on
+   `infra/variables.tf:47-55`, `infra/locals.tf:11`, and every ALB/RDS example. **No
+   repository document states that a production environment exists or is the deploy target.**
+2. **That the transport to the host is SSM `SendCommand`.** Rests on `RUNBOOK.md:160-168`,
+   `docs/deployment.md` §1.2 and §2.1/§2.2. The only host-control mechanism the repo describes.
+3. **That the four files are present and current on the host.** Not verified; §2.2/§4.4
+   provide the checks, not the answer.
+4. **That the GHCR package is anonymously readable.** Rests on §10 item 7's historical
+   observation; the repo says this is not a standing guarantee.
+5. **That the record file is at the default path with the default key set.** Rests on
+   `deploy-lib.sh:56-61,266` and §0.2. Every path is overridable.
+6. **That the workstation has `docker buildx imagetools`.** §1.1 names only "Docker, with
+   Compose v2"; `buildx imagetools` is used in §3.3 but not listed as a prerequisite.
+7. **That HEAD may be treated as "the revision under test" for this walkthrough.** A run
+   property, not a documentation claim.
+8. **That the values not present in the tree should be obtained at run time, not
+   reconstructed.** Rests on §3.2, §7.1, §10 items 8 and 11.
+
+### E — The ten items the reviewer could not find
+
+1. No exact, copy-pasteable SSM `send-command` wrapper for `deploy.sh`, `rollback.sh` or
+   `verify-deployment.sh`. The scripts' `DELIVERY` block and §2.3 state the omission is
+   deliberate ("NOT WRITTEN HERE, ON PURPOSE"); `RUNBOOK.md:160-168` shows the mechanics
+   only for a `tail`.
+2. No release run / digest for the revision. Lives in GitHub Actions; not obtained.
+3. No live database revision value. Only the route (§7.1.1) and an evidence record
+   (`0001`, dated 2026-10-14).
+4. No current AWS resource values. Only discovery routes; the repo forbids storing them.
+5. No approver identity, notification target, or escalation contact. An organisational fact.
+6. No throwaway/rehearsal host. The repo states plainly that it describes none.
+7. No confirmation that `9fc2518…` has a green release run. The CI side is not in the repo.
+8. No statement of where the host's scripts came from at this revision.
+9. No documentation of the GHCR package's visibility setting (only a historical observation).
+10. No separate production environment or production deploy procedure.
+
+### F — The sixteen observations on ambiguity / staleness
+
+**Self-contradictory / stale (1–9)** and **ambiguous (10–16)**, as the reviewer framed them.
+**These are documentation defects, not §9 "genuine documentation gaps"** — none of them
+stopped the derivation. They are treated as findings in §10.
+
+1. `infra/README.md` is stale and contradicts the tree (see §10, F-1).
+2. `RUNBOOK.md` carries M2-era literals; only some are flagged stale.
+3. The RDS master username appears with two values and never a reconciled one.
+4. `docs/deployment.md` §0.4 quotes a stale `git status` capture.
+5. §9.4's heading ("A reboot reverts the digest pin") is superseded by §9.5.1.
+6. §2.4 and §4.4 describe earlier drafts now annotated as false.
+7. The protocol document itself is heavily self-annotated (banner vs later sections).
+8. `.env.example` and `docker-compose.yml` pin the same digest — stale by construction.
+9. "Deploy tooling has never been executed" (§10 item 1) vs "executed live during Milestone
+   4" (§10 item 15).
+10. **"Production host" is undefined in the repository.** The only environment described is
+    `dev`; the task's phrase has no repository referent.
+11. The acceptance criterion's endpoint (`/health`) vs the runbook's (`/health/ready`) disagree.
+12. The acceptance criterion's wording is recorded as genuinely ambiguous and unresolved.
+13. `docs/m4-plan.md` and `docs/m3-study-guide/` are untracked but cited by name (G-1).
+14. `jq` is listed inconsistently (optional in §1.1, but needed by §7.1.1 step 4).
+15. Digests appear only in abbreviated form in prose, while §3.3 warns against truncation.
+16. §3.3's step-list numbering is non-linear (inserted 6b/6c that run after step 7).
+
+**What was not done — restated for this run.** ❗ No AWS call, no SSM command, no deployment,
+no container operation, no Terraform, no rollback, no host contact, nothing pushed, no
+credential read, and the evaluator-only answer key was not read. This is Variant A, and §3
+defines it as a reading exercise.
+
 ## §9 — Questions asked
 
 **Filled in from the run of 2026-10-15. Fifteen questions, recorded in the reviewer's own
@@ -920,6 +1197,60 @@ clean pass and a runbook that is technically complete and practically hostile.
 > answer — it is a question the repository failed to answer.** Record it in this table
 > regardless of how quickly it was answered or how obvious the answer seemed.
 
+### 📋 The second run's questions — 2026-10-15, sixteen of them
+
+**Filled in from the second run of 2026-10-15. The first run's question record above —
+its table, its tally and its near-miss list — is retained unchanged and is evidence of what
+that run found. This is the second run's record, added alongside it, clearly dated and
+attributed, so the two are distinguishable.**
+
+> **Transcription note.** The questions below are recorded **verbatim** as the reviewer
+> framed them in its own submission, each with the reviewer's own answer/route and its own
+> classification under §9's scale. **The classification matches the reviewer's own table**,
+> so nothing has been re-scored here.
+
+| # | Question, as the reviewer framed it | The reviewer's answer / route | Classification |
+|---|---|---|---|
+| Q1 | "Which commit am I deploying, and how do I know it is deployable?" | `docs/deployment.md` §3.4 defines "tested revision"; §3.4's unpushed-HEAD check tells the reviewer if the commit has no image. | **Answerable from the repository** |
+| Q2 | "What is the registry manifest digest for that revision?" | The `publish` job summary/log (§3.3). The reviewer could not read it (no Actions access); the route is documented. | **Correctly external** (route documented) |
+| Q3 | "How do I read the live alembic revision out of RDS?" | `docs/deployment.md` §7.1.1 gives the complete procedure (discover → tunnel → TLS → credential → query). | **Answerable from the repository** (this was G-2, now closed) |
+| Q4 | "What is the current RDS endpoint / master username / secret ARN?" | Discover from `rds:DescribeDBInstances` (§7.1.1 step 1). The `RUNBOOK.md` values are stale. | **Correctly external** (route documented) |
+| Q5 | "Does my principal actually have `secretsmanager:GetSecretValue` on the master secret?" | An operator-side IAM grant; the requirement is stated (§1.2, §7.1.1, protocol §4 item 4). | **Correctly external** |
+| Q6 | "How is `sudo deploy.sh …` actually wrapped for SSM `send-command`?" | Assembled from `RUNBOOK.md:160-168` plus §2.3/§1.2. No verbatim wrapper exists. | **Partly reconstructable** — a label §9 does not define; **adjudicated in §11 as answerable-from-the-repository and a pass contribution, not a gap.** |
+| Q7 | "Is the operator's `jq`/`psql`/`openssl`/`docker` present?" | Named as prerequisites (§1.1, `RUNBOOK.md:44`). | **Answerable from the repository** (provisioning) |
+| Q8 | "Which endpoint governs — `/health` or `/health/ready`?" | The runbook mandates `/health/ready` and is unambiguous (`deploy-lib.sh:743`); the `/health` wording comes from the untracked plan. | **Answerable from the repository** |
+| Q9 | "Will my rollback land on the defective legacy branch?" | Depends on the live host's record (`PREVIOUS_IMAGE_DIGEST` empty + a `ROLLBACK_TAG`). The reviewer can state the condition, not the fact. | **Host-state question** (excluded from the measurement) |
+| Q10 | "Who approves a deploy to this host, and who must be told?" | The checklist says "you know who to tell" but names no one; an approver is an organisational fact. | **Correctly external** |
+| Q11 | "Is there a throwaway host to rehearse a rollback on?" | The repository now states plainly that none is described, named, or confirmed to exist (§6.5, §10 item 17). | **Answerable from the repository** (the *absence* is now documented) |
+| Q12 | "Where does a diagnostic report land, and how do I retrieve it?" | `/var/lib/lemondrop/diagnostics/` (bash) and `%LOCALAPPDATA%\lemondrop\diagnostics\` (ps1), overridable. | **Answerable from the repository** |
+| Q13 | "What exactly is the record file, and what does each key mean?" | §0.2 and §4.6, plus `RECORD_KEYS_RE` in `deploy-lib.sh`. | **Answerable from the repository** |
+| Q14 | "The task says 'production host' — which environment is that?" | The only described host is the `dev` stack (`lemondrop-dev`). The repo never names a separate production environment. | **Finding / ambiguity** — see §8 F-10 and §10 F-3 |
+| Q15 | "How do I get the four scripts onto a host that predates them?" | §2.3 gives Option A (`git pull --ff-only`) and Option B (file copy), and says a transport wrapper is deliberately not supplied. | **Answerable from the repository** (the route is documented) |
+| Q16 | "After an instance replacement, the `.env` pin is reverted — do I need to care?" | Yes: §9.4/§9.5.1 say an instance replacement reverts the pin; run `verify-deployment.sh` after any such event. An ordinary reboot does not re-run `user_data`. | **Answerable from the repository** |
+
+**The tally of the second run:** **Answerable from the repository — nine (Q1, Q3, Q7, Q8,
+Q11, Q12, Q13, Q15, Q16) · Correctly external, route documented — four (Q2, Q4, Q5, Q10) ·
+Host-state, excluded — one (Q9) · Partly reconstructable, adjudicated a pass contribution —
+one (Q6) · Finding/ambiguity — one (Q14).** **No row is a genuine documentation gap.**
+
+**Near-miss questions the reviewer resolved without asking anyone:**
+
+- **Q6 (transport).** Resolved by assembling `RUNBOOK.md:160-168` with §1.2/§2.3. **It cost
+  assembly; the residual is recorded in §10.** See §11 for the adjudication.
+- **Q8 (`/health` vs `/health/ready`).** Settled against the runbook; noticed the
+  disagreement originates in an **untracked** document.
+- **Q14 ("production host").** Resolved by reading `infra/variables.tf:47-55` and
+  `infra/locals.tf:11` → the running stack is `lemondrop-dev`. **There is no documented
+  production environment.**
+- **The two hash kinds.** Resolved from §3.3 and `docs/verification-milestone-4.md` §9.2 —
+  one manifest digest, one local config ID; never interchanged.
+
+> ⚠️ **Q6 carries a label §9's scale does not define — "partly reconstructable".** §9 has a
+> precedent for this: the first run recorded Q13 with the same undefined answer, and §9
+> records that it was **not** rewritten to fit the scale. **Q6 is likewise left as the
+> reviewer recorded it.** The classification above adds the reading §11 applies; it does not
+> alter the reviewer's words.
+
 ## §10 — Documentation gaps found
 
 **Filled in from the run of 2026-10-15. Eight gaps, recorded with the reviewer's own
@@ -1040,6 +1371,34 @@ code defect rather than a documentation one. Some of the most important things a
 reviewer will encounter on this path are **unfixed defects in the tooling**, not gaps in
 the writing. §7's warnings name two of them. If a reviewer hits one, that is a finding
 about the system and it belongs in this record.
+
+### 📋 The second run's findings — 2026-10-15
+
+**Filled in from the second run of 2026-10-15. The first run's eight gaps (G-1 … G-8) above
+are retained unchanged; this is the second run's record, added alongside.**
+
+> **None of the findings below meets §9's definition of a *genuine documentation gap*.** The
+> reviewer completed the derivation and classified every question as answerable,
+> correctly-external-with-a-documented-route, a host-state question, or the Q6 adjudication.
+> **But the reviewer surfaced real documentation defects that §11's scale does not score as
+> gaps**, and recording them is the point of this section. They are drawn from the sixteen
+> observations in §8 F. **None is fixed in this commit** — recording, not repairing, is what
+> this run asks for; each is flagged as **follow-up work**.
+
+| # | Finding, in the reviewer's own framing | Nature | Follow-up |
+|---|---|---|---|
+| **F-1** | ⚠️ **`infra/README.md` is actively misleading.** Its Scope table says EC2, ALB and RDS are *"not in this directory"* (*"Phase 2 and are deliberately not here"*), and its header says the configuration *"has never been validated. Terraform is not installed…"*. But `infra/compute.tf`, `infra/database.tf`, `infra/load_balancer.tf` and `infra/iam.tf` all exist, and the same file's own closing "Verification status" says *"The infrastructure is deployed and verified."* **A cold reader following the top of that file would conclude the infrastructure is not in the repository.** | Stale/self-contradictory doc | ⚠️ **Highest-value:** correct the scope table and header to match the tree. |
+| **F-2** | **The SSM transport wrapper** — no copy-pasteable `send-command` wrapper for `deploy.sh`/`rollback.sh`/`verify-deployment.sh`. **A deliberate omission, documented as deliberate** (§2.3: *"NOT WRITTEN HERE, ON PURPOSE"* — the transport is approval-gated); the mechanics are in `RUNBOOK.md:160-168`. **Assembly was required.** | Deliberate omission | **Adjudicated not a gap** (see §11). No change recommended. |
+| **F-3** | **"Production host" is undefined in the repository.** Only the `dev` environment is described (`infra/variables.tf:47-55`, `infra/locals.tf:11`). **The criterion's phrase has no repository referent.** | Ambiguity | Reconcile the criterion's wording ("production host") with the one stack the repo describes. |
+| **F-4** | **`jq` is listed inconsistently.** `docs/deployment.md` §1.1 calls it optional and says no step needs it, but §7.1.1 step 4 extracts the password with `jq -r .password`, so the DB-read step **does** need it. | Internal inconsistency | Correct the §1.1 description of `jq`. |
+| **F-5** | **Truncated digests in prose.** §3.3 warns a truncated digest is worse than none, while the prose itself uses truncations (e.g. `sha256:0bdb7afa…42986`, `sha256:d4aac49d…`). | Self-inconsistent | Either quote full digests or point to the file that holds the full value. |
+| **F-6** | **§3.3's step numbering is non-linear** — inserted 6b/6c that *run after* step 7 — which the document itself flags. A reader following the numbers rather than the execution order could misread the safety ordering. | Structural/ambiguity | Re-number, or state the execution order explicitly alongside the numbers. |
+| **F-7** | **`docs/deployment.md` §0.4 quotes a stale `git status`** (`## main...origin/main [ahead 1]` and `?? docs/deployment.md`). `deployment.md` is now tracked and `main` is not ahead; the doc annotates this, but the quoted capture is stale in two ways. | Stale capture | Refresh or remove the quoted capture. |
+
+**The remaining observations in §8 F** — those not among the seven findings tabulated
+above — are recorded there as ambiguity/staleness findings. They do not meet §9's
+definition of a genuine documentation gap, and **no re-scoring is done here**; they are
+listed so a later repair pass can route them.
 
 ## §11 — Pass / fail criteria
 
@@ -1177,6 +1536,54 @@ confirmed, and that the host was returned to a known state.
 deployed, verified and rolled back. **Variant B is the only variant that can support
 that sentence, and §12 must not contain it unless Variant B was run.**
 
+### 📋 §11 applied to the second run — 2026-10-15 — **PASS**, on all four conditions
+
+**§11 was applied to the second run's submitted evidence and returns PASS. It is not
+recorded bare: the Q6 adjudication and the agent caveat below are part of the result, and
+neither may be detached from it.**
+
+| PASS condition | Result |
+|---|---|
+| **1. The complete procedure came from repository information alone** | ✅ The reviewer produced a full six-phase procedure — baseline → determine revision and digest → determine the live database revision → deploy → verify → roll back — **plus** the recovery path, **in its own order, without being told what to look at** (§8 O-1). |
+| **2. Every required value was derivable** | ✅ Each value came either from the tree or from a **documented** external route: the digest from the release `publish` job summary (`docs/deployment.md` §3.3); the live database revision from §7.1.1; the AWS resource identifiers from the `describe-*` discovery routes; the recovery path from §7. **No value was supplied, confirmed or corrected by the operator** (§8 A). |
+| **3. Zero genuine documentation gaps** | ✅ See the Q6 adjudication below — the only borderline case. Every other question is answerable-from-the-repository, correctly-external-with-a-documented-route, or a host-state question excluded from the measurement (§9). |
+| **4. The record is complete enough to execute** | ✅ The procedure, prerequisites, sources and recovery path are complete; another competent engineer could follow it. |
+
+### The Q6 adjudication — the load-bearing reasoning
+
+**The reviewer recorded Q6** (*"How is `sudo deploy.sh …` actually wrapped for SSM
+`send-command`?"*) **with a label §9 does not define: "partly reconstructable".** §9 has a
+precedent — the first run recorded the same undefined answer for its Q13, and §9 records
+that it was **not** rewritten to fit the scale.
+
+**Q6 is classified: Answerable from the repository — a pass contribution, NOT a gap.** The
+reasoning, which is the whole decision:
+
+- **The parts are all present in the tree:** the `SendCommand` / `GetCommandInvocation`
+  mechanics at `RUNBOOK.md:160-168`, the required permission pair at `docs/deployment.md`
+  §1.2, and the rationale for the deliberate omission at §2.3 (*"NOT WRITTEN HERE, ON
+  PURPOSE"* — the transport is approval-gated).
+- **The reviewer assembled it successfully**, without asking anyone.
+- **§9's first row governs:** *"The reviewer had to work, and the work was the test."*
+  Assembly from documented parts **is** the work, not a gap.
+- **The criterion says *"without manually reconstructing the original environment"* — not
+  *"without assembling any command."*** Assembling a three-line wrapper from documented
+  mechanics is not reconstructing an environment.
+
+**This is not claimed to have been easy or obvious.** Q6 **cost the reviewer real assembly
+work**, and it is **the closest thing in this run to a gap** — but it **does not meet §9's
+definition of one**, so it does not fail PASS condition 3.
+
+### The agent caveat, stated alongside the PASS and not softened
+
+❗ **This is an AGENT run.** Per the reviewer-type subsection in §3, an agent run is evidence
+about the **documentation's self-sufficiency** and a **weaker proxy** for the acceptance
+criterion than a human run. The reviewer shares the author's model lineage and priors, so
+**context isolation is not perspective isolation.** **PASS here means the documentation was
+self-sufficient for a context-isolated agent; it is not evidence that a second engineer
+performed a deployment, and nothing in this record may imply that it is.** **No deployment
+occurred.**
+
 ## §12 — Final verdict
 
 > ## ⚠️ **NOT YET TESTED — the verdict field is still blank, and the exercise HAS been run**
@@ -1308,6 +1715,15 @@ the reviewer was helped is not a pass; it is an unrecorded assistance.**
 > find, or whether it would pass. A re-run that fails is as likely as one that passes, and
 > the only thing this document can say about it is that it has not been done.**
 
+> ⚠️ **Superseded in part — 2026-10-15.** The blockquote above was true when it was written
+> and **is retained as written**. **A second Variant A run has since been carried out**,
+> against the repaired tree and against §11's revised wording: **§11 applied to it returns
+> PASS on all four conditions**, with the Q6 adjudication and the agent caveat attached
+> (§11). The first run's FAIL above **stands as recorded** and is **not** re-scored or
+> withdrawn. **The Verdict field remains blank and remains the assessor's** — a PASS on §11
+> is a criterion applied to evidence, not a verdict on the criterion. **See the second run's
+> facts below.**
+
 ### ❗ What this run is not
 
 - ❗ **NO DEPLOYMENT OCCURRED.** Nothing was deployed, no AWS call was made, no SSM
@@ -1363,6 +1779,42 @@ operationalisation of it do not agree on whether that is required
 ambiguity is recorded rather than resolved, and the record says which reading the
 verdict rests on.**
 
+### 📋 The second run's facts — 2026-10-15 — the **second** Variant A run
+
+**This is the second Variant A run.** The first returned **FAIL against §11's earlier
+wording and an unrepaired tree** (§12, above). **This one passes against the current
+criteria and the repaired tree.** The run facts are recorded here; **the Verdict field is
+left blank and belongs to the assessor.**
+
+| Field | Value |
+|---|---|
+| **Status** | **NOT YET TESTED** — the criterion's verdict is unrecorded. **The second exercise was run; §11 was applied to it and returns PASS on all four conditions.** |
+| Variant exercised | **A — cold-reader documentation walkthrough. No deployment occurred.** |
+| Run ordinal | **Second Variant A run.** (First: FAIL, against the earlier wording and the unrepaired tree. This one: PASS, against the current wording and the repaired tree.) |
+| Reviewer | **An AI agent (context-isolated). Not a person.** ⚠️ *Per §3 an agent run is a weaker proxy for the acceptance criterion than a human run: the agent shares the author's model lineage and priors, so context isolation is not perspective isolation. It is not evidence that a second engineer performed a deployment.* |
+| Date of exercise | **2026-10-15** |
+| Revision under test | `9fc2518ed9092f4696e41cebeab84066560908d7` (§5) — the pushed `main`. CI run `38793650721`, nine jobs green; local `actionlint` v1.7.12, exit 0 (evaluator-supplied; not derivable from the repository). |
+| Author-only questions | **None.** Sixteen questions were recorded; **none is classified as a genuine documentation gap** (§9). Nine answerable-from-the-repository, four correctly-external-with-a-documented-route, one host-state (excluded), one partly-reconstructable adjudicated as a pass contribution (Q6), one finding/ambiguity (Q14). |
+| Procedure derivation | **A complete six-phase procedure was produced from the repository alone, in the reviewer's own order** — baseline → determine revision and digest → determine the live database revision → deploy → verify → roll back — plus the recovery path (§8 O-1). **Every required value was derivable** from the tree or a documented external route; **none was supplied, confirmed or corrected by the operator.** |
+| Deploy / verify / rollback executed | **❗ NONE. Nothing was deployed, verified against a host, or rolled back. No AWS call, no SSM command, no container operation, no Terraform.** |
+| Documentation findings | **None meets §9's definition of a genuine documentation gap.** Seven real defects are recorded as findings (F-1 … F-7, §10), headed by the actively misleading `infra/README.md`; **none is fixed in this commit** and each is flagged as follow-up. |
+| **§11 applied — outcome** | **✅ PASS — all four conditions. The Q6 adjudication is load-bearing; the agent caveat is attached. Never recorded bare.** (§11) |
+| **Verdict** | *(blank — **reserved to the assessor**. NOT YET TESTED.)* |
+
+### ❗ What the second run is not
+
+- ❗ **NO DEPLOYMENT OCCURRED.** Nothing was deployed, no AWS call was made, no SSM command
+  was issued, no container was touched, no rollback was performed and no Terraform was run.
+  **This result must never be reported as a live-deployment demonstration.** §3's separation
+  is absolute: **a Variant A result may never be reported as a Variant B result.**
+- ❗ **It is not evidence that a second engineer performed a deployment.** **The reviewer was
+  an AI agent**, and per §3 an agent run is a **weaker proxy** for the acceptance criterion
+  than a human run — it shares the author's model lineage and priors, and context isolation
+  is not perspective isolation.
+- ❗ **This section records a criterion applied to evidence, not a verdict.** **The Verdict
+  field above is blank and belongs to the assessor (Moe).** Nothing here predicts, or
+  pre-empts, that decision.
+
 ---
 
 > ## Closing status, restated so it cannot be missed
@@ -1383,6 +1835,25 @@ verdict rests on.**
 >   one (Q9) is a host-state question that is not a documentation failure at all.** **A
 >   fresh cold-reader run is required and has not happened** (§12). **The Verdict field is
 >   still blank.**
+
+> ### 📋 Dated note — 2026-10-15 — the fresh run the note above required **has now happened**, and **§11 returns PASS**
+>
+> **The closing status above is retained as written.** One thing has changed since: **a
+> second Variant A exercise was carried out on 2026-10-15**, by an **AI agent,
+> context-isolated** (§6), against `9fc2518ed9092f4696e41cebeab84066560908d7` (§5) — the
+> pushed `main`. **§11 (revised) was applied to its submitted evidence and the outcome is
+> PASS on all four conditions**, carrying the **Q6 adjudication** and the **agent caveat**
+> (§11, §12). It recorded **no genuine documentation gap**, but surfaced **seven real
+> documentation defects as findings** (F-1 … F-7, §10), headed by the actively misleading
+> `infra/README.md`.
+>
+> - ❗ **NOTHING WAS DEPLOYED in either run.** No AWS call, no SSM command, no container
+>   operation, no Terraform, no rollback. **The PASS is a reading result, not a deployment.**
+> - ❗ **The reviewer was an AI agent, not a second engineer.** Per §3 an agent run is a
+>   weaker proxy for the acceptance criterion than a human run — it shares the author's
+>   model lineage and priors, so **context isolation is not perspective isolation.**
+> - **The Verdict field in §12 is still blank, and it is still the assessor's.** A PASS on
+>   §11 is a criterion applied to evidence, not a verdict on the criterion.
 > - ⚠️ **Five of the eight gaps in §10 were closed by a documentation repair pass after
 >   that FAIL was written — G-1, G-2 (the ⛔ blocking one), G-6, G-7 and G-8 — and the
 >   repository has since changed under it.** **G-3, G-4 and G-5 were closed by a later
