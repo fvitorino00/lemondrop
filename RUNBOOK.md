@@ -3,11 +3,25 @@
 Operational runbook for the Milestone 2 AWS stack. All commands assume the
 `lemondrop` AWS profile and region `eu-west-1`.
 
+> ⚠️ **READ `docs/deployment.md` BEFORE YOU TRUST A VALUE IN THIS FILE.**
+>
+> This is a Milestone 2 document and it is kept for what it is — the AWS access
+> mechanics (bootstrap, backend wiring, SSM, teardown) — which have not been
+> superseded. **Its hardcoded infrastructure values are M2-era records, not
+> configuration**, and one of them (the RDS master username) is not merely stale
+> but contradicts another file in this repository. Discover values; do not copy
+> them. `docs/deployment.md` §1.1, §1.3, §7.1.1 and §10 item 11 are the routes.
+
 ## 1. Prerequisites
 
 - Terraform >= 1.10
 - AWS CLI v2, configured with a `lemondrop` profile
 - `jq` and `psql` (PostgreSQL client) on the operator machine
+- `openssl` and `curl`, for the RDS CA bundle (`docs/deployment.md` §7.1.1)
+- `secretsmanager:GetSecretValue` on **the RDS master secret**, on **your own
+  principal** — the EC2 instance role does not have it and must not be given it
+  (`docs/deployment.md` §1.3, §7.1.1)
+- The Session Manager plugin for the AWS CLI, for §4's `start-session`
 - The repository must be reachable from the EC2 instance (public repo, or a
   deploy mechanism such as a pre-baked AMI or Systems Manager package)
 
@@ -75,10 +89,33 @@ Variable reference:
 curl -i http://lemondrop-dev-alb-285677848.eu-west-1.elb.amazonaws.com/health
 
 # 2. RDS reachability over TLS — expect the query to return 1
-psql "postgresql://lemondrop:$(aws secretsmanager get-secret-value \
-  --secret-id arn:aws:secretsmanager:eu-west-1:615105803772:secret:rds!db-b2bb4e62-9b1b-457f-9cd3-fd54665c9c39-e0PB5i \
-  --query SecretString --output text | jq -r .password)@lemondrop-dev-postgres.c5g80qskaezr.eu-west-1.rds.amazonaws.com:5432/lemondrop?sslmode=verify-full" \
-  -c "SELECT 1"
+#
+# ⚠️ THE THREE VALUES BELOW ARE MILESTONE 2 ERA AND ARE NOT THE AUTHORITY.
+#    The endpoint hostname, the master secret's ARN and the master username are
+#    ALL DISCOVERED from AWS, and the procedure that discovers them is
+#    docs/deployment.md §7.1.1. Read that section; it also carries the
+#    SSM port-forwarding tunnel this connection needs (RDS is not reachable
+#    from the internet), the CA bundle check, and the `host`/`hostaddr` split
+#    that keeps sslmode=verify-full meaningful through the tunnel.
+#
+#    This block used to carry all three literally — the endpoint hostname, the
+#    master secret's ARN and the master username — and they have been replaced by
+#    placeholders on purpose. The username is not merely stale: it is in conflict
+#    with the Terraform input default in infra/variables.tf, and neither one is
+#    authoritative. A Terraform input default is a FALLBACK, not a record of
+#    what any apply was run with. The only authoritative source is the RDS
+#    instance itself:
+#
+#      endpoint, port, db name, master secret ARN, master username
+#        <- aws rds describe-db-instances --db-instance-identifier <id> \
+#              --query 'DBInstances[0].{h:Endpoint.Address,p:Endpoint.Port,
+#                       d:DBName,s:MasterUserSecret.SecretArn,u:MasterUsername}'
+#
+#    Hardcoding any of them here is what made them go stale silently.
+psql "host=<rds-endpoint-from-describe-db-instances> hostaddr=127.0.0.1 port=<local-tunnel-port> \
+  user=<master-username-from-describe-db-instances> dbname=<db-name> \
+  sslmode=verify-full sslrootcert=<path-to>/rds-global-bundle.pem" \
+  -c "SELECT version_num FROM public.alembic_version"
 
 # 3. Inference port must be closed — expect timeout / connection refused
 timeout 5 bash -c 'cat < /dev/null > /dev/tcp/<instance>/8080'
@@ -145,5 +182,7 @@ Symptom → cause → fix for every failure hit during the M2 deployment.
 | EC2 rejects `user_data` — size limit | EC2 `user_data` hard limit is 16,384 bytes; the original script was ~25KB | Split the rationale into `docs/boot-script.md` and keep the script itself at 15,068 bytes |
 | `git clone` of the app repo fails from the instance | The repo is private and the instance has no credentials | Make the repo public, or bake the app into a Golden AMI, or use SSM to push a package |
 | `terraform validate` rejects the SG CIDR | CIDR must be a `/32` to be a valid single-host rule | Use `213.22.54.159/32`, not a bare IP |
-| Password comes back as a JSON object, not a string | Secrets Manager stores the secret as a JSON blob | Extract with `jq -r .password` |
+| Password comes back as a JSON object, not a string | Secrets Manager stores the secret as a JSON blob | Extract with `jq -r .password` — and never with `PGPASSWORD=… psql`, which puts the password in the shell history and in every `ps` on the machine. `docs/deployment.md` §7.1.1 |
 | `psql` fails with a TLS verification error | The RDS CA bundle is missing on the instance | Download `https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem` and point `sslrootcert` at it |
+| `AccessDeniedException` reading the master secret | The instance role holds the **application** credential only, not the RDS master secret | This is the control working, not a fault. `infra/iam.tf` grants `secretsmanager:GetSecretValue` on one ARN and it is not the master one; `docs/verification-milestone-3.md` records the denial as a PASS. Read the master secret from **your own** principal, which needs its own grant. `docs/deployment.md` §7.1.1 |
+| `ResourceNotFoundException` reading the master secret | The ARN never resolved — wrong region, wrong account, or you read `/…/db/secret-arn` (which holds the **application** ARN) instead | Fix the ARN source. **This is not the same as `AccessDenied`** and must not be reported as one |
