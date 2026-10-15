@@ -77,7 +77,7 @@
 > demonstration, and nothing in it may be read as evidence that a second engineer
 > deployed anything.**
 >
-> ❗ **Per §17.1, this is an agent run, and an agent run is a weaker proxy for the
+> ❗ **Per §3, this is an agent run, and an agent run is a weaker proxy for the
 > acceptance criterion than a human run.** The reviewer shares the model lineage and
 > priors of the session that built this system, so it is isolated from the
 > *conversation* but not from *how the system was built*. **It is not evidence that a
@@ -152,7 +152,7 @@ this document for a record.
 > no Terraform. **Nothing in this run is evidence that a second engineer deployed
 > anything, and it must never be reported as a live-deployment demonstration.**
 >
-> ❗ **Per §17.1 an agent run is a weaker proxy for the acceptance criterion than a human
+> ❗ **Per §3 an agent run is a weaker proxy for the acceptance criterion than a human
 > run.** The agent shares the author's model lineage and priors: it is isolated from the
 > conversation, not from how the system was built.
 
@@ -160,7 +160,7 @@ this document for a record.
 |---|---|
 | A second person has followed the runbook | **No.** No person exists in this run. The reviewer was an **AI agent** (§6). |
 | A second person has deployed anything | **No. Nothing was deployed.** |
-| A procedure has been derived from the repository by an independent reader | **Yes — by an AI agent (context-isolated), on 2026-10-15.** ⚠️ *Was `No`; superseded by the dated note. The reader is context-isolated but **not** perspective-isolated (§17.1), so this row records a derivation, not a second engineer's capability.* |
+| A procedure has been derived from the repository by an independent reader | **Yes — by an AI agent (context-isolated), on 2026-10-15.** ⚠️ *Was `No`; superseded by the dated note. The reader is context-isolated but **not** perspective-isolated (§3), so this row records a derivation, not a second engineer's capability.* |
 | A reviewer has been identified or contacted | **An AI agent, context-isolated. No person was approached, contacted or available.** ⚠️ *Was `No`; superseded by the dated note.* |
 | Any question has been asked of a reviewer | **Yes — fifteen recorded in §9, nine of them author-only.** ⚠️ *Was `No`; superseded by the dated note.* |
 | Any documentation gap has been catalogued | **Yes — eight in §10 (G-1 … G-8), two of them blocking.** ⚠️ *Was `No`; superseded by the dated note.* |
@@ -343,6 +343,30 @@ criterion gets quietly resolved in whichever direction the result happens to poi
 > quotations above are unaltered; only the pointers to them were retargeted, and each
 > now names a location a clean clone can open.
 
+### ⚠️ The reviewer's kind — an agent run is a weaker proxy than a human run
+
+**The two variants above describe *what* is run, not *who* runs it, and the kind of
+reviewer is a separate axis that the criterion's own word — *"a second engineer"* —
+makes load-bearing.** The one run of 2026-10-15 was carried out by an **AI agent**
+(§6), and that is a fact about the evidence which has to be recorded here, where a
+reader meets the criterion, not only where the reviewer is named. This subsection is
+its tracked home; §1, §6, §8 and §12 refer to it.
+
+> **An agent run is evidence about the documentation's self-sufficiency, and a
+> weaker proxy for the acceptance criterion than a human run. The agent shares the
+> author's model lineage and priors, so context isolation is not perspective
+> isolation. It is not evidence that a second engineer performed a deployment.**
+
+**Why this is recorded rather than left as a detail of one run.** The criterion is a
+capability claim about *a second engineer* (§2). An agent is a reader, not a colleague:
+it was isolated from the author's *conversation* but not from *how the system was
+built*, so it may reproduce the author's own search strategies and blind spots, and
+succeed where a busy human would not. A run by an agent can therefore show that the
+documentation is self-sufficient **while showing nothing about whether a person under
+time pressure would reach the same result.** The two are not interchangeable, and — as
+with Variant A and Variant B above — **neither result may be reported as the other, and
+an agent result must never be written up as a second engineer's deployment.**
+
 ## §4 — Required access
 
 Everything the reviewer needs, listed concretely. **The operator provisions these; the
@@ -444,7 +468,7 @@ below invents one.**
 
 > ### ❗ The reviewer was an AI agent. This is recorded precisely and is not softened.
 >
-> **Per §17.1, an agent run is evidence about the documentation's self-sufficiency, and
+> **Per §3, an agent run is evidence about the documentation's self-sufficiency, and
 > is a weaker proxy for the acceptance criterion than a human run.** The consequences,
 > none of which is softened:
 >
@@ -1171,7 +1195,7 @@ that sentence, and §12 must not contain it unless Variant B was run.**
 |---|---|
 | **Status** | **NOT YET TESTED** — the criterion's verdict is unrecorded. **The exercise was run; §11 was applied to it and returned FAIL.** |
 | Variant exercised | **A — cold-reader documentation walkthrough. No deployment occurred.** |
-| Reviewer | **An AI agent (context-isolated). Not a person.** ⚠️ *Per §17.1 an agent run is a weaker proxy for the acceptance criterion than a human run: the agent shares the author's model lineage and priors, so context isolation is not perspective isolation. It is not evidence that a second engineer performed a deployment.* |
+| Reviewer | **An AI agent (context-isolated). Not a person.** ⚠️ *Per §3 an agent run is a weaker proxy for the acceptance criterion than a human run: the agent shares the author's model lineage and priors, so context isolation is not perspective isolation. It is not evidence that a second engineer performed a deployment.* |
 | Date of exercise | **2026-10-15** |
 | Revision under test | `678cef3bf46a3e15d79dbc20064f0ea43f22dca8` (§5) |
 | Author-only questions | **Nine: Q1, Q2, Q4, Q5, Q6, Q8, Q9, Q10, Q15 (§9).** |
@@ -1280,7 +1304,7 @@ the reviewer was helped is not a pass; it is an unrecorded assistance.**
   demonstration.** §3's separation is absolute: **a Variant A result may never be
   reported as a Variant B result**, and this run is Variant A.
 - ❗ **It is not evidence that a second engineer performed a deployment**, and nothing
-  above may be read that way. **The reviewer was an AI agent**, and per §17.1 an agent
+  above may be read that way. **The reviewer was an AI agent**, and per §3 an agent
   run is a **weaker proxy** for the acceptance criterion than a human run — it shares
   the author's model lineage and priors, and context isolation is not perspective
   isolation.
@@ -1297,7 +1321,7 @@ there is no verdict to record:**
    exposure honestly. → ❗ **NOT SATISFIED AS WRITTEN.** A reviewer did perform the
    exercise and §6 records its exposure honestly — but **it is an AI agent, and no
    person is named, because no person exists.** This document asks for a *named
-   reviewer*; it did not anticipate an agent reviewer, and §17.1 exists precisely to
+   reviewer*; it did not anticipate an agent reviewer, and §3 exists precisely to
    mark what that substitution can and cannot establish. **The precondition is recorded
    as unmet rather than argued around.**
 2. **§8 and §9 contain what that reviewer submitted**, transcribed rather than
@@ -1355,7 +1379,7 @@ verdict rests on.**
 > - ❗ **NOTHING WAS DEPLOYED.** No AWS call, no SSM command, no container operation, no
 >   Terraform, no rollback. **This run must never be reported as a live-deployment
 >   demonstration.**
-> - ❗ **The reviewer was an AI agent, not a second engineer.** Per §17.1 an agent run is
+> - ❗ **The reviewer was an AI agent, not a second engineer.** Per §3 an agent run is
 >   a weaker proxy for the acceptance criterion than a human run — it shares the author's
 >   model lineage and priors, so **context isolation is not perspective isolation**.
 > - **The criterion's ambiguity is recorded, not resolved** — see
