@@ -31,7 +31,7 @@ The two `diagnose` scripts are the exception to "runs on the host", and each run
 
 ### 0.2 The paths that matter
 
-Defaults from `scripts/lib/deploy-lib.sh`, the `readonly LEMDROP_*` defaults at the top of the file. Every one is overridable by an environment variable of the same name; the defaults are the production values.
+Defaults from `scripts/lib/deploy-lib.sh`, the `LEMDROP_*` defaults at the top of the file. They are `: "${LEMDROP_APP_DIR:=…}"`-style assignments (`deploy-lib.sh:56-98`), **not `readonly`** — deliberately, so every one is overridable by an environment variable of the same name; the defaults are the production values. What *is* `readonly` in that file is the `EX_*` exit codes (`deploy-lib.sh:109-112`), the record-key regex (`:266`) and the OCI label keys (`:541-543`).
 
 | Thing | Path / value |
 |---|---|
