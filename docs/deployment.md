@@ -83,6 +83,12 @@ $ git status --short --branch
 
 `scripts/` is **clean**. The digest-pinned compose default and `.env.example`'s `API_IMAGE` are committed. The untracked files listed above are documentation, not deploy tooling.
 
+> ⚠️ **The two `docs/` paths in that listing have never been committed, and nothing tracked may cite them.**
+>
+> `docs/m3-study-guide/` and `docs/m4-plan.md` are **untracked** — `git status` reports them as `??`, and a clean clone of this repository does not contain either. **The listing above is a historical capture and it is stale in two ways**: this document was itself untracked when it was taken, and those two paths are still untracked now. It is kept because §0.4 is about what the capture proved at the time.
+>
+> **The consequence is a rule, not a curiosity: a tracked file may not point a reader at either path.** A citation to an untracked document is a dangling reference — the reader follows it and arrives at nothing, and if the citation was to a *criterion*, the criterion is unavailable to everyone who was not already holding the file. Every such citation in this repository has been replaced with a tracked document that carries the substance. **Nothing here was fixed by committing the two files: their untracked status is a finding about the repository, not a licence to change it.**
+
 **What this changes operationally:** the host's `git pull --ff-only` is now a real delivery path for the deploy scripts (§2.3, Option A), and the digest pinned in `docker-compose.yml` and `.env.example` is on `main` rather than being a local-only belief (§3.2). The checkout on the host still has to actually be a checkout, and still has to have been pulled — confirm with §2.2 rather than assuming.
 
 ---
@@ -110,12 +116,14 @@ Split carefully, because these are two different systems and conflating them is 
 
 | Action | Resource | Used for |
 |---|---|---|
-| `ssm:StartSession` | the instance | Interactive shell |
+| `ssm:StartSession` | the instance | Interactive shell, **and the port-forwarding session that reaches RDS (§7.1.1)** |
 | `ssm:SendCommand` | the instance | Running anything non-interactively |
 | `ssm:GetCommandInvocation` | the instance | Reading the result of a `SendCommand` |
 | `ssm:ListCommands` / `ssm:ListCommandInvocations` | the instance | Finding a previous command id |
-| `ssm:GetParameter` / `ssm:GetParameters` | `/aws/service/ami-amazon-linux-latest/*`, and this stack's DB host/port parameters | Only if you run Terraform. **Not needed for a deploy.** |
-| `ec2:DescribeInstances` | — | Confirming the instance id |
+| `ssm:GetParameter` / `ssm:GetParameters` | `/aws/service/ami-amazon-linux-latest/*`, and this stack's DB host/port parameters | Only if you run Terraform. **Not needed for a deploy — and equally not needed to read the database revision, because §7.1.1's primary route uses `rds:DescribeDBInstances`.** The SSM-parameter alternative in §7.1.1 needs only the two DB parameters. |
+| `ec2:DescribeInstances` | — | Confirming the instance id — **and §7.1.1 step 1 uses the same call to discover it** |
+| `rds:DescribeDBInstances` | the DB instance | ⚠️ **Reading the database revision only (§7.1.1).** Nothing in the deploy path needs it. |
+| `secretsmanager:GetSecretValue` | **the RDS master secret** | ⚠️ **Reading the database revision only (§7.1.1). This is a grant on YOUR principal, not on the instance — §7.1.1 and §1.3 say why the instance role cannot have it.** Nothing in the deploy path needs it. |
 
 `ssm:SendCommand` + `ssm:GetCommandInvocation` is the minimum for the workflow in this runbook; the exact pair `RUNBOOK.md:98-106` uses.
 
@@ -218,7 +226,7 @@ sudo chmod 0755 /opt/lemondrop/scripts/deploy.sh \
 sudo chmod 0644 /opt/lemondrop/scripts/lib/deploy-lib.sh   # sourced, not executed
 ```
 
-**A note on the repository's own state, which affects Option A specifically.** `docs/boot-script.md:205-207` records that boot step 3 **currently fails on boot** because the clone target is a private GitHub repository that the instance cannot authenticate to. `infra/variables.tf:619-622` says the same. But `docs/m4-plan.md:780` asserts the repository *is* public, and `docs/verification-milestone-3.md` §12 records a working deployed stack, which implies the clone succeeded at some point. **The repository contradicts itself on this point** and I cannot resolve it from the files. So: check §2.2's `rev-parse` output rather than assuming, and if `/opt/lemondrop/.git` is absent, Option A is not available and Option B is the only path.
+**A note on the repository's own state, which affects Option A specifically.** `docs/boot-script.md:204-207` records that boot step 3 **currently fails on boot** because the clone target is a private GitHub repository that the instance cannot authenticate to, and `infra/variables.tf:619-622` says the same. But `docs/verification-milestone-3.md` §12 records a working deployed stack, which implies the clone succeeded at some point. **The tracked documents do not agree on this point** and I cannot resolve it from the files: the only two that speak to visibility are `docs/verification.md:148`, which records the repository as *private*, and `docs/boot-script.md:204-207`, which records the clone failing against a private repository — there is **no tracked document asserting the opposite**, so this is a gap in the record rather than a contradiction between two of them. So: check §2.2's `rev-parse` output rather than assuming, and if `/opt/lemondrop/.git` is absent, Option A is not available and Option B is the only path.
 
 ### 2.4 The source revision must be fetchable on the host
 
@@ -281,7 +289,7 @@ ghcr.io/fvitorino00/lemondrop-api@sha256:<64 lowercase hex digits>
 
 Two further caveats on the example digest, both of which survive the commit:
 
-- The comment above it asserts the image is one this project "published, verified, and can pull anonymously". The anonymity half was **contradicted elsewhere in the repository**, and that contradiction is now **answered by observation** (§10 item 7). `docs/verification.md:148` records the repository as *private* and `docs/m4-plan.md:780` asserts it is *public*, and `docs/m4-plan.md` open question 4 (line ~790) asked: "**Is the GHCR package to be public or private?** … Public follows from the repo being public, but package visibility is set independently and should be confirmed." **That disagreement is about repository visibility and it does not bear on package readability** — a public repository does not imply a public package, and the package is what a pull actually touches. The package was observed anonymously readable; the repository-visibility question tangled up with it is a different question, still open, and irrelevant to whether the host can pull.
+- The comment above it asserts the image is one this project "published, verified, and can pull anonymously". The anonymity half was **contested elsewhere in the repository**, and that contest is now **answered by observation** (§10 item 7). **Repository visibility and package visibility are two different settings**, and the repository records the first — `docs/verification.md:148` records the repository as *private*, `docs/boot-script.md:204-207` records a clone against it failing on boot — **and records nothing about the second, which is what a pull touches.** A public repository does not imply a public package. The package was observed anonymously readable; the repository-visibility question is a separate one, still open, and irrelevant to whether the host can pull. **Run §3.3's check on the digest, on the day, rather than trusting either this paragraph or the compose comment.**
 
 Treat the pinned value as a worked example of the reference format and as a *safe default*, not as an approved production revision. Confirm §3.3 for any digest you actually intend to deploy, and run §3.3's anonymous-pullability check **on that digest, on the day** — §10 item 7 records readability observed at verification time against an older digest, not a property of this one or of any future one.
 
@@ -771,9 +779,13 @@ An empty `IMAGE_DIGEST` is not an error. `verify-deployment.sh` prints, for a ho
 
 ### 6.5 Rehearsal procedure
 
-A rollback you have never run is a hypothesis. Rehearse it **before** you need it. Note that `docs/m4-plan.md:670-673` makes this the milestone's actual acceptance criterion, and requires it to be performed by someone other than the author.
+A rollback you have never run is a hypothesis. Rehearse it **before** you need it. **The milestone's acceptance criterion is that this be done by someone other than the author** — `docs/verification-milestone-4.md` §13.1 records the criterion and §13.2 records its status.
 
 **Do it on a throwaway host, never on the one serving traffic.** There is no rehearsal mode and no dry-run flag; `deploy.sh --help` is the only non-mutating invocation.
+
+> ⚠️ **⚠️ THIS REPOSITORY DESCRIBES NO THROWAWAY HOST. ⚠️**
+>
+> "Do it on a throwaway host" is an instruction about *where*, and this repository has never said whether such a host exists. **It does not describe one, does not name one, and does not state that one exists.** §10 item 17 records that as a known limitation and scopes it to the variant it affects. **Nothing in this procedure provisions one, and creating one is infrastructure work outside the scope of a documentation pass.**
 
 ```
 PRE-REHEARSAL
@@ -892,7 +904,7 @@ $ bash scripts/deploy.sh --adopt-current 0001 extra
 FATAL: --adopt-current takes one argument, the alembic revision the database is at (got 3).
 ```
 
-**The value must be read out of band, because this host cannot read it.** The EC2 instance role holds the *application* secret only, and `lemondrop_app` is DML-only with no DDL rights — `CREATE EXTENSION vector` needs `rds_superuser`, which is precisely the split between the two credentials (`infra/iam.tf`, under *WHY THE APPLICATION CREDENTIAL AND NOT THE MASTER PASSWORD* and *⚠️ MIGRATIONS DELIBERATELY LOSE THEIR EC2 PATH. ⚠️*). The procedure for reading and migrating it is `api/alembic/README.md`, under *Against RDS, later*. `deploy.sh`, `rollback.sh` and `verify-deployment.sh` can all **compare against** `ALEMBIC_HEAD` and none of them can **confirm** it — nothing in this repository can. The argument is you, doing the looking, on purpose.
+**The value must be read out of band, because this host cannot read it.** The EC2 instance role holds the *application* secret only, and `lemondrop_app` is DML-only with no DDL rights — `CREATE EXTENSION vector` needs `rds_superuser`, which is precisely the split between the two credentials (`infra/iam.tf`, under *WHY THE APPLICATION CREDENTIAL AND NOT THE MASTER PASSWORD* and *⚠️ MIGRATIONS DELIBERATELY LOSE THEIR EC2 PATH. ⚠️*). **The complete procedure for *reading* it is §7.1.1**, end to end, including the tunnel, the TLS and the credential; the procedure for *migrating* it is `api/alembic/README.md`, under *Against RDS, later*. `deploy.sh`, `rollback.sh` and `verify-deployment.sh` can all **compare against** `ALEMBIC_HEAD` and none of them can **confirm** it — nothing in this repository can. The argument is you, doing the looking, on purpose.
 
 It is deliberately **not** taken from the git tree either: the checkout answers "what schema does this code expect", and this argument means "what schema is the database at". Those differ whenever a migration was applied out of band with the RDS master credential, which is the normal way this host's schema moves — and `boot.sh` clones `--depth 1` of whatever `main` was at boot, so the tree is routinely ahead of the database. `validate_alembic_revision_id()` rejects anything that could not be a revision id at all: non-identifier characters, more than 64 characters, a leading `-`/`.`/`_`, and the three symbolic names `head`, `heads` and `base`. **A value that survives is not proven correct — nothing on this host can prove that — it is merely not malformed, and the record says which of the two it is.**
 
@@ -910,18 +922,315 @@ The label says what the code **expects**; your value says what the database **is
 
 | Fact | Value | How established | When |
 |---|---|---|---|
-| Live RDS alembic revision | `0001` | read out of band by the operator from the RDS instance, per `api/alembic/README.md` (*Against RDS, later*) | 2026-10-14 |
+| Live RDS alembic revision | `0001` | read out of band by the operator from the RDS instance — **§7.1.1** carries the complete procedure; `docs/verification-milestone-4.md` §5 is the record of the M4 read | 2026-10-14 |
 
 **Read the corroboration for what it is.** `docs/verification-milestone-3.md:145` row 1 records "Revision `0001` applied successfully", executed and reported by the operator. It confirms that **`0001` is the single migration this repository has**, and it is the origin of the number. It is **not** independent evidence about the RDS instance: row 8 of the same table, and the paragraph beneath it, record that the migration target resolved to `127.0.0.1:5432` — the local container — and state "Nothing in this section is evidence about the RDS instance." The `0001` above is the operator's out-of-band read from RDS; that row is why the value is plausible, not why it is believed.
 
 **⚠️ THIS IS AN EVIDENCE RECORD, NOT A CACHED BELIEF — RE-READ IT BEFORE YOU ADOPT.** This document is not the database. The argument you pass is the database's answer; `0001` written here is a note about what that answer was on 2026-10-14.
 
-- **Re-read the revision from RDS before adopting.** The procedure is `api/alembic/README.md`.
+- **Re-read the revision from RDS before adopting.** The complete procedure is **§7.1.1** — discover, tunnel, TLS, credential, query. `api/alembic/README.md` is the *migration* procedure and assumes you already have the URL; §7.1.1 is how you obtain everything in it.
 - **If it is no longer `0001`, the NEW value is what `--adopt-current` takes.** Do not pass `0001` because this document says `0001`. A baseline that contradicts the database is not a harmless typo: it is a value every later deploy's fail-closed schema gate is measured against, so it converts one mistyped argument into a host that refuses every deploy until someone reconciles it by hand.
 - **This is the exact failure `deploy.sh` was rewritten to eliminate.** `validate_alembic_revision_id()`'s header comment says so directly: the value is not looked up in the checkout because "the entire reason this argument exists is that the answer comes from the database, and the database is frequently not what the tree says". A runbook that hard-codes a revision *without this warning* would reintroduce the very substitute — a value carried around in a file instead of read from its source — through the documentation instead of through the code.
 - **Recorded 2026-10-14.** If you are reading this after a migration has been applied, treat the value as unverified until you have re-read it.
 
 **If you know exactly what should be running**, and the record is gone entirely, the `write_record` failure branch of `deploy.sh` gives the other route, for the specific case where verification passed but the record write failed: record by hand from the values the deploy printed, or re-run `deploy.sh` with the same arguments once the directory is writable. The script's own instruction is: "Do NOT re-run this deploy to fix it."
+
+### 7.1.1 Reading the live database revision — the complete procedure
+
+**Every other command in this runbook can be run from a checkout. This one cannot**, which is why it is its own section rather than a line in §7.1. `--adopt-current` takes the database's alembic revision as an argument and **nothing in this repository can produce that argument**: the host cannot read it (§1.3) and the deploy tooling can compare against it but never confirm it (§7.1 above). This is the procedure that closes that hole, and it was absent — the technique was described in three places and the invocations in none.
+
+It is a **read**. One `SELECT`, one row, nothing written. It does **not** migrate, and it does **not** run from the host: see *Not this* at the end.
+
+#### The access this requires, and the access it does not
+
+| Requirement | Why | Where it comes from |
+|---|---|---|
+| `ssm:StartSession` on the EC2 instance | the tunnel | §1.2 |
+| `rds:DescribeDBInstances` on the instance | the endpoint, the port, the master secret ARN, the master username | §1.2 |
+| `secretsmanager:GetSecretValue` **on the RDS master secret** | the password | §1.2 |
+| `ssm:GetParameter` on `/…/db/host` and `/…/db/port` | *only* for the no-Terraform alternative below | §1.2 |
+| `psql`, `jq`, `curl`, `openssl` on the workstation | the client, the JSON extraction, the CA bundle, the bundle check | §1.1 |
+
+> ⚠️ **`secretsmanager:GetSecretValue` on the MASTER secret is an operator-side grant and the EC2 instance role does not have it. This is a control, not an oversight.**
+>
+> `infra/iam.tf:530-545` attaches the instance role a single-ARN `secretsmanager:GetSecretValue` policy, and the ARN it names is `data.aws_secretsmanager_secret.app_db[0].arn` — the **application** credential, not the RDS master secret. The Sid was renamed to `ReadOnlyApplicationDbSecret` for exactly this reason (`iam.tf:525-530`), and the comment at `iam.tf:539-545` records that the ARN was **repointed** from the master secret to the application secret. `docs/verification-milestone-3.md` §12.1.1 row 18 records the operator getting a genuine **`AccessDeniedException`** on the master secret — "the ARN resolved, policy said no" — and records that as a **PASS**. `docs/deployment.md` §1.3 states the same boundary.
+>
+> **So: if this procedure returns `AccessDeniedException`, the correct reading is that your own principal lacks the grant — not that the secret is missing, and not that you should go and widen the instance role's policy.** Widening it is the defect the repository removed. The grant belongs on the person at the keyboard, and `docs/second-engineer-acceptance.md` §4 item 4 is where that access is provisioned.
+
+#### 1 — Identify the two instances, and the master secret, without typing any of it
+
+**Nothing below is deployment-specific.** Every host name, port, identifier, ARN and username is **discovered from AWS at run time**, because a hardcoded one goes stale silently and a stale endpoint is how a reader ends up pointed at somebody else's database.
+
+```bash
+# ── The application host. `Role` and `ManagedBy` are tag KEYS defined in this
+#    repository, not operator choices: infra/compute.tf sets Role=application-host
+#    on aws_instance.app, and infra/locals.tf merges ManagedBy=terraform into
+#    common_tags, which every taggable resource in the stack carries.
+
+EC2_ID="$(aws ec2 describe-instances \
+  --filters 'Name=tag:Role,Values=application-host' \
+            'Name=tag:ManagedBy,Values=terraform' \
+            'Name=instance-state-name,Values=running' \
+  --query 'Reservations[].Instances[].[InstanceId]' --output text)"
+
+# ── The RDS instance, identified by the same ManagedBy tag.
+
+RDS_ID="$(aws rds describe-db-instances \
+  --filters 'Name=tag:ManagedBy,Values=terraform' \
+  --query 'DBInstances[].DBInstanceIdentifier' --output text)"
+
+# ── Everything else from RDS instance metadata, which is the AUTHORITATIVE
+#    source for all four. Nothing here is read from a file in this repository.
+
+RDS_HOST="$(aws rds describe-db-instances --db-instance-identifier "$RDS_ID" \
+  --query 'DBInstances[0].Endpoint.Address' --output text)"
+
+RDS_PORT="$(aws rds describe-db-instances --db-instance-identifier "$RDS_ID" \
+  --query 'DBInstances[0].Endpoint.Port' --output text)"
+
+RDS_DB_NAME="$(aws rds describe-db-instances --db-instance-identifier "$RDS_ID" \
+  --query 'DBInstances[0].DBName' --output text)"
+
+RDS_MASTER_SECRET_ARN="$(aws rds describe-db-instances --db-instance-identifier "$RDS_ID" \
+  --query 'DBInstances[0].MasterUserSecret.SecretArn' --output text)"
+
+RDS_MASTER_USER="$(aws rds describe-db-instances --db-instance-identifier "$RDS_ID" \
+  --query 'DBInstances[0].MasterUsername' --output text)"
+```
+
+**No `--region` is passed, deliberately.** `infra/variables.tf:5-8` says it outright: `aws_region` is *"DOCUMENTATION ONLY — this variable does not configure the AWS provider"*, and the region resources live in comes from the AWS CLI configuration. **Take the region from your profile, not from `var.aws_region`** — the variable is not authoritative for where anything is. Pass `--region` if your profile does not already carry one.
+
+**Read them back before you use any of them.** An empty value is a *different situation* from a wrong one, and it is much easier to tell apart here than three stages later:
+
+```bash
+printf 'ec2=%s\nrds=%s\nhost=%s\nport=%s\ndb=%s\nuser=%s\nsecret=%s\n' \
+  "$EC2_ID" "$RDS_ID" "$RDS_HOST" "$RDS_PORT" \
+  "$RDS_DB_NAME" "$RDS_MASTER_USER" "$RDS_MASTER_SECRET_ARN"
+```
+
+⚠️ **Both tag filters can return more than one resource, and then the shell variables hold several values at once.** `var.environment` is constrained to `dev`, `staging` or `prod` (`infra/variables.tf:47-55`), and `local.common_tags` does not include the environment as a filterable *value* unless you filter on `tag:Environment` yourself. **If a line above contains a tab or a space rather than one value, you have more than one stack in this account** — narrow both queries with `'Name=tag:Environment,Values=<env>'` before going further, and do not let `--db-instance-identifier` receive a two-element string.
+
+**Cross-check the instance identity against the Terraform definition.** `infra/database.tf:96` sets `identifier = "${local.name_prefix}-postgres"`, so the **first label of the RDS endpoint hostname is the DB instance identifier**:
+
+```bash
+printf 'derived-from-endpoint: %s\nrds_id-you-found:      %s\n' \
+  "${RDS_HOST%%.*}" "$RDS_ID"
+```
+
+Two names that should be equal and are derived by unrelated paths. `local.name_prefix` is `${var.project_name}-${var.environment}` (`infra/locals.tf:11`), so a mismatch here is not cosmetic — it means you have found a **different stack**, and every later command will be pointed at it.
+
+> ⚠️ **The Terraform outputs are a second route to the same values, not a substitute.** `infra/outputs.tf` publishes `rds_address`, `rds_endpoint`, `rds_secret_arn`, `rds_db_name` and `ec2_instance_id` — `terraform output rds_address` and so on. **They require read access to the S3 state backend**, which is not in the §1.2 permission table and is not needed for this procedure; that is why `describe-db-instances` is the route above. Use the outputs when you already have state access, and cross-check the two when you have both.
+
+**The route that needs no Terraform and no `rds:` permission** — the SSM parameters the application itself uses (`infra/iam.tf:821-847`):
+
+```bash
+RDS_HOST="$(aws ssm get-parameter --name /lemondrop/dev/db/host \
+  --query 'Parameter.Value' --output text)"
+RDS_PORT="$(aws ssm get-parameter --name /lemondrop/dev/db/port \
+  --query 'Parameter.Value' --output text)"
+```
+
+**The path components are not literals.** `iam.tf:824` and `:838` build them as `/${var.project_name}/${var.environment}/db/host` and `…/db/port`, from defaults `lemondrop` and `dev` (`infra/variables.tf:44`, `:50`). `iam.tf:779-806` is emphatic about the format — a leading slash, **no** trailing slash, no empty segment — because that rule has been got wrong once in each direction and both mistakes cost an apply.
+
+> ⚠️ **There is a third parameter, `/…/db/secret-arn`, and it is NOT the master secret. Do not use it here.**
+>
+> `infra/iam.tf:849-878` **repointed** it from the RDS master secret's ARN to the **application** credential's ARN (`data.aws_secretsmanager_secret.app_db[0].arn`), precisely so the ARN the host resolves is one the host is actually permitted to read — the comment at `iam.tf:863-868` names the failure the repointing fixed: a host resolving a valid ARN it could not read, surfacing as `AccessDenied` at first use. **Reading that parameter here and using it in step 4 will produce an `AccessDeniedException` that looks exactly like a missing operator grant and is not one.** The master secret ARN comes from `MasterUserSecret.SecretArn` — `docs/verification-milestone-3.md` §12.1.1 records the M3 operator deriving it that way for the same reason.
+
+#### 2 — The CA bundle, fetched and checked
+
+`sslmode=verify-full` needs a trust anchor, and `libpq`'s default (`~/.postgresql/root.crt`) will not have Amazon's in it.
+
+```bash
+CA_DIR="$HOME/.lemondrop"; mkdir -p "$CA_DIR"
+CA_BUNDLE="$CA_DIR/rds-global-bundle.pem"
+
+curl --proto '=https' --tlsv1.2 -fsSL -o "$CA_BUNDLE" \
+  https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+
+# It must be a PEM bundle, not an HTML error page that happened to be a 200.
+grep -c 'BEGIN CERTIFICATE' "$CA_BUNDLE"
+
+# And every certificate in it must parse. `openssl crl2pkcs7 -nocrl` reads a
+# bundle of PEM certificates; `pkcs7 -print_certs` lists what came out.
+openssl crl2pkcs7 -nocrl -certfile "$CA_BUNDLE" \
+  | openssl pkcs7 -print_certs -noout
+```
+
+`--proto '=https'` forbids a redirect to plaintext, and curl validates the TLS chain against your system trust store, so the download is itself authenticated. **The two checks after it are not ceremony:** a bundle that is empty or truncated produces a TLS error whose message says nothing about certificates, and a `grep -c` of `0` is the only thing that distinguishes the two.
+
+The URL is the one already recorded at `RUNBOOK.md:149`. **Nothing secret is in it and nothing secret comes out of it** — the bundle is public, and you can delete it when you are done.
+
+> ⚠️ **If the connection fails on certificate verification, do not "fix" it by weakening `sslmode`.** `sslmode=require` encrypts without verifying anything, including which server you encrypted to. `docs/verification-milestone-3.md` §12.1.1 names the failure this procedure exists to avoid: connecting a forwarded socket so that `verify-full` ends up verifying a certificate against `127.0.0.1` "either fails outright or, **worse, is satisfied by loosening the check until it passes**." A downgraded `sslmode` is indistinguishable, after the fact, from a correct one. Fix the bundle or fix the name.
+
+#### 3 — The tunnel: an SSM port-forwarding session through the EC2 host
+
+**RDS is not reachable from the internet.** `infra/database.tf:196` sets `publicly_accessible = false`, and `infra/security_groups.tf:355-364` allows TCP 5432 into the database from **exactly one** source — `aws_security_group.app_ec2` — with no other ingress rule defined for it. `docs/verification-milestone-3.md` §12.1.1 rows 13–18 record that even the M3 operator did not reach RDS over a public path.
+
+The route is a port-forwarding session **from your workstation, through the EC2 instance, to the database**. Run this in its own terminal and leave it open:
+
+```bash
+aws ssm start-session \
+  --target "$EC2_ID" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "portNumber=$RDS_PORT,host=$RDS_HOST"
+```
+
+**Read the local port off the CLI's own output.** It prints a line of the form `Port <NNNNN> opened for sessionId <…>` when the tunnel is up. **Do not assume a number** — the CLI assigns it, and assuming one is how you end up reading a row out of whatever is listening on that port. Then, in your *other* terminal:
+
+```bash
+# docs/verification-milestone-3.md §12.1.1 records 15432 for the M3 operator's run.
+# YOUR number is whatever YOUR CLI printed, one line above.
+RDS_LOCAL_PORT=15432
+```
+
+**Why `…ToRemoteHost` and not the plain `…Session` document.** The database is not on the instance; it is a separate RDS endpoint the instance can reach and you cannot. The `…ToRemoteHost` document takes the **destination** as parameters — `host` and `portNumber` — and forwards over the instance's own VPC attachment. `docs/verification-milestone-3.md` §12.1.1 records this exact document for exactly this check, and **it is the route this procedure is written against**, not a reconstructed one.
+
+The tunnel carries no credentials and changes no host state. It is an open local socket for as long as you leave the session running, **which is the reason to close it when you are finished.**
+
+#### 4 — The password, into the environment and nowhere else
+
+```bash
+export PGPASSWORD="$(aws secretsmanager get-secret-value \
+  --secret-id "$RDS_MASTER_SECRET_ARN" \
+  --query SecretString --output text | jq -r .password)"
+```
+
+**`export` on its own line is the entire security property of that command.** The secret value is written by the assignment and read by `psql` from the environment; it never appears in `argv`, so it is not in `ps` output, not in `~/.bash_history`, and not in the transcript of this session. `jq -r .password` is the extraction **Milestone 2 recorded** — `docs/verification-milestone-2.md` row 2 — and `RUNBOOK.md`'s troubleshooting table records that when the value comes back as a JSON object rather than a string, this is the step that got it wrong.
+
+> ⚠️ **Two forms that look equivalent and are not.**
+>
+> ```bash
+> PGPASSWORD="$(…)" psql …      # ❌ the password is in this command line,
+>                               #   in the shell history, and in every
+>                               #   `ps aux` on the machine while it runs.
+> ```
+>
+> ```bash
+> echo "$PGPASSWORD"            # ❌ the value reaches your terminal, your
+>                               #   scrollback, and anything recording it.
+> ```
+
+**If you want proof the fetch worked without printing the value**, ask Secrets Manager for metadata instead — it answers without returning the secret:
+
+```bash
+aws secretsmanager describe-secret --secret-id "$RDS_MASTER_SECRET_ARN" \
+  --query '{name:.Name, created:.CreatedDate, rotated:.LastRotatedDate}'
+```
+
+#### 5 — The query, with `host` and `hostaddr` split
+
+```bash
+psql "host=$RDS_HOST hostaddr=127.0.0.1 port=$RDS_LOCAL_PORT user=$RDS_MASTER_USER dbname=$RDS_DB_NAME sslmode=verify-full sslrootcert=$CA_BUNDLE" \
+  -c 'SELECT version_num FROM public.alembic_version;'
+```
+
+**One line, and the keyword/value form rather than a URI, because that is the form that makes the split expressible.** Two hosts cannot be stated in a URI authority the way they are here: `host=` and `hostaddr=` are two separate keywords and this is the only connection-string shape that carries both without ambiguity.
+
+**Each half is load-bearing, and they do opposite jobs:**
+
+| Keyword | Value | What it is for |
+|---|---|---|
+| `host` | the **real RDS endpoint** | the **name the TLS certificate is verified against** — never resolved, never dialled |
+| `hostaddr` | `127.0.0.1` | the **address the TCP connection actually goes to** — the forwarded socket |
+| `port` | the **local** port your tunnel opened | `libpq` applies it to the connection it makes, which is `hostaddr` |
+| `sslmode` | `verify-full` | chain **and** hostname verification, both on |
+| `sslrootcert` | the bundle from step 2 | the trust anchor for that chain |
+
+**`libpq` connects to `hostaddr` and verifies against `host`.** That single sentence is the whole reason this works, and it is what `docs/verification-milestone-3.md` §12.1.1 records as the finding worth preserving. Point `host` at `127.0.0.1` instead and `verify-full` verifies a certificate against the literal string `127.0.0.1` — which no RDS certificate can match, so the connection fails, or you weaken `sslmode` until it succeeds and have thrown the verification away.
+
+**Why `public.alembic_version` and the column `version_num`.** Both are Alembic's defaults. `api/alembic/env.py` calls `context.configure()` at `:182-194` (shared, for the offline path) and at `:223` (online) **without overriding `version_table` or `version_table_schema`**, so the defaults stand and the table is the standard one-column version table in the default schema.
+
+#### 6 — The output, and how to read it
+
+```
+ version_num
+-------------
+ 0001
+(1 row)
+```
+
+**Exactly one row, and one column.** That is the entire expected result, and its shape is the assertion:
+
+| What you got | What it means |
+|---|---|
+| **one row**, one revision id | ✅ This is the value `--adopt-current` takes. |
+| **zero rows** | the table is absent, or in a schema that is not `public`. Check `dbname` — you may be on the wrong database, or the schema has never been migrated. |
+| **more than one row** | this is not the default single-column version table. You are not reading what you think you are reading; **stop and investigate rather than picking the first row.** |
+| a non-revision-looking string | `validate_alembic_revision_id()` will refuse it in `deploy.sh` — a symbolic name, a leading `-`/`.`/`_`, more than 64 characters. |
+
+Then: §7.1 above takes this value as `<db-verified-alembic-revision>`, and the value you just read is the value you pass.
+
+#### 7 — Close it out
+
+```bash
+unset PGPASSWORD          # the export from step 4
+# Leave the tunnel: Ctrl-C in the terminal running start-session. Nothing else
+# closes it, and an open loopback socket should not outlive the check.
+rm -f "$CA_BUNDLE"         # optional; the bundle is public
+```
+
+#### If it fails
+
+| What came back | What it is | Do this |
+|---|---|---|
+| `Connection refused` on `127.0.0.1` | the tunnel is not up, or `RDS_LOCAL_PORT` is not the port it opened | re-read step 3's output; start the session again |
+| `server closed the connection unexpectedly` at `127.0.0.1` | tunnel up, nothing listening for PostgreSQL behind it | the SSM agent or the document rejected it — check the session's own output before retrying |
+| `certificate verify failed` | the CA bundle is missing, truncated, or not the one this server chains to | step 2. **Do not weaken `sslmode`.** |
+| hostname mismatch in the TLS error | `host` is wrong — you are verifying against a name the certificate does not carry | re-check `$RDS_HOST` from step 1; do not switch to `hostaddr` alone |
+| `AccessDeniedException` from `get-secret-value` | **your principal lacks `secretsmanager:GetSecretValue` on the master secret** — the control described above | the grant is provisioned, not configured in this repository. **Do not widen the instance role** |
+| `ResourceNotFoundException` from `get-secret-value` | the ARN **never resolved** — wrong region, wrong account, or you passed `/…/db/secret-arn` | fix the ARN source. ⚠️ **This is not "denied".** `docs/verification-milestone-3.md` §12.1.1 is explicit that the two mean opposite things and that reporting a `ResourceNotFound` as a denial is "a check that failed to run while wearing the costume of one" |
+| `role "…" does not exist` | the username did not come from step 1 | see the username note below |
+| timeout, no answer | the EC2-to-database path is not what this runbook says it is | `infra/security_groups.tf:355-364` allows 5432 from `sg_app_ec2` and nowhere else. Confirm the instance is the tagged application host |
+
+#### The master username is a discovered value, not a configured one
+
+**Two tracked documents in this repository gave two different values for the RDS master username, and neither was authoritative.** Both are recorded here rather than deleted, because one of them has been changed and a reader comparing this section against an older revision needs to know what changed and why.
+
+| Source | What it said | What kind of statement that was |
+|---|---|---|
+| `RUNBOOK.md`, §3 step 2 | a Milestone-2-era username, inlined in a `psql` URI | a value typed into a Milestone 2 verification command, **never reconciled against anything** |
+| `infra/variables.tf:728` | a *different* username | ⚠️ **a Terraform *input default* — the value Terraform would use if no `-var` were passed.** Not a record of what any apply was run with. |
+
+**What changed, and what did not.** `RUNBOOK.md`'s three values — the username, the endpoint and the master secret's ARN — **have been replaced by placeholders that point here**, rather than corrected to the other document's value. **A third hardcoded value would have been a third thing to go stale, and nothing in the repository detects staleness.** `infra/variables.tf` is **deliberately unchanged**, because it is not wrong: it says what this configuration would do applied today with no input, which is a true and useful thing for a variable default to say. `docs/deployment.md` §10 item 11 records the change.
+
+**The distinction in the last column is the one that matters, and it applies to more than the username.** A variable default is a *fallback*, not a record. `-var`, `TF_VAR_…`, a `.tfvars` file, and a re-run of `plan` with no overrides can each change what the stack actually uses without a single character of `variables.tf` changing. **Reading `variables.tf` tells you what this configuration would do if applied today with no input. It does not tell you what was applied.**
+
+**The authoritative route is the RDS instance's own metadata**, which is the same place the secret ARN in step 1 comes from:
+
+```bash
+aws rds describe-db-instances --db-instance-identifier "$RDS_ID" \
+  --query 'DBInstances[0].MasterUsername' --output text
+```
+
+That is `$RDS_MASTER_USER`, already set in step 1 and already used in step 5. **It cannot be stale**, because it is read from the thing itself rather than from a file describing it.
+
+#### Not this
+
+- **This is a read.** Do not add `alembic upgrade`, do not run `psql -f`, do not "fix" a surprising revision while you have the tunnel open. **Applying a migration is `api/alembic/README.md`, under *Against RDS, later*,** which requires the RDS **master** credential because `CREATE EXTENSION vector` needs `rds_superuser` — a privilege the application role does not have and must not be given (§1.3).
+- **This does not run from the host.** The whole reason for the tunnel is that the host has neither the credential nor the network path (§1.3). `docs/verification-milestone-4.md` §5 is the record of the M4 operator doing exactly this from a workstation and getting `0001`.
+- **This does not establish what the host is running.** It establishes what the **database** is at. §7.1 above is why those two differ, and `--adopt-current` refuses when the image's own `org.lemondrop.alembic-head` label disagrees with what you read here.
+
+#### What was checked against what
+
+Recorded because this procedure is the kind of thing that gets trusted because it is specific.
+
+| Element | Checked against |
+|---|---|
+| Tag keys `ManagedBy`, `Role=application-host`, `Name=<prefix>-postgres` | `infra/locals.tf:44-48`, `infra/compute.tf:589-592`, `infra/database.tf:96` |
+| SSM parameter paths and their format rule | `infra/iam.tf:821-847`, `:779-806`; `infra/variables.tf:44`, `:50` |
+| `/…/db/secret-arn` is the **application** ARN | `infra/iam.tf:849-878` and its `:863-868` comment |
+| Instance role holds the application secret only | `infra/iam.tf:530-545`; `docs/verification-milestone-3.md` §12.1.1 row 18 |
+| Port 5432 reachable from `sg_app_ec2` only | `infra/security_groups.tf:355-364`; `infra/locals.tf:23` |
+| Not publicly accessible | `infra/database.tf:196` |
+| `public.alembic_version`, column `version_num` | `api/alembic/env.py:182-194`, `:223` — no `version_table` override |
+| `MasterUserSecret.SecretArn`, `MasterUsername`, `DBName`, `Endpoint.Address`, `Endpoint.Port` | the RDS service model in the AWS CLI shipped on this workstation; `docs/verification-milestone-3.md` §12.1.1 records `DBInstances[0].MasterUserSecret.SecretArn` in use |
+| `AWS-StartPortForwardingSessionToRemoteHost` with `portNumber` / `host` | `docs/verification-milestone-3.md` §12.1.1, which names that document for this check; the CLI's `start-session` synopsis and the request it serializes for those two parameters |
+| The RDS global CA bundle URL | `RUNBOOK.md` §7, troubleshooting table — the row that names it |
+| `.password` in the master secret's JSON | `docs/verification-milestone-2.md` row 2, and the same `RUNBOOK.md` row |
+| Region comes from the CLI, not `var.aws_region` | `infra/variables.tf:5-8` |
+| `libpq` connects to `hostaddr` and verifies against `host` | the local `psql` on this workstation: a connection string carrying `host=<name> hostaddr=127.0.0.1` connected to `127.0.0.1`, which is the behaviour the split depends on; the verification consequence is `docs/verification-milestone-3.md` §12.1.1's recorded finding |
+
+**Not verified without AWS access, and therefore stated as unknown here:** that these commands succeed against the live stack today; the local port the CLI assigns on any given run; and whether this stack's `sg_app_ec2` still admits 5432 as `security_groups.tf` describes. **The procedure is written from the definitions; the values are read at run time, so a definition that has changed is visible as a changed value rather than as a silent wrong answer.**
 
 ### 7.2 A deploy was interrupted mid-flight
 
@@ -1376,7 +1685,7 @@ This codebase's value is that its documentation is trustworthy. That means the l
     - Following the challenge anonymously returned `HTTP/2 200`, with `docker-content-digest` matching the digest requested, character for character.
     - A `docker pull` with `DOCKER_CONFIG` pointed at a verified-empty directory exited **0**, and that directory was **still empty afterwards** — no credential was written or consulted, so the pull was anonymous **by construction**, not by assumption.
 
-    **Package visibility is a setting separate from repository visibility.** A public repository does not imply a public package. The `docs/verification.md:148` (private) versus `docs/m4-plan.md:780` (public) disagreement is about *repository* visibility and does not bear on package readability; it was never the question this item was asking.
+    **Package visibility is a setting separate from repository visibility.** A public repository does not imply a public package. The repository records its own visibility — `docs/verification.md:148` (*private*) and `docs/boot-script.md:204-207` (a clone against it failing on boot) — and records **nothing** about the GHCR package's visibility, which is the setting a pull actually meets. **There is no second tracked document asserting the opposite**, so the disagreement this item was written to resolve was with a document that is not in the revision; what remains is the observation below, and it is the whole of the answer.
 
     **What this item does and does not establish.** Readability was observed **at the time of verification**, against that digest. Later releases have published newer digests, so the evidence is about package readability and is **not** a claim that this digest is current (§3.2; item 8). It is **not** a claim of permanent availability, **not** immunity to a visibility change, and **no** future-access guarantee: the package setting can be changed by anyone with access to it, at any time, without this document noticing. **§3.3's check is what an operator runs before a deploy — not this paragraph.**
 
@@ -1388,9 +1697,13 @@ This codebase's value is that its documentation is trustworthy. That means the l
 
     This item deliberately states **no commit SHA**, deliberately. Naming `HEAD` here made the sentence wrong the moment it was written — which is what the deleted "the committed state of this repository is `8cddfe8`" did. **Read `git rev-parse HEAD` on the day you need it.**
 
-**10. Whether the boot step 3 clone works is unresolved.** §2.3. `docs/boot-script.md:205-207` records it as failing on boot against a private repository; `docs/m4-plan.md:780` says the repository is public; §12 records a working deployed stack. Check the host; do not assume.
+**10. Whether the boot step 3 clone works is unresolved.** §2.3. `docs/boot-script.md:204-207` records it as failing on boot against a private repository, and `docs/verification.md:148` records the repository as private; §12 records a working deployed stack, which implies it succeeded at some point. **No tracked document asserts the repository is public, so this is an unresolved question rather than a contradiction between tracked documents** — and it is unresolved in the direction that matters, because a private repository is the recorded state. Check the host; do not assume.
 
 **11. `README.md` and `RUNBOOK.md` contain Milestone 2 values that Milestone 3 superseded.** `RUNBOOK.md:53` still shows `-var app_instance_type=t3.micro`, while `docs/verification-milestone-3.md` §12.1 row 1 records the host running **`t3.small`**. Treat `RUNBOOK.md` as accurate for AWS access mechanics (which are what it is for) and `docs/verification-milestone-3.md` as authoritative for instance facts.
+
+    **What has been done about the values this item covers, and what has not.** `RUNBOOK.md` is Milestone 2 era and carries **hardcoded, deployment-specific values that go stale silently** — the RDS endpoint, the master secret's ARN, the master username, the instance id, the ALB DNS name and the state-bucket name. **The three a second reader must have in order to read the database at all — the endpoint, the secret ARN and the master username — have been pointed at §7.1.1's discovery procedure rather than at a corrected value**, because a corrected value is a value that goes stale again and nothing detects it. **The remaining ones are still literal in that file**, and the honest position is the one this item already took: `RUNBOOK.md` is accurate for *mechanics*; §7.1.1 step 1 and §11 are the routes for *values*.
+
+    **And one of them was not merely stale — it was wrong, and could not be reconciled.** The master username appeared in `RUNBOOK.md` and in `infra/variables.tf` with **two different values and nothing saying which was current**. §7.1.1 resolves it by route rather than by picking one: the authoritative source is `DBInstances[0].MasterUsername`, and the distinction that makes `variables.tf` the wrong place to look — **a Terraform input default is a fallback, not a record of what was applied** — is stated there in full. **`infra/variables.tf` is deliberately unchanged**, because it is not wrong: it says what the configuration would do with no input, which is a true and useful thing for it to say.
 
 **12. No load, concurrency, or soak testing exists.** `docs/verification-milestone-3.md` §12.5 row 7: "No load profile, no concurrency measurement, no soak; CPU credits unmeasured at every size; the 15.55s observation is not a margin measurement." §12.5 row 7 is the qualifier row, and it carries these straight into §12.4 **items 2 and 3** — "Sustained and concurrent load are untested" and "CPU credit exhaustion on the `t3` family is UNMEASURED". ⚠️ **An earlier draft of this item cited "§12.4 item 7" for that quote. That names the wrong thing:** §12.4 item 7 is the negative control, and it is **RESOLVED**. `t3` instances deplete CPU credits under sustained cross-encoder scoring, and the failure mode is degraded latency rather than an error.
 
@@ -1445,6 +1758,23 @@ This codebase's value is that its documentation is trustworthy. That means the l
 
     **Status: UNFIXED, and deliberately deferred.** No guard exists, none is in flight, and no fix is scheduled. Nothing in `deploy.sh` should be read as offering partial protection: the nearest candidate, `deploy.sh:855`, compares the **just-pulled** image's `RepoDigests` against the requested reference, and is an explanatory note that continues — not a redundancy check. Until this is fixed, **a redundant deploy is a manual-prevention-only hazard, and the image it orphans may still be recoverable from its timestamped rollback tag (§6.4) even though the record no longer names it.**
 
+**17. ⚠️ There is no rehearsal host, and that is conditional on which variant of the second-engineer exercise is run.** §6.5 says to rehearse a rollback on a throwaway host and never on the one serving traffic, and item 1 above says the same. **This repository has never described such a host, never named one, and never stated whether one exists.** Nothing here provisions one and **nothing should be read as offering to.**
+
+    **What it blocks, stated conditionally because the condition is not this repository's to settle.** `docs/second-engineer-acceptance.md` §3 defines two variants and **explicitly does not choose between them** — that decision is owed by the assessor, and it is open. Its consequence for this item:
+
+    - **Under a cold-reader walkthrough (no deployment performed, nothing on any host touched), this item does not block anything.** The rehearsal never happens, because nothing is deployed and therefore nothing is rolled back. **The honest statement of the limitation still stands** — the runbook instructs an operator to rehearse somewhere it does not describe.
+    - **Under a live deployment demonstration, it is blocking.** That variant ends in a rollback, and this item is about rehearsing rollbacks. An unbriefed second engineer following §6.5 literally has nowhere described to go.
+
+    **What creating one would take, and why it is out of scope here.** A rehearsal host is infrastructure: an EC2 instance, or a second full stack under a different `var.environment` (`infra/variables.tf:47-55` constrains that to `dev`, `staging`, `prod`), with its own RDS instance, its own state key, and its own cost. **That is provisioning work, and it is not documentation.** It is recorded here as a limitation rather than solved, because a limitation that is written down can be planned for and one that is quietly assumed away cannot.
+
+    **What is available today, without one.** The digest branch of the rollback was exercised live during Milestone 4 and is recorded in `docs/verification-milestone-4.md` §9 — which is evidence, and is **not** a substitute for a rehearsal on a disposable host. §6.5's step list is the procedure; what is missing is only somewhere to run it. **Do not rehearse on the serving host to work around this.** That is the one reading of §6.5 that is never correct.
+
+**18. ⚠️ The provisioning-from-zero path has never been walked end to end.** `RUNBOOK.md` §2a–2c describes building the stack from nothing: bootstrap the state bucket, wire the backend literals, `terraform plan`, `terraform apply`. **No record in this repository shows that sequence being run once, start to finish, on a stack that did not already exist.** Every `terraform apply` that this repository documents evidence for was a **reconciliation** of an existing stack — `docs/verification-milestone-3.md` §12.1.1 row 20 records one as *"Already independently verified — no changes, exit 0"*, which is the opposite of a first apply.
+
+    **Why it is a limitation and not an observation.** `docs/verification-milestone-4.md` §13.1 records that the milestone's acceptance sentence, read strictly, is in tension with this: *"a second engineer must be able to deploy a tested revision without manually reconstructing the original environment"*. **If that sentence is taken to include standing the infrastructure up from nothing, this item is the reason it is not yet closed.** Read as *"the original deployment steps"* — deploying a known artifact to a running host — this path is out of scope, and **§2.3, §3.4 and §6.5 describe that path completely.** The tension is recorded rather than resolved, per §13.1's own refusal to pick a winner.
+
+    **What this does not affect.** Everything in §4 and §5. A deploy reaches an **existing** host; it does not build one. Nothing in this runbook's deploy path invokes Terraform.
+
 ---
 
 ## 11. Pre-flight checklist
@@ -1479,6 +1809,7 @@ Tick every box before touching anything. Each line is a fact you observed, not a
 - [ ] You have copied the current record somewhere off the host: `sudo cp /var/lib/lemondrop/deployed-revision.env /root/deployed-revision.before.$(date -u +%Y%m%dT%H%M%SZ)`.
 - [ ] You have a rollback target: `PREVIOUS_IMAGE_DIGEST` is set, **or** `ROLLBACK_TAG` names an image present in `docker images`.
 - [ ] You have read the recorded `ALEMBIC_HEAD`, and you know the head of your target revision.
+- [ ] **If you are adopting or reconciling a baseline: you re-read the revision from the live database with §7.1.1, and you use the value you read — not the `0001` in this document, and not `ALEMBIC_HEAD`.**
 - [ ] No deploy or rollback is already running: `ps -ef | grep -E 'deploy\.sh|rollback\.sh'`.
 - [ ] Free disk and memory are adequate: `free -m`, `df -h /`.
 
@@ -1542,6 +1873,12 @@ cd /opt/lemondrop
 sudo docker compose -p lemondrop ps
 sudo docker compose -p lemondrop logs --tail=100 api
 
+# The live database's alembic revision — §7.1.1 carries the full procedure.
+# Two lines of it, for the case where you already have the tunnel open and the
+# credentials exported. It is a READ; nothing here writes to the database.
+psql "host=$RDS_HOST hostaddr=127.0.0.1 port=$RDS_LOCAL_PORT user=$RDS_MASTER_USER dbname=$RDS_DB_NAME sslmode=verify-full sslrootcert=$CA_BUNDLE" \
+  -c 'SELECT version_num FROM public.alembic_version;'
+
 # Readiness and the known-good search, ON THE HOST
 curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 http://127.0.0.1:8000/health/ready
 curl -sS -X POST http://127.0.0.1:8000/search -H 'content-type: application/json' \
@@ -1565,8 +1902,10 @@ sudo git -C /opt/lemondrop cat-file -e <40-char-sha>^{commit} || \
 | The live search this runbook's probe is anchored to | `docs/verification-milestone-3.md` §8.2 |
 | The ALB timeout defect | `docs/verification-milestone-3.md` §10.8, §12.4 item 4 |
 | Why digest and never tag | `docs/verification-milestone-3.md` §11.2; `release.yml`, under `── WHAT THE SHA TAG IS, AND WHAT IT IS NOT ──` |
-| Why migrations cannot run from EC2 | `infra/iam.tf`; `api/alembic/README.md` (the out-of-band procedure) |
-| The milestone this work belongs to | `docs/m4-plan.md` (Stage 5; §4.4 for the rollback design) |
-| Infrastructure access mechanics | `RUNBOOK.md` |
+| Why migrations cannot run from EC2 | `infra/iam.tf`; `api/alembic/README.md` (the out-of-band migration procedure) |
+| **How to read the live database's alembic revision** | **§7.1.1** — the complete procedure. `docs/verification-milestone-4.md` §5 is the recorded instance of it |
+| The milestone this work belongs to, and its acceptance criteria | `docs/verification-milestone-4.md` (§8–§9 for the deploy and rollback performed; **§13 for the acceptance criteria**) |
+| The rollback decision table, in the script as well as here | `scripts/rollback.sh`, header block `── WHEN TO USE THIS, DECIDED IN ADVANCE ──` |
+| Infrastructure access mechanics | `RUNBOOK.md` — **and read §10 items 11 and 17 before trusting a value in it** |
 | Milestone 1 and 2 verification records | `docs/verification.md`, `docs/verification-milestone-2.md` |
 | Local development | `README.md` |
