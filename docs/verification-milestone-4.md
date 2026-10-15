@@ -570,12 +570,21 @@ not, and no equivalent exists for them.
 
 ### 13.1 The second-engineer criterion — UNTESTED, and the wording is genuinely ambiguous
 
-**The criterion, as written.** `docs/m4-plan.md:452-453`:
+**The criterion, as written.**
 
 > *"A second engineer must be able to deploy a tested revision without manually reconstructing
 > the original environment."*
 
-The plan states the test at `docs/m4-plan.md:668-675`:
+**That text is recorded here because the document it was written in is not in this
+revision.** `docs/m4-plan.md` is **untracked** — `git status` reports it as
+`?? docs/m4-plan.md` — and a clean clone of this repository does not contain it. Every
+tracked file that cited it by line number, **including this one**, was a dangling
+reference, and a dangling reference to the criterion is the worst kind: the milestone
+is judged against a sentence a second reader cannot reach. **So the sentence is
+recorded here, in a tracked document, and this section is its home.** `docs/deployment.md`
+§6.5 cites this section rather than a file that is not there.
+
+**The operationalisation of the same sentence, as written:**
 
 > **Verified — this is the acceptance criterion, and it must be tested by someone other than the
 > author.** A second engineer, given only the runbook and repo access, deploys a SHA-tagged
@@ -585,12 +594,27 @@ The plan states the test at `docs/m4-plan.md:668-675`:
 >
 > **Done when:** the acceptance sentence is true, witnessed by someone else.
 
+Quoted rather than paraphrased for the same reason, and because *"without asking a
+question"* and *"if the author runs this test themselves"* are the operative words: they
+are what make the test a test.
+
 **What actually happened, stated without softening.** **No second party has followed this
 runbook.** There is no second engineer's session transcript, because there was no second
 engineer. Every result in §5 through §9 — adoption, deploy, verification, rollback, re-verification
-— was produced by **the engineer who built the system**, which is the one thing
-`docs/m4-plan.md:671-672` names as failing the test. **By the plan's own operationalisation,
-the criterion is NOT MET.**
+— was produced by **the engineer who built the system**, which is the one thing the
+operationalisation above names as failing the test: *"if the author runs this test themselves,
+the criterion is not met."* **By that test's own terms, the criterion is NOT MET.**
+
+**One term in it was undefined until this revision, and that is a documentation finding of
+its own.** *"a tested revision"* had no operational meaning anywhere in this repository.
+`docs/deployment.md` **§3.4 now defines it**, as three things that must hold together: a
+commit that reached `main` and produced a successful release run; the registry manifest
+digest that run's `publish` job published, obtained from the run's evidence (§3.3 there); and
+the source revision and validated schema label the image itself carries. **§3.4 also records
+an observed trap** — a local commit that has not been pushed has **no published image at
+all**, which is exactly the state the revision under test for the cold-reader walkthrough was
+in. The criterion's central term is now defined, and it was not defined when the walkthrough
+was run against it.
 
 **The ambiguity, stated rather than resolved.** Three things are in tension and this record does
 not pick a winner:
@@ -599,17 +623,19 @@ not pick a winner:
    second engineer **can** deploy"* is a claim about what the runbook and tooling make
    possible. **Nothing in §5 through §9 demonstrates that capability**, because a capability
    claim about a person requires that person to exercise it. Whether the milestone demands the
-   capability be *demonstrated* or merely *documented* is exactly what the plan's second
-   formulation settles and the first does not.
-2. **The plan already flagged that it is weaker than it reads** — before any of this happened.
-   `docs/m4-plan.md:821-829`: *"The acceptance criterion is therefore weaker than it reads"*
-   and recommends restating it as *"A second engineer can deploy a tested revision to the
-   running environment without manually reconstructing the original deployment steps."* **The
-   ambiguity is pre-identified in the plan itself, not manufactured here.** Note what the
-   restatement changes: **"the original deployment steps"** rather than **"the original
-   environment."** Under the restated criterion, the walk-forward path — `terraform apply` and
-   a from-zero rebuild — is excluded, and `docs/m4-plan.md:823` says that path *"has never been
-   walked end to end from zero."*
+   capability be *demonstrated* or merely *documented* is exactly what the restatement in item 2
+   settles and the original sentence does not.
+2. **The criterion was already flagged as weaker than it reads** — before any of this happened,
+   by the same untracked plan, which is where the quoted text below comes from: *"The
+   acceptance criterion is therefore weaker than it reads"*, with a recommended restatement as
+   *"A second engineer can deploy a tested revision to the running environment without manually
+   reconstructing the original deployment steps."* **The ambiguity is pre-identified there, not
+   manufactured here.** Note what the restatement changes: **"the original deployment steps"**
+   rather than **"the original environment."** Under the restated criterion, the walk-forward
+   path — `terraform apply` and a from-zero rebuild — is excluded, and **`docs/deployment.md`
+   §10 item 18 records, in a tracked document, that this path has never been walked end to end
+   from zero.** That fact existed only in the untracked plan; it is now recorded where a reader
+   can reach it.
 3. **A command-identification exercise would not close it either.** Even if a second party
    later reads the runbook and names the right commands, that is evidence they can *find* the
    commands. **The criterion is about executing a deployment**, and a correct command list
@@ -622,11 +648,20 @@ it fails. **The status is UNTESTED and the ambiguity is recorded alongside it**,
 the criterion requires a decision from the operator about which sentence governs, followed by
 the execution that sentence demands.
 
-**What would close it, under the plan's own test:** a second engineer, given only the runbook
-and repository access, deploying a SHA-tagged revision without asking a question, rolling back,
-and confirming `/health` and a correct `/search` — with their session transcript, the
-before/after `DEPLOYED_REVISION`, and the rollback result. **None of those three artifacts
-exists.**
+**What would close it, under the operationalisation quoted above:** a second engineer, given
+only the runbook and repository access, deploying a SHA-tagged revision without asking a
+question, rolling back, and confirming `/health` and a correct `/search` — with their session
+transcript, the before/after `DEPLOYED_REVISION`, and the rollback result. **None of those
+three artifacts exists.**
+
+**One precondition on that, which this record did not previously state.** `docs/second-engineer-acceptance.md`
+§3 specifies two variants and **does not choose between them** — the decision is the assessor's
+and it is open. Under a **live deployment demonstration** the test ends in a rollback, and
+`docs/deployment.md` §6.5 instructs the operator to rehearse rollbacks **on a throwaway host
+that this repository never describes**. That gap is now recorded conditionally, as
+`docs/deployment.md` §10 item 17: it does not block a read-only walkthrough, and it blocks a
+live one. **It is a precondition on closing this criterion, and it is not a documentation
+problem any more — it is an infrastructure one, and nothing in this pass creates a host.**
 
 ### 13.2 Requirement coverage
 
@@ -641,7 +676,10 @@ exists.**
 | Real rollback by digest | **VERIFIED** — §9 |
 | **Redundant-deploy guard** | **UNTESTED — the guard does not exist** — §8.2 |
 | **Legacy rollback branch** | **UNTESTED, known-defective** — §12.2 |
-| **Second-engineer acceptance criterion** | **UNTESTED** — §13.1 |
+| **Second-engineer acceptance criterion** | **UNTESTED** — §13.1. **The criterion text is recorded in this section, because the document it came from is untracked.** |
+| **What "a tested revision" is** | **DEFINED, after the walkthrough found it undefined** — `docs/deployment.md` §3.4 |
+| **A throwaway host to rehearse a rollback on** | **NONE DESCRIBED** — `docs/deployment.md` §10 item 17, conditional on the variant |
+| **Provisioning the stack from zero** | **NEVER WALKED END TO END** — `docs/deployment.md` §10 item 18 |
 
 ## 14. Repository commits
 
