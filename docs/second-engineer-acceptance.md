@@ -9,20 +9,66 @@
 > here is not an oversight to be filled in by the next reader; it is the state of the
 > world.
 >
+> ⚠️ **The paragraph above was true when it was written and is now partly superseded.
+> Read it with the dated note further down.** A Variant A exercise **was** run on
+> 2026-10-15 by an AI agent reviewer, and §§5, 6, 8, 9, 10 and 12 now carry what it
+> submitted. **The verdict is still blank, and it is blank on purpose** — it is the
+> assessor's field, not the reviewer's and not this document's. **No deployment
+> occurred.**
+>
 > **Status: UNTESTED.** That is the classification, in the vocabulary this repository
 > uses (`docs/verification-milestone-4.md:92`). It means no check was run and none is
 > implied.
 >
+> ⚠️ **And `UNTESTED` still describes the criterion's verdict state, which is what this
+> banner is for.** §11 was applied to the submitted evidence and its outcome is
+> **FAIL**; recording a FAIL against §11 is not the same as recording a verdict on the
+> criterion, and the verdict remains the assessor's. **The run happened. The criterion's
+> verdict is still unrecorded.**
+>
 > | Fact | State |
 > |---|---|
 > | Protocol authored | 2026-10-15 |
-> | Reviewer identified | **None. No person has been approached.** |
-> | Variant selected | **Undecided — see §3. The decision is owed by the assessor, not by this document.** |
-> | Procedure executed | **Never. Not in part, not on a throwaway host, not anywhere.** |
-> | Evidence submitted | **None exists** |
-> | Deployments performed for this test | **None** |
-> | Rollbacks performed for this test | **None** |
-> | Verdict | **NOT YET TESTED** |
+> | Reviewer identified | **None. No person has been approached.** ⚠️ *Superseded in part — see the dated note below: an **AI agent**, not a person, ran a Variant A exercise. No person was approached.* |
+> | Variant selected | **Undecided — see §3. The decision is owed by the assessor, not by this document.** ⚠️ *Superseded in part — see the dated note below: a **Variant A** exercise was run. The assessor's governing-variant decision is still open.* |
+> | Procedure executed | **Never. Not in part, not on a throwaway host, not anywhere.** ⚠️ *Superseded — see the dated note below: a **Variant A derivation** was performed. **Nothing was executed against any host.*** |
+> | Evidence submitted | **None exists** ⚠️ *Superseded — see the dated note below: evidence exists in §8, §9 and §10, submitted by an AI agent reviewer.* |
+> | Deployments performed for this test | **None** — **and this row remains true. Nothing was deployed.** |
+> | Rollbacks performed for this test | **None** — **and this row remains true. Nothing was rolled back.** |
+> | Verdict | **NOT YET TESTED** — **and this row remains true. The verdict is the assessor's and has not been recorded.** |
+>
+> ### 📋 Dated note — 2026-10-15 — a Variant A exercise **was** run. Read this with the banner above.
+>
+> **The banner above now describes the state of the *verdict*, not the absence of a
+> run.** It was written when nothing had been executed. One thing has happened since:
+> **a Variant A exercise was carried out on 2026-10-15.** Everything the banner says
+> about deployment, rollback and the verdict is untouched and still exactly true.
+>
+> | Fact about the run | State |
+> |---|---|
+> | Exercise executed | **Yes — 2026-10-15, Variant A (cold-reader documentation walkthrough)** |
+> | Reviewer type | **An AI agent, context-isolated (§6). Not a person.** |
+> | Revision under test | `678cef3bf46a3e15d79dbc20064f0ea43f22dca8` (§5) |
+> | Deployments performed | **None** |
+> | Rollbacks performed | **None** |
+> | AWS calls made | **None** |
+> | SSM commands issued | **None** |
+> | Containers or Terraform touched | **None** |
+> | **§11 applied to the submitted evidence** | **FAIL — unsoftened. Nine author-only questions are recorded in §9.** (§12) |
+> | **Verdict of the acceptance criterion** | **NOT YET TESTED — reserved to the assessor (Moe). Not recorded here.** (§12) |
+>
+> ❗ **NO DEPLOYMENT OCCURRED.** Nothing was deployed, no AWS call was made, no SSM
+> command was issued, no container was touched, no rollback was performed, and no
+> Terraform was run. **This run must never be reported as a live-deployment
+> demonstration, and nothing in it may be read as evidence that a second engineer
+> deployed anything.**
+>
+> ❗ **Per §17.1, this is an agent run, and an agent run is a weaker proxy for the
+> acceptance criterion than a human run.** The reviewer shares the model lineage and
+> priors of the session that built this system, so it is isolated from the
+> *conversation* but not from *how the system was built*. **It is not evidence that a
+> second engineer performed a deployment**, and §6, §8 and §12 repeat that caveat
+> wherever the reviewer type appears.
 >
 > **Why this document exists.** `docs/verification-milestone-4.md` recorded every
 > operational result in that milestone as produced by the engineer who built the
@@ -64,6 +110,15 @@ find yourself wanting to add a clarifying sentence before handing this over, tha
 sentence is almost certainly an answer, and the correct response is to leave it out and
 let the question surface in §9.
 
+> ⚠️ **That property held while this document was empty, and it is annotated rather than
+> silently broken.** **§5 now records the revision under test, because the run of
+> 2026-10-15 required it to be recorded** — and it was recorded *after* the exercise, as
+> §5 asks, not handed to the reviewer beforehand. **No digest, no CI run identifier, no
+> database revision and no deploy, verify or rollback command line has been added
+> anywhere in this document**, and none was supplied to the reviewer. The property that
+> matters — that the reviewer derived the procedure rather than being handed it — is
+> intact, and §9 is the evidence of it.
+
 ---
 
 ## §1 — Status
@@ -71,15 +126,31 @@ let the question surface in §9.
 **UNTESTED.** Stated once here and repeated wherever a reader could otherwise mistake
 this document for a record.
 
+> ### 📋 Dated note — 2026-10-15 — the Variant A exercise was run. `UNTESTED` above still stands, and says something narrower now.
+>
+> **The classification below is retained, and it is retained deliberately.** `UNTESTED`
+> here describes **the verdict state of the acceptance criterion** — no verdict has been
+> recorded, and the verdict is the assessor's (§12). **A Variant A exercise was carried
+> out on 2026-10-15** by a reviewer who was **an AI agent, context-isolated** (§6), and
+> **§11 was applied to its submitted evidence and returned FAIL** (§12).
+>
+> ❗ **No deployment occurred.** No AWS call, no SSM command, no container, no rollback,
+> no Terraform. **Nothing in this run is evidence that a second engineer deployed
+> anything, and it must never be reported as a live-deployment demonstration.**
+>
+> ❗ **Per §17.1 an agent run is a weaker proxy for the acceptance criterion than a human
+> run.** The agent shares the author's model lineage and priors: it is isolated from the
+> conversation, not from how the system was built.
+
 | Element | State |
 |---|---|
-| A second person has followed the runbook | **No** |
-| A second person has deployed anything | **No** |
-| A procedure has been derived from the repository by an independent reader | **No** |
-| A reviewer has been identified or contacted | **No** |
-| Any question has been asked of a reviewer | **No — §9 is empty and cannot be otherwise** |
-| Any documentation gap has been catalogued | **No — §10 is empty** |
-| Any verdict exists | **No — §12 is NOT YET TESTED** |
+| A second person has followed the runbook | **No.** No person exists in this run. The reviewer was an **AI agent** (§6). |
+| A second person has deployed anything | **No. Nothing was deployed.** |
+| A procedure has been derived from the repository by an independent reader | **Yes — by an AI agent (context-isolated), on 2026-10-15.** ⚠️ *Was `No`; superseded by the dated note. The reader is context-isolated but **not** perspective-isolated (§17.1), so this row records a derivation, not a second engineer's capability.* |
+| A reviewer has been identified or contacted | **An AI agent, context-isolated. No person was approached, contacted or available.** ⚠️ *Was `No`; superseded by the dated note.* |
+| Any question has been asked of a reviewer | **Yes — fifteen recorded in §9, nine of them author-only.** ⚠️ *Was `No`; superseded by the dated note.* |
+| Any documentation gap has been catalogued | **Yes — eight in §10 (G-1 … G-8), two of them blocking.** ⚠️ *Was `No`; superseded by the dated note.* |
+| Any verdict exists | **No — §12's Verdict field is blank and is reserved to the assessor (Moe).** The §11 outcome on the submitted evidence is **FAIL**; that is a criterion applied to evidence, not a verdict on the criterion. |
 
 **The distinction this document exists to preserve.** `docs/verification-milestone-4.md`
 established a great deal about the deploy path — that it runs, that it records what it
@@ -277,15 +348,33 @@ this list as a hint.**
 
 ## §5 — Repository revision under test
 
-**To be completed by the reviewer or the operator before the exercise begins. This
-document does not name a revision, deliberately — see the note below.**
+**Filled in from the run of 2026-10-15.** The values below are what the reviewer
+actually worked against.
 
 | Field | Value |
 |---|---|
-| Repository | *(to be completed)* |
-| Commit SHA under test | *(to be completed)* |
-| Date pinned | *(to be completed)* |
-| Pinned by | *(to be completed)* |
+| Repository | `https://github.com/fvitorino00/lemondrop.git`, read locally at `/home/zaratustra0/Projects/lemondrop` |
+| Commit SHA under test | `678cef3bf46a3e15d79dbc20064f0ea43f22dca8` — **full 40 characters, not abbreviated. Confirmed by the reviewer itself.** |
+| Date pinned | **2026-10-15** |
+| Pinned by | **Not recorded, and left unrecorded on purpose.** §5 asks for a name so that a later reader can tell a deliberate pin from an accident of timing. **The run's evidence does not name one, so none is invented here.** What is established: the SHA was the repository's `HEAD` before the reviewer's first command, and the reviewer independently re-derived and re-confirmed the full 40-character value. **That is weaker than §5 asks for, and the weakness is recorded rather than papered over.** |
+
+**The pin was verified after the fact, and the verification is worth stating.**
+`678cef3bf46a3e15d79dbc20064f0ea43f22dca8` resolves to a real commit, and its
+description is *"docs: the reviewer protocol; the answer key leaves the repository."*
+It was the repository's `HEAD` at the start of the exercise. Nothing was staged, and no
+tracked file was modified during the reviewer's read-only work.
+
+**Two facts about this pin that bear on the result, and that the reviewer recorded as
+findings rather than as incidental detail:**
+
+- **The revision under test is not what `origin/main` points at.** At the time of the
+  exercise, `main` was **3 commits ahead of `origin/main`** — see §9 Q1 and §10 G-7.
+  Nothing in the repository states that the revision under test must be a commit with a
+  successful release run, and this one has **no published image**.
+- **The revision under test does not contain two documents the runbook cites.** `docs/m3-study-guide/`
+  and `docs/m4-plan.md` are **untracked** at this revision. A clean clone of
+  `678cef3…` does not contain them — see §10 G-1, which is a direct, checkable
+  consequence of the pin recorded above.
 
 **How to record it, and how to check it later.** Record the **full 40-character SHA**,
 not an abbreviation — abbreviated SHAs are ambiguous across a long history, and an
@@ -298,6 +387,12 @@ same discipline for the milestone's commit list: *"Read `git rev-parse HEAD` on 
 you need the current one."* A SHA written into a protocol document is stale the moment
 it is written, and a stale SHA that looks authoritative is worse than a blank field.
 
+> ⚠️ **Annotated, because §5 above now names one.** The SHA recorded above was added
+> **after** the run of 2026-10-15, as §5's own instructions require — a protocol states
+> the rule, a run records its value. **The discipline above is not abandoned; it is why
+> the value is a full 40-character SHA tied to a date rather than a shorthand that could
+> be mistaken for something current.**
+
 **How to verify the pin afterwards.** The revision actually exercised must match the
 revision recorded here. If the reviewer's checkout drifted mid-exercise, the two
 records must disagree visibly rather than silently — and in that case the result
@@ -305,20 +400,58 @@ describes a test of something other than what this section says it tests.
 
 ## §6 — Reviewer details
 
-**Blank. To be completed by the operator, from the reviewer's own statement, before
-the exercise runs.** This section is not decorative: the final field is the one that
-determines whether the result means anything.
+**Filled in from the run of 2026-10-15. The reviewer was not a person, and no field
+below invents one.**
 
 | Field | Value |
 |---|---|
-| Reviewer name | |
-| Role / team | |
-| Date of the exercise | |
-| **Prior exposure to this system** | |
-| Prior exposure to this repository | |
-| Prior exposure to this stack's tooling | |
-| Variant performed | |
-| Assessed by | |
+| Reviewer name | **No name — there is no person.** The reviewer was **an AI agent**: a fresh, context-isolated engineering agent. |
+| Role / team | **AI agent (context-isolated).** No role, no team, no employer, no human affiliation exists for this reviewer, and **none is invented here.** |
+| Date of the exercise | **2026-10-15** |
+| **Prior exposure to this system** | **None conversationally, by construction** — the agent had no access to the author's conversation, notes, or terminal history. ⚠️ **But it shares the author's model lineage and priors. See the caveat below; this is not a clean bill of independence.** |
+| Prior exposure to this repository | **None.** It read only within `/home/zaratustra0/Projects/lemondrop`. It did not read the evaluator-only answer key, which now lives outside the repository. |
+| Prior exposure to this stack's tooling | **None.** It read the repository's *documentation* of the tooling and the tooling's source. **It executed no tooling, and operated no AWS, SSM, Docker or Terraform surface.** |
+| Variant performed | **A — cold-reader documentation walkthrough. NO DEPLOYMENT OCCURRED.** |
+| Assessed by | **Not assessed. No verdict is recorded.** The criterion's verdict is the assessor's (Moe) — see §12. |
+
+> ### ❗ The reviewer was an AI agent. This is recorded precisely and is not softened.
+>
+> **Per §17.1, an agent run is evidence about the documentation's self-sufficiency, and
+> is a weaker proxy for the acceptance criterion than a human run.** The consequences,
+> none of which is softened:
+>
+> - ❗ **It is not a second person.** The criterion says *"a second engineer."* An agent
+>   is a reader, not a colleague. It does not supply the thing the criterion names.
+> - ❗ **Context isolation is not perspective isolation.** This reviewer shares the model
+>   lineage and the priors of the session that built the system. It was isolated from
+>   *the conversation*; it was **not** isolated from *how the system was built*. **It may
+>   reproduce the author's own search strategies, including their blind spots, and succeed
+>   where a human would not.** The prior-exposure fields above record this honestly
+>   rather than claiming independence the run does not have.
+> - ❗ **It is not under realistic pressure.** A human is time-boxed and will skim; an
+>   agent searches exhaustively. **A pass by an agent is weaker evidence than the same
+>   pass by a person**, because it does not show that a person under time pressure would
+>   find the same thing.
+> - ❗ **It cannot be socially independent in the way the measurement turns on.** The
+>   measurement turns on a reviewer choosing *not* to ask the author. An agent has no
+>   such temptation to resist, and so cannot demonstrate that property, however cleanly
+>   it runs.
+> - ❗ **It is not evidence that a second engineer performed a deployment.** **No
+>   deployment occurred. Nothing was deployed, no AWS call was made, no SSM command was
+>   issued, no container was touched, no rollback was performed and no Terraform was
+>   run.** §3 forbids reporting a Variant A result as a Variant B result, and that
+>   separation holds here without exception.
+>
+> **Its findings are evidence about the documentation, not about what an engineer can
+> do.** The gaps in §10 are real gaps in the runbook. **They are not evidence about the
+> capability the criterion asserts, and nothing in this record may be written up as if
+> they were.**
+
+**On the prior-exposure fields — the only question that matters is the fourth row.** If
+the reviewer has previously read `docs/deployment.md`, has previously deployed this
+stack, or was told any part of the procedure before the exercise, **the measurement is
+compromised** and the result must be recorded as compromised rather than as a clean
+pass. `docs/m4-plan.md:671-672` is the standard being applied here:
 
 **On the prior-exposure fields — the only question that matters is the fourth row.** If
 the reviewer has previously read `docs/deployment.md`, has previously deployed this
@@ -472,14 +605,60 @@ do not re-check it against a worked answer.** The gaps and the dead ends are the
 
 ## §8 — Evidence collection
 
-**Empty. No evidence has been collected.** For each command or action the reviewer
-performs, record one row. **Record the command as issued**, including the substitution —
-a command redacted to hide a value cannot later be shown to have produced what it
-produced.
+**Filled in from the run of 2026-10-15. Variant A: every action recorded here was
+read-only.** **Nothing that mutates anything was performed** — no AWS call, no SSM
+command, no deployment, no container operation, no Terraform.
+
+### A — What the reviewer actually did
 
 | # | Command or action, as issued | Exit status | Verdict observed | Diagnostic report path |
 |---|---|---|---|---|
-| | *(no rows — nothing has been run)* | | | |
+| E-1 | `git log` — repository history and HEAD | *Not recorded by the reviewer.* Read-only, no side effects | Confirmed the revision under test as a full 40-character SHA (§5) — and recorded that `main` is **ahead of `origin/main`** | n/a — read-only |
+| E-2 | `git status` — working-tree state | *Not recorded.* Read-only | **Revealed that `docs/m3-study-guide/` and `docs/m4-plan.md` are untracked** — the basis of §10 G-1 | n/a — read-only |
+| E-3 | `git branch -vv` — branch topology against remotes | *Not recorded.* Read-only | Revealed `main [origin/main: ahead 3]`; no published image for the revision under test (§10 G-7) | n/a — read-only |
+| E-4 | File reads under `docs/` | *Not recorded.* Read-only | `RUNBOOK.md` and `docs/deployment.md` supplied the runbook-side of the procedure; **G-2 is what is missing from them** | n/a — read-only |
+| E-5 | File reads under `scripts/` | *Not recorded.* Read-only | Deploy/rollback/diagnostics behaviour derivable from source — see §9 Q14, resolved **from the code rather than from the runbook** | n/a — read-only |
+| E-6 | File reads under `infra/` | *Not recorded.* Read-only | Surfaced the RDS username conflict in §10 G-6 | n/a — read-only |
+| E-7 | File reads under `.github/workflows/` | *Not recorded.* Read-only | CI record understood; **the digest itself was not obtainable here** — §9 Q2 | n/a — read-only |
+| E-8 | File reads under `api/` | *Not recorded.* Read-only | Alembic mechanics documented (`api/alembic/README.md`), **but no command line for reading the live revision** — §10 G-2 | n/a — read-only |
+| E-9 | File reads of `RUNBOOK.md` | *Not recorded.* Read-only | Operational values read; staleness of M2-era values recorded as §10 G-5 | n/a — read-only |
+| E-10 | File reads of `docker-compose.yml` | *Not recorded.* Read-only | Local shape of the stack; no action taken on any container | n/a — read-only |
+| E-11 | `grep` and searches across `docs/`, `scripts/`, `infra/`, `.github/workflows/`, `api/`, `RUNBOOK.md`, `docker-compose.yml` | *Not recorded.* Read-only | Exhaustive search of the repository surface; **this is the coverage limit of every "not in the repository" verdict below** | n/a — read-only |
+| E-12 | **Wrote out the derived procedure** — the §7 step 8 Variant A deliverable | n/a — a document, not a command | **A complete derived procedure was produced**, in the reviewer's own order, together with its questions (§9) and its gaps (§10) | n/a |
+
+### B — Values sought, and where each could be obtained
+
+**Recorded honestly: where a value could not be obtained from the repository, the row
+says so. That is the finding, not a blank cell.**
+
+| # | Value sought | Obtainable from the repository? | Where it actually came from, or why it could not |
+|---|---|---|---|
+| V-1 | The revision under test | **Yes** | `git log` / `git status`, full 40-character SHA (§5) |
+| V-2 | The registry manifest digest for that revision | **No** | **Could not be obtained from the repository.** It lives in the release run's publish **job summary**, not in a tracked file. §9 Q2 |
+| V-3 | The live database's alembic revision | **No** | **Could not be obtained, and no command line for obtaining it exists in the repository.** §9 Q4–Q6, §10 G-2 (**BLOCKING**) |
+| V-4 | The current RDS endpoint hostname and master username | **No** | **Not confirmable from the repository.** The values written down in `RUNBOOK.md` are stale and contradictory (§10 G-5, G-6). §9 Q5 |
+| V-5 | Currency of instance `i-0c3155b1b6bb31298` | **No** for a confirmed value | A candidate was identified in the repository; **nothing in the repository can confirm it is still current.** §9 Q7 |
+| V-6 | Whether a *tested revision* means anything operationally | **No** | The term is never defined anywhere in the repository. §9 Q8, §10 G-7 |
+| V-7 | A throwaway host to rehearse on | **No** | Never described in the repository. §9 Q15, §10 G-8 |
+| V-8 | The deploy / rollback command surface | **Partly** | Reconstructable from `RUNBOOK.md` plus `scripts/`; **the SSM `send-command` wrapping was not given** and had to be put together. §9 Q13, Q14 |
+
+### C — What was **not** done, stated explicitly
+
+**Nothing in this list was performed, and no row above should be read as implying any of
+it.** This is Variant A, and §3 defines that variant as a reading exercise.
+
+- ❗ **No AWS call of any kind.** No `aws` invocation, authenticated or otherwise.
+- ❗ **No SSM command.** No `send-command`, no `start-session`, no session opened.
+- ❗ **No deployment.** Nothing was deployed, and no deployment was rehearsed.
+- ❗ **No container operation.** Nothing was built, run, stopped or inspected.
+- ❗ **No Terraform.** No plan, no apply, no output read from a live backend.
+- ❗ **No rollback**, and **no rollback pointer was touched**.
+- ❗ **No host state was read or changed.** The production host was not contacted at all.
+- ❗ **Nothing was pushed**, and no branch was published.
+- ❗ **No credential was read, requested, printed or recorded** (§4's secret-handling
+  note did not need to be invoked).
+- ❗ **The evaluator-only answer key was not read by the reviewer.** It lives outside the
+  repository and was not provided in any form.
 
 **Conventions for this table.**
 
@@ -498,13 +677,89 @@ produced.
 
 ## §9 — Questions asked
 
-**Empty. No questions have been asked, because no reviewer has begun.** This table is
-the primary measurement this document exists to take, and it is deliberately the one
-with no rows.
+**Filled in from the run of 2026-10-15. Fifteen questions, recorded in the reviewer's own
+framing.**
 
-| Question, verbatim | Who could answer it | Answerable from the repository alone? |
-|---|---|---|
-| *(no rows — the exercise has not been run)* | | |
+> **Transcription note, and a limit on it.** The questions below are recorded in the
+> reviewer's own framing, as it submitted them. **Where this record abbreviates a
+> question, the abbreviation is marked and no wording has been invented** — the
+> reviewer's verbatim strings are held in its own submission and are not reconstructed
+> here from memory, which §8's conventions forbid. **The third column is the reviewer's
+> own verdict, including its own qualifiers, reproduced as recorded.**
+
+| # | Question, as the reviewer framed it | Who could answer it | Answerable from the repository alone? |
+|---|---|---|---|
+| Q1 | Which commit is "the revision under test"? | assessor | **No** |
+| Q2 | What is the registry manifest digest for that revision? | the release run's publish job summary | **No** (for the value) |
+| Q3 | Is GitHub Actions access part of "the repository" here? | the protocol | **Yes** |
+| Q4 | What is the command to read the live alembic revision from RDS? | the author | **No** |
+| Q5 | What is the current RDS endpoint hostname and master username? | the current AWS stack | **No** |
+| Q6 | Does the operator's principal have `secretsmanager:GetSecretValue` on the master secret? | the operator's IAM grant | **No** |
+| Q7 | Is instance `i-0c3155b1b6bb31298` still current? | AWS / terraform output | **No** for a confirmed value; **Yes** as a candidate |
+| Q8 | What operationally is a "tested revision"? | the author | **No** |
+| Q9 | Will the rollback land on the defective legacy branch? | only the host | **No** (a state question, not a documentation gap) |
+| Q10 | Who approves a deploy to this host, and who must be told? | the operator | **No** |
+| Q11 | Criterion says `/health`; the runbook mandates `/health/ready` — which one governs? | partly the runbook | **Yes** (the runbook is unambiguous; the untracked plan disagrees) |
+| Q12 | Where does a diagnostic report land, and how is it retrieved? | the runbook | **Yes** |
+| Q13 | How is `sudo deploy.sh …` wrapped for SSM `send-command`? | partly `RUNBOOK.md` | **Partly** — reconstructable |
+| Q14 | Does the source-tree requirement actually block a deploy? | the code | **Yes** — resolved **from the source, not from the runbook; the runbook overstates it** |
+| Q15 | Is there a throwaway host to rehearse on? | the operator | **No** |
+
+### The tally, which is what §11 reads
+
+**Nine of the fifteen rows carry a No verdict, and those nine are: Q1, Q2, Q4, Q5, Q6,
+Q8, Q9, Q10, Q15.**
+
+Three of them carried the reviewer's own qualifiers, and those qualifiers are part of
+the finding and are reproduced rather than tidied away:
+
+- **Q2** — **No**, *for the value*. The digest lives in a CI job summary, so it is
+  outside the repository by construction rather than by omission.
+- **Q9** — **No**, *and the reviewer marked it a state question, not a documentation
+  gap.* Whether the rollback lands on the unsafe legacy branch can only be answered by
+  the host, which a Variant A run does not contact. **It is recorded as an author-only
+  question because that is the verdict given, and it is annotated because the reviewer
+  itself said it is not a documentation defect.** The annotation does not reduce the
+  count.
+- **Q7** — **the recorded verdict is dual: "No for a confirmed value; Yes as a
+  candidate."** It is left exactly as   recorded and is **not** counted in the nine. The
+  reviewer resolved a candidate instance id from the repository and could not confirm it
+  was current. **Counting Q7 either way does not change the outcome: §11 fails on a
+  single No, and seven unqualified No rows — Q1, Q4, Q5, Q6, Q8, Q10, Q15 — are already
+  among the nine.**
+
+
+### Near-miss questions — what the reviewer nearly had to ask, and resolved unaided
+
+**§7 step 8 asks for these explicitly, and they are more valuable to the runbook's
+author than the questions that were asked.**
+
+- **Q3 — whether GitHub Actions is inside the boundary of "the repository".** Resolved
+  unaided by reading §4 of this protocol.
+- **Q11 — `/health` versus `/health/ready`.** The runbook is unambiguous; the reviewer
+  found the contradiction in the **untracked** plan document and settled it against the
+  runbook. **A near-miss that turned into G-1:** the document that disagrees is not in
+  the revision under test at all.
+- **Q12 — where a diagnostic report lands and how to retrieve it.** Resolved from the
+  runbook.
+- **Q13 — the SSM `send-command` wrapping of `sudo deploy.sh …`.** **Partly**
+  reconstructable: the pieces exist across `RUNBOOK.md` and `scripts/`, and the
+  reviewer assembled them. **A near-miss that was not free** — it cost assembly, and it
+  is the practical face of G-2.
+- **Q14 — whether the source-tree requirement actually blocks a deploy.** Resolved by
+  reading `scripts/` rather than `RUNBOOK.md`, and the reviewer recorded that **the
+  runbook overstates the requirement**. This is a near-miss that turned out to be a
+  **documentation defect in the other direction** — the prose is stricter than the code.
+- **Q7 — the instance id.** Resolved to a candidate in the repository; what could not be
+  resolved is whether it is still current.
+
+> ⚠️ **An honest limit on this subsection.** The reviewer submitted its questions and
+> verdicts as the table above; **it did not submit a separate near-miss list distinct from
+> that table.** The six entries here are the ones the table itself records as resolved
+> from the repository rather than asked — which is what §7 step 8's *almost asked*
+> distinction amounts to for this run. **Anything the reviewer recorded as a distinct
+> near-miss and did not surface is not recorded here, and this subsection is therefore
+> incomplete against §7 step 8's request.** It is left incomplete rather than filled in.
 
 **Record the question verbatim**, in the reviewer's own words, before it is answered
 and before it is paraphrased into something tidier. A question that has been
@@ -517,6 +772,14 @@ could not find.
 |---|---|
 | **Yes** | The repository contains the answer. The reviewer had to work, and the work was the test. **This is a PASS contribution.** |
 | **No** | The answer existed only in the author's head, in an unrecorded terminal session, or in an unwritten habit. **This is a FINDING against the runbook** — see §11. |
+
+**A note on this run, because the reviewer used two answers this table does not define.**
+Q13 was recorded **"Partly — reconstructable"**, and Q7 was recorded with a **dual
+verdict** ("No for a confirmed value; Yes as a candidate"). **Neither has been rewritten
+into a Yes or a No to fit the two-answer scale.** They stand as the reviewer recorded
+them, and the §11 tally above states plainly which rows carry a No and what that means.
+**The scale was not edited to fit the result, which is what §11's "stated before any
+result exists" is for.**
 
 **The middle column exists so that a finding can be routed.** "Only the author could
 answer it" is a specific, fixable defect: it names the gap. "Nobody could answer it"
@@ -533,7 +796,103 @@ clean pass and a runbook that is technically complete and practically hostile.
 
 ## §10 — Documentation gaps found
 
-**Empty. No gaps have been catalogued, because no reviewer has looked.**
+**Filled in from the run of 2026-10-15. Eight gaps, recorded with the reviewer's own
+severity ratings. The two blocking ratings are recorded as given and are not softened.**
+
+> **Two fields in the convention below are not filled in, and the reason is the same for
+> both.** *"Where the reviewer hit it"* is given where the submission stated the step or
+> question, and marked **not stated by the reviewer** where it did not. *"Proposed fix"*
+> is **not recorded for any gap**, because no fix was carried in the submitted evidence
+> and **inventing one here would be the author's work written into the reviewer's
+> record.** §11's remediation instruction — fix the runbook so the question has an
+> answer in the repository, then re-run — is the author's next step, not this section's
+> content.
+
+### G-1 — `docs/m4-plan.md` and `docs/m3-study-guide/` are cited but not in the revision
+
+| Field | Content |
+|---|---|
+| **Gap** | **`docs/m3-study-guide/` and `docs/m4-plan.md` are untracked in this revision**, yet the runbook and this protocol cite `docs/m4-plan.md` **by line number** in several places — including as the document that defines the acceptance criterion. **A clean clone of the tested revision does not contain it.** |
+| **Where the reviewer hit it** | §9 Q11 — the `/health` versus `/health/ready` contradiction lives in the untracked plan. Step/question linkage beyond that **not stated by the reviewer.** |
+| **Severity** | **Recoverable** |
+| **Proposed fix** | **Not recorded — no fix was carried in the submitted evidence.** |
+
+⚠️ **This gap is checkable, and its check is in this repository's own working tree.**
+`git status` at the revision under test reports both paths as untracked. **Their
+untracked status is a finding about the repository, not a licence to commit them** — and
+nothing in this exercise stages, adds or modifies either path.
+
+### G-2 — No command line exists for reading the live database's alembic revision
+
+| Field | Content |
+|---|---|
+| **Gap** | **No command line exists anywhere in the repository for reading the live database's alembic revision.** The table, the TLS mode, the tunnel technology and the split-host technique are all documented. **The actual `psql` invocation and the SSM port-forwarding invocation are not.** |
+| **Where the reviewer hit it** | §9 Q4 (the command), Q5 (the endpoint and username), Q6 (the `secretsmanager:GetSecretValue` grant) |
+| **Severity** | **⛔ BLOCKING** — **recorded at full strength. The procedure could not be completed without it.** |
+| **Proposed fix** | **Not recorded — no fix was carried in the submitted evidence.** |
+
+### G-3 — The permission table contradicts the DB-read step
+
+| Field | Content |
+|---|---|
+| **Gap** | The permission table says **`ssm:GetParameter` is "not needed for a deploy"**, but the database-read step needs the RDS address — **and the repository holds an SSM parameter for that address which no document tells the reviewer to read.** The table and the step are inconsistent. |
+| **Where the reviewer hit it** | Step 3 / §9 Q5 — step linkage **not stated by the reviewer** |
+| **Severity** | **Recoverable** |
+| **Proposed fix** | **Not recorded — no fix was carried in the submitted evidence.** |
+
+### G-4 — `terraform output` is routed through, but required access is not listed
+
+| Field | Content |
+|---|---|
+| **Gap** | Several steps route through **`terraform output`**, but **the Terraform state backend and its credentials are absent from §4's required-access list.** A reviewer granted only §4's list has no documented way to satisfy those steps. |
+| **Where the reviewer hit it** | **Not stated by the reviewer** |
+| **Severity** | **Recoverable** |
+| **Proposed fix** | **Not recorded — no fix was carried in the submitted evidence.** |
+
+### G-5 — M2-era values in `RUNBOOK.md` are stale, and only one of them is flagged
+
+| Field | Content |
+|---|---|
+| **Gap** | **M2-era infrastructure values in `RUNBOOK.md` are flagged as stale for the instance type only.** The **instance id, the ALB DNS name, the RDS endpoint, the secret ARN and the username are equally stale and mostly unflagged.** A reader has no way to know which values in the file can be trusted. |
+| **Where the reviewer hit it** | Baseline and verification steps / §9 Q5, Q7 — step linkage **not stated by the reviewer** |
+| **Severity** | **Recoverable** |
+| **Proposed fix** | **Not recorded — no fix was carried in the submitted evidence.** |
+
+### G-6 — The RDS master username appears twice, with different values
+
+| Field | Content |
+|---|---|
+| **Gap** | **The RDS master username appears with two different values in `RUNBOOK.md` and `infra/variables.tf`, with no reconciliation anywhere.** A reader cannot tell which is current without access to the live stack. |
+| **Where the reviewer hit it** | §9 Q5 |
+| **Severity** | **Recoverable** |
+| **Proposed fix** | **Not recorded — no fix was carried in the submitted evidence.** |
+
+### G-7 — "Tested revision" is never defined
+
+| Field | Content |
+|---|---|
+| **Gap** | **"Tested revision" is never defined.** Nothing states that the revision under test must be a commit with a successful release run — **and `HEAD` in the tested revision is ahead of `origin/main` and has no published image.** The criterion's central term has no operational meaning in the repository, and the revision this exercise pinned does not satisfy the obvious reading. |
+| **Where the reviewer hit it** | §9 Q1, Q8; §5's pin |
+| **Severity** | **Recoverable** |
+| **Proposed fix** | **Not recorded — no fix was carried in the submitted evidence.** |
+
+### G-8 — No throwaway host is described, and a Variant B run depends on one
+
+| Field | Content |
+|---|---|
+| **Gap** | **The rehearsal the criterion depends on requires a throwaway host that the repository never describes.** Nothing in the repository names one, states that one exists, or says what "rehearsal" is supposed to happen on. |
+| **Where the reviewer hit it** | §9 Q15 — the question of where a Variant B run could be rehearsed |
+| **Severity** | **⛔ BLOCKING for a Variant B run** — **recorded at full strength.** It blocks the variant that would actually require a host. |
+| **Proposed fix** | **Not recorded — no fix was carried in the submitted evidence.** |
+
+### An honest limit on this section
+
+**Eight gaps are recorded above: G-1 … G-8.** The reviewer's submission was summarised
+into these eight before transcription. **Any further gap the reviewer reported that did
+not survive that summary is not recorded here, and §10 is therefore incomplete against
+the submission.** It is left incomplete rather than reconstructed — §8's conventions
+forbid a row or an entry being filled in afterwards from memory, and the same rule
+applies to a gap.
 
 **Convention for recording a gap.** One entry per gap, each with:
 
@@ -630,41 +989,104 @@ that sentence, and §12 must not contain it unless Variant B was run.**
 
 ## §12 — Final verdict
 
-> ## ⚠️ **NOT YET TESTED**
+> ## ⚠️ **NOT YET TESTED — the verdict field is still blank, and the exercise HAS been run**
 >
-> **No verdict may be recorded in this section until the exercise has actually been run
-> by a real, identified reviewer.**
+> **No verdict is recorded in this section, and none may be.** **The Verdict field below
+> is reserved to the assessor (Moe).** A reviewer may not fill it in, and a verdict
+> entered by anyone who did not witness the exercise is not a verdict. **The reviewer
+> that ran was an AI agent, context-isolated (§6) — it is a witness to the documentation,
+> not to a deployment, and this section may not be completed on its word.**
 >
-> This section is completed by the **assessor (Moe)**, not by the reviewer. It is
-> included in the reviewer packet so that the reviewer can see exactly what is being
-> measured and what standard their work will be read against — **but a reviewer may
-> not fill it in, and a verdict entered by anyone who did not witness the exercise is
-> not a verdict.**
+> **What this section does record is the run, and the outcome of §11 applied to the
+> evidence the run submitted. Those are different things, and the difference is the whole
+> reason the Verdict row is still empty.**
 
 | Field | Value |
 |---|---|
-| **Status** | **NOT YET TESTED** |
-| Variant exercised | *(blank — undecided, §3)* |
-| Reviewer | *(blank — none identified, §6)* |
-| Date of exercise | *(blank)* |
-| Revision under test | *(blank, §5)* |
-| Author-only questions | *(blank, §9)* |
-| Procedure derivation | *(blank)* |
-| Deploy / verify / rollback executed | *(blank)* |
-| Documentation gaps found | *(blank, §10)* |
-| **Verdict** | *(blank — NOT YET TESTED)* |
+| **Status** | **NOT YET TESTED** — the criterion's verdict is unrecorded. **The exercise was run; §11 was applied to it and returned FAIL.** |
+| Variant exercised | **A — cold-reader documentation walkthrough. No deployment occurred.** |
+| Reviewer | **An AI agent (context-isolated). Not a person.** ⚠️ *Per §17.1 an agent run is a weaker proxy for the acceptance criterion than a human run: the agent shares the author's model lineage and priors, so context isolation is not perspective isolation. It is not evidence that a second engineer performed a deployment.* |
+| Date of exercise | **2026-10-15** |
+| Revision under test | `678cef3bf46a3e15d79dbc20064f0ea43f22dca8` (§5) |
+| Author-only questions | **Nine: Q1, Q2, Q4, Q5, Q6, Q8, Q9, Q10, Q15 (§9).** |
+| Procedure derivation | **A complete written procedure was produced from the repository alone, in the reviewer's own order (§8 E-12) — but two required values inside it could not be derived from the repository at all:** the registry manifest digest (Q2) and the live database's alembic revision (Q4–Q6, and no command line for it exists — G-2). |
+| Deploy / verify / rollback executed | **❗ NONE. Nothing was deployed, verified against a host, or rolled back. No AWS call, no SSM command, no container operation, no Terraform.** |
+| Documentation gaps found | **Eight: G-1 … G-8 (§10). Two blocking: G-2 outright, and G-8 for a Variant B run.** |
+| **§11 applied — outcome** | **❌ FAIL. Unsoftened — see below.** |
+| **Verdict** | *(blank — **reserved to the assessor**. NOT YET TESTED.)* |
+
+### §11 was applied, and its outcome was **FAIL**
+
+**§11 as written requires all four PASS conditions to hold, and any one FAIL condition
+disqualifies the pass. The submitted evidence fails.**
+
+- **PASS condition 3 — "zero author-only questions" — is not met.** §9 contains **nine**
+  rows whose verdict is **No**: Q1, Q2, Q4, Q5, Q6, Q8, Q9, Q10, Q15.
+- **FAIL condition 1 — "any author-only question. One is enough" — is therefore met.**
+  §11 is explicit that this disqualifies the pass **regardless of how confident the
+  reviewer was, how much they managed, or how reasonable their workaround was.** There
+  are nine, not one.
+- **FAIL condition 2 — "any required value that could not be derived" — is also met.**
+  The registry manifest digest (Q2) and the live database's alembic revision
+  (Q4–Q6) **could not be derived from the repository**, and the second is compounded by
+  G-2, which is **BLOCKING**: no command line for it exists anywhere in the repository.
+- **The count does not depend on how the qualified verdicts are read.** Q2 and Q9 carried
+  the reviewer's own qualifiers and Q7's verdict is dual; all three are recorded as
+  submitted (§9), **and seven rows — Q1, Q4, Q5, Q6, Q8, Q10, Q15 — carry an unqualified
+  No whatever the reader does with the other three.**
+
+**And §11 says what an author-only question is, so it is stated here in §11's own terms
+rather than softened:**
+
+> **An author-only question is a finding about the runbook, not a criticism of the
+> reviewer.** It means a competent engineer following this documentation could not get
+> this far. **That is a defect in the documentation, it is exactly what this test exists
+> to surface, and it is worth more than a clean pass would have been.**
+
+**§11's own remediation instruction follows from this**, and is recorded here rather
+than acted on: **fix the runbook so the question has an answer in the repository, and
+re-run the exercise** — with a reviewer who has not been exposed to this run, since a
+reviewer who has been told the answer once will not ask again.
+
+### ❗ What this run is not
+
+- ❗ **NO DEPLOYMENT OCCURRED.** Nothing was deployed, no AWS call was made, no SSM
+  command was issued, no container was touched, no rollback was performed and no
+  Terraform was run. **This result must never be reported as a live-deployment
+  demonstration.** §3's separation is absolute: **a Variant A result may never be
+  reported as a Variant B result**, and this run is Variant A.
+- ❗ **It is not evidence that a second engineer performed a deployment**, and nothing
+  above may be read that way. **The reviewer was an AI agent**, and per §17.1 an agent
+  run is a **weaker proxy** for the acceptance criterion than a human run — it shares
+  the author's model lineage and priors, and context isolation is not perspective
+  isolation.
+- ❗ **The FAIL is a result, not a failure of the exercise.** §11 is explicit that this
+  test can only fail the documentation when the documentation is genuinely incomplete,
+  and that this is the finding worth having.
+
+### The three preconditions below, checked against what actually happened
 
 **Before any verdict is recorded, these three things must be true. If any is false,
 there is no verdict to record:**
 
 1. **A named reviewer actually performed the exercise**, and §6 records their prior
-   exposure honestly.
+   exposure honestly. → ❗ **NOT SATISFIED AS WRITTEN.** A reviewer did perform the
+   exercise and §6 records its exposure honestly — but **it is an AI agent, and no
+   person is named, because no person exists.** This document asks for a *named
+   reviewer*; it did not anticipate an agent reviewer, and §17.1 exists precisely to
+   mark what that substitution can and cannot establish. **The precondition is recorded
+   as unmet rather than argued around.**
 2. **§8 and §9 contain what that reviewer submitted**, transcribed rather than
-   reconstructed.
+   reconstructed. → **Satisfied, with two recorded limits:** §9's questions are recorded
+   in the reviewer's own framing and the verbatim strings are held in its own
+   submission, and §9's near-miss subsection records an explicit incompleteness against
+   §7 step 8. **Neither limit was filled in by reconstruction.**
 3. **The assessor has stated which variant they are treating as governing** — or has
    stated that the criterion is being recorded as untested *despite* a variant having
    been run, because a demonstrated capability and a satisfied criterion are not the
-   same claim and the record must say which one was produced.
+   same claim and the record must say which one was produced. → **❗ NOT SATISFIED. The
+   assessor has not stated this.** **The governing-variant decision in §3 remains open,
+   and this record does not make it.**
 
 **On the wording of any future verdict.** A verdict must name **the variant that was
 run** and must not claim what that variant does not establish. Specifically:
@@ -685,10 +1107,20 @@ verdict rests on.**
 
 > ## Closing status, restated so it cannot be missed
 >
-> **This document is a protocol for a test that has not been run.**
+> **This document is a protocol, and it now also carries one Variant A run's evidence.**
 >
-> - **Status: UNTESTED.** No reviewer identified, no procedure run, no evidence
->   collected, no deployment performed, no rollback performed, no verdict.
+> - **Status of the criterion: UNTESTED. No verdict is recorded, and the Verdict field in
+>   §12 is reserved to the assessor.**
+> - **A Variant A exercise WAS run on 2026-10-15**, by an **AI agent, context-isolated**
+>   (§6), against `678cef3bf46a3e15d79dbc20064f0ea43f22dca8` (§5). **§11 was applied to
+>   its submitted evidence and the outcome is FAIL** (§12) — nine author-only questions
+>   are recorded in §9, and a single one disqualifies the pass.
+> - ❗ **NOTHING WAS DEPLOYED.** No AWS call, no SSM command, no container operation, no
+>   Terraform, no rollback. **This run must never be reported as a live-deployment
+>   demonstration.**
+> - ❗ **The reviewer was an AI agent, not a second engineer.** Per §17.1 an agent run is
+>   a weaker proxy for the acceptance criterion than a human run — it shares the author's
+>   model lineage and priors, so **context isolation is not perspective isolation**.
 > - **The criterion's ambiguity is recorded, not resolved** — see
 >   `docs/verification-milestone-4.md:571` §13.1.
 > - **Variant A is not proof that a second person deployed anything. Variant B is the
@@ -696,5 +1128,8 @@ verdict rests on.**
 > - **Two known defects sit on this path**, both recorded and neither repaired: the
 >   redundant-deploy guard that does not exist (`docs/deployment.md:1440`), and
 >   the legacy rollback branch that can start the wrong image (`docs/deployment.md:1401`).
-> - **Writing this document executed nothing.** No AWS call, no SSM command, no
->   deployment, no rollback, no test run for this purpose.
+>   **The reviewer recorded both of these as live hazards it had to route around rather
+>   than execute** (Q9).
+> - **Writing this document executed nothing. Running the Variant A exercise executed
+>   nothing either.** Both are read-only exercises; the second one produced a written
+>   procedure and a gap list, and nothing else.
