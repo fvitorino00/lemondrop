@@ -294,7 +294,7 @@ also not implied.** Specifically:
 > mistake for a completed deployment.**
 
 This is not a drafting preference; it is the third leg of the argument already made at
-`docs/verification-milestone-4.md:613-617`:
+`docs/verification-milestone-4.md:639-643`:
 
 > *"**A command-identification exercise would not close it either.** Even if a second
 > party later reads the runbook and names the right commands, that is evidence they can
@@ -528,7 +528,7 @@ the exercise: the deliverable is the written procedure. For Variant B, every ste
 database revision and every command are for the reviewer to derive from the repository.
 That is not stylistic reluctance — it is the measurement (§2). **A brief that supplies
 the commands produces a correct command list handed over rather than derived, which
-`docs/verification-milestone-4.md:616-617` says explicitly is not a deployment and is not
+`docs/verification-milestone-4.md:642` says explicitly is not a deployment and is not
 evidence.**
 
 ### Step 1 — Establish a read-only baseline
