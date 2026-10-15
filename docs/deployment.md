@@ -99,14 +99,14 @@ $ git status --short --branch
 
 | Requirement | Why | Notes |
 |---|---|---|
-| AWS CLI v2 | SSM, and reading Terraform output | `RUNBOOK.md:9` |
+| AWS CLI v2 | SSM, and reading Terraform output | `RUNBOOK.md:43` |
 | AWS credentials for profile `lemondrop` | — | `RUNBOOK.md:4` — all AWS commands assume this profile and region `eu-west-1` |
-| Region `eu-west-1` | — | `RUNBOOK.md:4`; `infra/versions.tf` backend block per `RUNBOOK.md:29-38` |
+| Region `eu-west-1` | — | `RUNBOOK.md:4`; `infra/versions.tf` backend block per `RUNBOOK.md:66-79` |
 | The EC2 instance id | target of every SSM call | **Discovered, not quoted** — `aws ec2 describe-instances --filters 'Name=tag:Role,Values=application-host' 'Name=instance-state-name,Values=running' --query 'Reservations[].Instances[].InstanceId' --output text` (§7.1.1 step 1 gives the full query, with the `ManagedBy=terraform` filter that stops it matching a second stack). `terraform output ec2_instance_id` (`infra/outputs.tf:172-175`) is a second route and needs state access (§7.1.1's note). ❗ **`RUNBOOK.md` records `i-0c3155b1b6bb31298` and this runbook does not depend on it.** `docs/verification-milestone-3.md` §12.1 row 1 records that the instance id was *unchanged* across the Milestone 3 resize, which is why the value still appears in that file — and why it is the value that would fool you. **Read it from AWS.** |
 | Docker, with Compose v2 (`docker compose`, not `docker-compose`) | To resolve a digest, and if you verify from your own machine | `README.md` (Prerequisites) — the stack was built and verified against Compose v5.5.1 |
 | `jq` (optional) | Only if you read Secrets Manager by hand | Not needed by any step in this runbook. The host resolves the database credential itself. |
 
-**The instance has no SSH key and no public IP** (`RUNBOOK.md:89`, `infra/outputs.tf:180-186`). Everything reaches it through SSM.
+**The instance has no SSH key and no public IP** (`RUNBOOK.md:151`, `infra/outputs.tf:180-186`). Everything reaches it through SSM.
 
 ### 1.2 Permissions the operator needs
 
@@ -1781,7 +1781,7 @@ This codebase's value is that its documentation is trustworthy. That means the l
 
 **10. Whether the boot step 3 clone works is unresolved.** §2.3. `docs/boot-script.md:204-207` records it as failing on boot against a private repository, and `docs/verification.md:148` records the repository as private; §12 records a working deployed stack, which implies it succeeded at some point. **No tracked document asserts the repository is public, so this is an unresolved question rather than a contradiction between tracked documents** — and it is unresolved in the direction that matters, because a private repository is the recorded state. Check the host; do not assume.
 
-**11. `README.md` and `RUNBOOK.md` contain Milestone 2 values that Milestone 3 superseded.** `RUNBOOK.md:53` still shows `-var app_instance_type=t3.micro`, while `docs/verification-milestone-3.md` §12.1 row 1 records the host running **`t3.small`**. Treat `RUNBOOK.md` as accurate for AWS access mechanics (which are what it is for) and `docs/verification-milestone-3.md` as authoritative for instance facts.
+**11. `README.md` and `RUNBOOK.md` contain Milestone 2 values that Milestone 3 superseded.** `RUNBOOK.md:92` still shows `-var app_instance_type=t3.micro`, while `docs/verification-milestone-3.md` §12.1 row 1 records the host running **`t3.small`**. Treat `RUNBOOK.md` as accurate for AWS access mechanics (which are what it is for) and `docs/verification-milestone-3.md` as authoritative for instance facts.
 
     **What has been done about the values this item covers, and what has not.** `RUNBOOK.md` is Milestone 2 era and carries **hardcoded, deployment-specific values that go stale silently** — the RDS endpoint, the master secret's ARN, the master username, the instance id, the ALB DNS name and the state-bucket name. **The three a second reader must have in order to read the database at all — the endpoint, the secret ARN and the master username — have been pointed at §7.1.1's discovery procedure rather than at a corrected value**, because a corrected value is a value that goes stale again and nothing detects it. **The remaining ones are still literal in that file**, and the honest position is the one this item already took: `RUNBOOK.md` is accurate for *mechanics*; §7.1.1 step 1 and §11 are the routes for *values*.
 

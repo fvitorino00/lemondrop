@@ -379,8 +379,8 @@ this list as a hint.**
 | 2 | **AWS CLI v2, authenticated** | A named profile and a region. The runbook's own values are in `docs/deployment.md` §1.1 — **let the reviewer read them there.** The profile also needs the read-only **discovery** actions, because the runbook's discovery routes are AWS calls and not literals: `ec2:DescribeInstances` (the instance id), `elasticloadbalancing:DescribeLoadBalancers` (the ALB DNS name, §5.3), `rds:DescribeDBInstances` (the database endpoint, port, db name, master secret ARN and master username). **All three are `Describe`-only and none is a deploy permission**; the full table is `docs/deployment.md` §1.2. | **Yes — credentials** |
 | 3 | **SSM access to the instance** | `ssm:StartSession`, `ssm:SendCommand`, `ssm:GetCommandInvocation` against the EC2 instance. The instance has no SSH key and no public IP. The full permission set is in `docs/deployment.md` §1.2. | No — but grants host control |
 | 4 | **RDS master secret, workstation-side** | Credentials for the RDS master user, reachable from the reviewer's own machine. Needed because the host **cannot** read the live database revision — the reviewer must establish it from outside the host. See `docs/deployment.md` §7.1. | ⚠️ **YES — highest sensitivity. Master database credential.** |
-| 5 | **Local tooling** | `psql`, `curl`, `jq`, `docker` with Compose v2. `jq` and `psql` on the operator machine are already named in `RUNBOOK.md:10`. | No |
-| 6 | **Either SSH or SSM Session Manager** | There is no SSH key and no public IP; SSM Session Manager is the normal route. `RUNBOOK.md:92`. | No — but grants host control |
+| 5 | **Local tooling** | `psql`, `curl`, `jq`, `docker` with Compose v2. `jq` and `psql` on the operator machine are already named in `RUNBOOK.md:44`. | No |
+| 6 | **Either SSH or SSM Session Manager** | There is no SSH key and no public IP; SSM Session Manager is the normal route. `RUNBOOK.md:151`. | No — but grants host control |
 
 > ⚠️ **SECRET HANDLING — items 2 and 4 are operator-provisioned and are never written
 > into any document, including this one.** The RDS master credential (item 4) is the
