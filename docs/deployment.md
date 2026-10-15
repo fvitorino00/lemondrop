@@ -346,13 +346,76 @@ docker buildx imagetools inspect ghcr.io/fvitorino00/lemondrop-api@sha256:<64-he
 
 Read the digest back and compare it, character for character, to what the Actions summary printed. A truncated digest in a runbook is worse than none.
 
+### 3.4 What a **tested revision** is
+
+**This term appears in this milestone's acceptance criterion and nothing here had ever defined it**, which made it the single most consequential undefined term in the repository: a deployer could satisfy any reading of it and not know which one they had satisfied. It is defined here, and the definition has three parts that have to hold **together**. Any one of them alone is not a tested revision.
+
+| # | It must be… | How you know | Where it is enforced |
+|---|---|---|---|
+| 1 | a **commit that reached the release branch** and produced a **successful** `release` run | the run for that SHA concluded green, and its `publish` job was not skipped | `.github/workflows/release.yml`: `on: push` restricted to `branches: [main]`; `publish` carries `if: github.ref == 'refs/heads/main'` |
+| 2 | **the registry manifest digest that run published** | the `publish` job summary, or the `published digest:` line in its log — §3.3 | `validate_image_digest()` in `deploy-lib.sh` (§3.1) accepts nothing else |
+| 3 | **the source revision that image reports, and the validated schema label on it** | `org.opencontainers.image.revision` and `org.lemondrop.alembic-head`, read off the image | the schema gate and the provenance check (§4.4); `deploy-lib.sh`'s `image_label()` |
+
+**Why each part is load-bearing rather than redundant.** Part 1 is the only thing that produced an image at all — CI builds and publishes, and nobody builds by hand. Part 2 is the only reference the deploy tooling will accept, and the only one that survives a second push (§3.1). Part 3 is the only statement of what the image **expects the database to be at**, and it is what `--adopt-current`'s `SCHEMA DISAGREEMENT` check compares against your out-of-band reading (§7.1). **A revision with no digest cannot be deployed; a digest with no labels cannot be reasoned about against the database; and a local commit has neither.**
+
+**Reading part 3 off the image, using the same idiom the deploy script uses** (`deploy-lib.sh:572-583`, so what you read here is what `image_label()` reads there). This needs the image pulled locally — `docker manifest inspect` (§3.3) does not fetch one:
+
+```bash
+docker pull ghcr.io/fvitorino00/lemondrop-api@sha256:<64-hex>
+
+docker image inspect \
+  --format '{{range $k, $v := .Config.Labels}}{{printf "%s=%s\n" $k $v}}{{end}}' \
+  ghcr.io/fvitorino00/lemondrop-api@sha256:<64-hex \
+  | sed -n 's/^org\.opencontainers\.image\.revision=//p;s/^org\.lemondrop\.alembic-head=//p'
+```
+
+**The revision must be the full 40-character SHA.** `release.yml` labels with `${{ steps.refs.outputs.source_revision }}`, which is `GITHUB_SHA` — 40 characters — and abbreviated SHAs are ambiguous across a long history. §10 item 9 records the same reasoning for why no SHA is written into this document: *read `git rev-parse HEAD` on the day you need it.*
+
+#### How an independent engineer finds the release from this repository alone
+
+Everything needed is in `.github/workflows/release.yml`, and nothing is in this document:
+
+1. **The workflow publishes on push to the release branch.** Its trigger is `on: push: branches: [main]` plus `workflow_dispatch`. `branches: [main]` is the whole of the answer to "when does an image appear".
+2. **The job that carries the authoritative digest is `publish`**, displayed as **`publish to GHCR`**. It `needs: [build]`, and it holds the only `packages: write` in this repository's CI.
+3. **The step is named `record the pushed digest`.** It writes `>> "$GITHUB_STEP_SUMMARY"` and echoes `published digest: <ref>@sha256:<64-hex>` — the two places §3.3 sends you.
+4. **The digest must be read from that run's evidence.** ⚠️ **Not from any file in the tree.** `docker-compose.yml` and `.env.example` both name a digest-pinned reference, and **both are stale by construction** — a new digest is produced by every merge to `main` (§3.2, §10 item 8). They exist so boot has a *safe* default, not so an operator has an *approved* one. **A digest read out of the tree is a record of a past run.**
+
+#### ⚠️ THE UNPUSHED-HEAD TRAP — an unpushed checkout is not deployable
+
+> ⚠️ **A local commit that has not been pushed has no image. Not an old one, not a stale one — none. The pipeline has not run, the registry holds no manifest for it, and there is nothing to pull.**
+>
+> **An unpushed checkout must never be assumed deployable, under any circumstances, for any reason.** This is not a theoretical caution: it is an **observed trap**. During the cold-reader walkthrough recorded in `docs/second-engineer-acceptance.md`, the revision under test was a `main` that was **ahead of `origin/main`**, and therefore **had no published image at all**. A reviewer following this runbook literally would have taken a digest, deployed it, and deployed *the previous commit's image* while believing it was their own.
+
+The check, before anything else:
+
+```bash
+git fetch origin
+git rev-parse HEAD                       # the 40-char SHA you are considering
+git rev-parse origin/main                # where the release branch actually is
+
+# ON origin/main  => a release run may exist for it; confirm it, per steps 2-3 below.
+# NOT ON origin/main => THERE IS NO IMAGE. Stop.
+git merge-base --is-ancestor HEAD origin/main \
+  && echo "on origin/main — a release run must now be confirmed for this SHA" \
+  || echo "NOT on origin/main — this commit has never been built. There is nothing to deploy."
+```
+
+⚠️ **Two ways "on `origin/main`" is still not enough:**
+
+- **The run must have succeeded.** `release.yml`'s `concurrency` block cancels a previous in-flight run on a second push to `main`, and a **cancelled run publishes nothing** — the workflow says so in the comment above the `concurrency:` key, and the design is that nothing is published until every gate has passed. A SHA on `origin/main` with a cancelled or failed run has no image either.
+- **The `publish` job must not have been skipped.** Its `if: github.ref == 'refs/heads/main'` means a `workflow_dispatch` run on any other ref builds and passes gates and publishes nothing. **A green run is not the same as a published digest** — read the summary.
+
+**And the corollary, which is the reason this section exists at all:** you cannot discover the digest of a commit you have not pushed, from anywhere, including from this repository. **That is not a gap in the documentation; it is the definition of the situation.** What the documentation owes you is the ability to tell that you are in it — which is what the check above is.
+
+**What you deploy is therefore always four facts, never one:** the full commit SHA, the release run that published it, the digest that run recorded, and the two labels the image carries. §4.4 then makes the SHA optional on a labelled image — **but the SHA was never optional for deciding *which* image you are deploying**, which is the question §3.4 answers.
+
 ---
 
 ## 4. Deployment
 
 ### 4.1 Decide before you type: is this a rollback or an investigation?
 
-From `docs/m4-plan.md` §4.4 item 4, restated at the head of `rollback.sh` so the decision is made *before* the incident rather than during it:
+Stated identically in the header comment of `scripts/rollback.sh`, under `── WHEN TO USE THIS, DECIDED IN ADVANCE ──`, so the decision is made *before* the incident rather than during it — and stated there rather than only here, because the reader who needs it will be holding the script:
 
 | Situation | Action |
 |---|---|
@@ -1799,6 +1862,8 @@ Tick every box before touching anything. Each line is a fact you observed, not a
 ### What you are about to deploy
 
 - [ ] The digest came from the **publish job's summary or log** for your commit, not from a tag and not from this document (§3.3).
+- [ ] **Your commit is on `origin/main`, and its release run concluded green with `publish` not skipped** (§3.4). ⚠️ **An unpushed commit has no image — this box is the one that catches it.**
+- [ ] You read the image's own `org.opencontainers.image.revision` and `org.lemondrop.alembic-head` labels off the digest you pulled (§3.4), and the revision label is your commit.
 - [ ] You re-read the digest back and it matches, character for character, 64 lowercase hex.
 - [ ] `docker manifest inspect <ref>` **succeeded** from a machine with no registry credentials — anonymous pullability confirmed **for this digest, today**. §10 item 7 records readability observed at verification time against an older digest; it is history, not a standing guarantee, and the package setting can change (§3.3).
 - [ ] You looked at what the commit contains. You did not take the digest on trust.
