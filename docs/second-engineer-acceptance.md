@@ -26,6 +26,20 @@
 > criterion, and the verdict remains the assessor's. **The run happened. The criterion's
 > verdict is still unrecorded.**
 >
+> ⚠️ **Since that FAIL was written, §11's criteria have been revised and a re-run is
+> required — and it has not happened.** The FAIL above was scored against §11's
+> **previous** wording, which counted every row the reviewer could not answer from the
+> tree as a documentation failure. **§11 now turns on genuine documentation gaps** (§9
+> classifies the recorded questions under a three-way scale plus a host-state row type),
+> **a documentation repair pass has since closed five of the eight gaps in §10, and a
+> fresh cold-reader run is required because both the criteria and the repository have
+> changed.** **Nothing has been re-run, no new reviewer has been engaged, no new question
+> has been asked, no new result exists, and the Verdict field in §12 is still blank.**
+> **This is not a prediction that a re-run would pass — it has not been done, and a
+> re-run that fails is as likely as one that passes.** Nothing in the note changes the
+> deployment facts, which stand: **nothing was deployed, no AWS call was made, and no
+> Variant A result is a deployment.**
+>
 > | Fact | State |
 > |---|---|
 > | Protocol authored | 2026-10-15 |
@@ -199,13 +213,15 @@ plausible way to misuse this document:
 capability, and the plan operationalises it as an event. Those are not the same test,
 and this document will not pick one for you.
 
-**The criterion, as written**, at `docs/m4-plan.md:452-453`:
+**The criterion, as written**, recorded in a tracked document at
+`docs/verification-milestone-4.md` §13.1 (*"The criterion, as written"*):
 
 > *"A second engineer must be able to deploy a tested revision without manually
 > reconstructing the original environment."*
 
-**The plan's operationalisation of it**, at `docs/m4-plan.md:668-675`, requires a
-second person to actually do it:
+**The plan's operationalisation of it**, recorded in the same tracked section at
+`docs/verification-milestone-4.md` §13.1 (*"The operationalisation of the same sentence,
+as written"*), requires a second person to actually do it:
 
 > **Verified — this is the acceptance criterion, and it must be tested by someone other
 > than the author.** A second engineer, given only the runbook and repo access, deploys
@@ -216,9 +232,9 @@ second person to actually do it:
 >
 > **Done when:** the acceptance sentence is true, witnessed by someone else.
 
-**And the plan had already flagged the mismatch**, at `docs/m4-plan.md:821-824`, before
+**And the plan had already flagged the mismatch**, at `docs/verification-milestone-4.md` §13.1 (ambiguity item 2), before
 any of this was attempted: *"**The acceptance criterion is therefore weaker than it
-reads.**"* Its recommended restatement is at `docs/m4-plan.md:826-827`:
+reads.**"* Its recommended restatement is quoted in that same tracked item:
 
 > *"A second engineer can deploy a tested revision to the running environment without
 > manually reconstructing the original deployment steps."*
@@ -226,7 +242,7 @@ reads.**"* Its recommended restatement is at `docs/m4-plan.md:826-827`:
 **The difference between those two sentences is not cosmetic.** "The original
 deployment steps" excludes the walk-forward and `terraform apply` path — a path the
 plan itself records has never been walked end to end from zero
-(`docs/m4-plan.md:823`). "The original environment" does not exclude it.
+(`docs/deployment.md` §10 item 18). "The original environment" does not exclude it.
 `docs/verification-milestone-4.md:571` §13.1 records this tension and explicitly
 declines to settle it.
 
@@ -308,12 +324,24 @@ What this document owes the assessor instead is the following, and only this:
 4. The consequence of each choice is stated plainly above, so the decision is made with
    its cost in view.
 
-**If the criterion is restated** in the form the plan recommends
-(`docs/m4-plan.md:826-827`), say so in §12 before the exercise is run, and note it —
-because the restated criterion names *deployment steps*, which bears on which variant
-can satisfy it. **Do not restate it after seeing a result.** Deciding what the criterion
-means after you know how it came out is how an ambiguous criterion gets quietly
-resolved in whichever direction the result happens to point.
+**If the criterion is restated** in the form the plan recommends (recorded in
+`docs/verification-milestone-4.md` §13.1, ambiguity item 2), say so in §12 before the
+exercise is run, and note it — because the restated criterion names *deployment steps*,
+which bears on which variant can satisfy it. **Do not restate it after seeing a result.**
+Deciding what the criterion means after you know how it came out is how an ambiguous
+criterion gets quietly resolved in whichever direction the result happens to point.
+
+> ⚠️ **The citations in this section were retargeted, and the reason is G-1 itself.**
+> This section used to cite `docs/m4-plan.md` by line number. **That file is untracked**,
+> so a clean clone of any revision does not contain it, and a protocol that judges a
+> milestone against a sentence a second reader cannot reach is the worst kind of
+> dangling reference — which is what §10 G-1 records. A documentation repair pass has
+> since recorded the same substance in tracked files: **the acceptance criterion, its
+> operationalisation, the *weaker than it reads* finding and the recommended restatement
+> are all in `docs/verification-milestone-4.md` §13.1**, and **the walk-forward path
+> never having been walked end to end is in `docs/deployment.md` §10 item 18.** The
+> quotations above are unaltered; only the pointers to them were retargeted, and each
+> now names a location a clean clone can open.
 
 ## §4 — Required access
 
@@ -451,13 +479,13 @@ below invents one.**
 the reviewer has previously read `docs/deployment.md`, has previously deployed this
 stack, or was told any part of the procedure before the exercise, **the measurement is
 compromised** and the result must be recorded as compromised rather than as a clean
-pass. `docs/m4-plan.md:671-672` is the standard being applied here:
+pass. `docs/verification-milestone-4.md` §13.1 is the standard being applied here:
 
 **On the prior-exposure fields — the only question that matters is the fourth row.** If
 the reviewer has previously read `docs/deployment.md`, has previously deployed this
 stack, or was told any part of the procedure before the exercise, **the measurement is
 compromised** and the result must be recorded as compromised rather than as a clean
-pass. `docs/m4-plan.md:671-672` is the standard being applied here:
+pass. `docs/verification-milestone-4.md` §13.1 is the standard being applied here:
 
 > *"**If the author runs this test themselves, the criterion is not met** — it is the
 > definition of 'without manually reconstructing.'"*
@@ -705,10 +733,22 @@ framing.**
 | Q14 | Does the source-tree requirement actually block a deploy? | the code | **Yes** — resolved **from the source, not from the runbook; the runbook overstates it** |
 | Q15 | Is there a throwaway host to rehearse on? | the operator | **No** |
 
-### The tally, which is what §11 reads
+> ⚠️ **The table above is the record and it is unaltered. Its fourth column is the
+> reviewer's own binary verdict, and §11 no longer reads it.** A documentation repair
+> pass has since classified these rows under a **three-way scale defined further down in
+> this section**, and **five of the nine `No` rows turn out not to be documentation gaps
+> at all.** The table is kept exactly as the reviewer submitted it because it is evidence
+> of what the reviewer was able to conclude from the repository as it then stood, and
+> **rewriting it would destroy the very thing it records.** The classification is recorded
+> alongside it, in *The classification of the nine recorded questions* below, and §11 now
+> turns on that classification rather than on this column.
+
+### The tally as recorded — and what §11 now reads
 
 **Nine of the fifteen rows carry a No verdict, and those nine are: Q1, Q2, Q4, Q5, Q6,
-Q8, Q9, Q10, Q15.**
+Q8, Q9, Q10, Q15.** **This tally is the record of the run and stands as recorded.** §11
+**does not** read it; §11 reads the classification recorded further down, which sorts
+these same nine rows into three different categories.
 
 Three of them carried the reviewer's own qualifiers, and those qualifiers are part of
 the finding and are reproduced rather than tidied away:
@@ -766,20 +806,82 @@ and before it is paraphrased into something tidier. A question that has been
 reformulated by the time it is written down is no longer evidence of what the reviewer
 could not find.
 
-**The third column is the measurement, and it has exactly two answers:**
+### The classification — a three-way scale, and a fourth row type that is not a question
 
-| Answer | Meaning |
-|---|---|
-| **Yes** | The repository contains the answer. The reviewer had to work, and the work was the test. **This is a PASS contribution.** |
-| **No** | The answer existed only in the author's head, in an unrecorded terminal session, or in an unwritten habit. **This is a FINDING against the runbook** — see §11. |
+**The measurement is the classification, and it has exactly three answers.** The
+two-answer scale this section used to carry was revised after the run of 2026-10-15 was
+classified; the reason it was wrong is stated immediately after the table.
 
-**A note on this run, because the reviewer used two answers this table does not define.**
+| Classification | Meaning | What §11 does with it |
+|---|---|---|
+| **Answerable from the repository** | **The repository contains it.** The reviewer had to work, and the work was the test. | **A PASS contribution.** |
+| **Correctly external** | **The value or the fact lives in an authoritative external source, and the repository's job is to document *how* to obtain it.** The value is not expected to be in the tree — in some cases it cannot be, by construction. | **The measurement for this category is whether the route is documented, not whether the value is present.** A documented route is **not** a failure. An undocumented route **is** a genuine documentation gap, and is scored as one. |
+| **Genuine documentation gap** | **The information should have been in the repository and was not.** | **A FINDING against the runbook.** See §11 — one disqualifies a pass. |
+
+**The fourth row type is not a question and is not a classification above it:**
+
+| Row type | Meaning | What §11 does with it |
+|---|---|---|
+| **Host-state question** | **Answerable only by inspecting the live host** — and a Variant A run does not contact the host. It is recorded so the reader can see it was considered. | ❗ **Excluded from the measurement.** A repository cannot and should not record the state of a live host, so its absence from the tree is not a documentation defect. |
+
+**Why the two-way scale was wrong, and it was wrong in two separate ways.** It scored a
+**correctly-external value the same as a missing instruction.** The registry manifest
+digest, for instance, is not in the tree **by construction** — it exists because CI
+produced it, and no repository that does not run CI could ever contain it. Scoring that
+`No` against the same scale as *"no document anywhere says how to find the digest"* makes
+the two indistinguishable, and a reviewer who was told where CI records it has **not** been
+handed an answer. **An engineer who needs AWS credentials is not a documentation failure
+when the required access is specified** (§4 states exactly what access an operator must
+provision, and names where the runbook's own values live). A measure that cannot tell
+"the repository withheld this" from "the repository cannot hold this, and says where it is"
+measures the wrong thing.
+
+**And it scored a live-state question as a documentation failure at all.** Whether a
+rollback will land on the defective legacy branch is a fact about a host **at this moment**.
+No document can state it, none should try, and a run that recorded its absence as a defect
+was reporting the absence of the impossible. **That is the second thing the three-way
+scale fixes**: the row type is now named, recorded, and excluded from the measurement, so
+it can be seen rather than silently scored.
+
+**A note on this run, because the reviewer used two answers this scale does not define.**
 Q13 was recorded **"Partly — reconstructable"**, and Q7 was recorded with a **dual
 verdict** ("No for a confirmed value; Yes as a candidate"). **Neither has been rewritten
-into a Yes or a No to fit the two-answer scale.** They stand as the reviewer recorded
-them, and the §11 tally above states plainly which rows carry a No and what that means.
-**The scale was not edited to fit the result, which is what §11's "stated before any
-result exists" is for.**
+to fit the scale.** They stand as the reviewer recorded them, and the recorded tally above
+states plainly which rows carry a No and what that means. **The scale was not edited to
+fit the result, which is what §11's "stated before any result exists" is for** — and the
+classification below was applied to rows the reviewer had already submitted, not to rows
+chosen after the fact.
+
+### The classification of the nine recorded questions
+
+**Each of the nine rows the reviewer recorded a `No` against, classified under the scale
+above, with the reason stated in one line.** The table immediately above this subsection
+is the record of what the reviewer concluded and is unchanged; this is the reading of it
+that §11 now applies.
+
+| # | Question, as the reviewer framed it | Classification | Why |
+|---|---|---|---|
+| Q1 | Which commit is "the revision under test"? | **Genuine documentation gap** | The revision under test is a property of the run, but the repository's job is to say how a pin is recorded and checked afterwards — §5 now states it, and it did not. |
+| Q2 | What is the registry manifest digest for that revision? | **Correctly external** | The digest is **not in the tree by construction** — CI produced it. The repository's job is to say where the run recorded it, and `docs/deployment.md` §3.3 does. |
+| Q4 | What is the command to read the live alembic revision from RDS? | **Genuine documentation gap** | ⛔ **The ⛔ blocking gap.** The command was the repository's to supply and no tracked file carried it. Closed by the repair pass at `docs/deployment.md` §7.1.1. |
+| Q5 | What is the current RDS endpoint hostname and master username? | **Genuine documentation gap** | The values go stale and two files disagreed on the username. The repository's job was a **discovery route**, not a corrected value, and it did not carry one. |
+| Q6 | Does the operator's principal have `secretsmanager:GetSecretValue` on the master secret? | **Correctly external** | **A fact about the operator's grant, not about this system.** The repository's job is to state the requirement, which §4 item 4 and `docs/deployment.md` §1.2 now do. |
+| Q8 | What operationally is a "tested revision"? | **Genuine documentation gap** | The criterion's central term was undefined everywhere in the tree. `docs/deployment.md` §3.4 defines it now. |
+| Q9 | Will the rollback land on the defective legacy branch? | **Host-state question** | **Only the live host can answer it, and a Variant A run does not contact the host.** Not a documentation question at all — recorded so it can be seen, excluded from the measurement. |
+| Q10 | Who approves a deploy to this host, and who must be told? | **Correctly external** | **A fact about the people running the system.** Naming an approver would be inventing an organisational fact, and an invented approver is worse than none. |
+| Q15 | Is there a throwaway host to rehearse on? | **Genuine documentation gap** | The runbook tells an operator to rehearse somewhere it does not describe. **Saying plainly that no such host is described is within the repository's power**, and it did not. |
+
+**The classification sorts the nine into: five genuine documentation gaps (Q1, Q4, Q5, Q8,
+Q15), three correctly external (Q2, Q6, Q10), and one host-state question (Q9).** ❗ **Q7
+is not among the nine** — the recorded verdict is dual and it is left exactly as recorded,
+under the §9 convention that a qualifier is part of the finding and is not tidied away.
+
+**What this does to the recorded result, and what it does not.** §11's PASS condition 3 as
+it read at the time — *zero rows answered `No`* — was met by **five** of these nine on the
+ground that matters, and **the FAIL against it still stands as recorded.** §11's criteria
+have been revised in light of the classification above, which means **the recorded FAIL was
+scored against criteria this document no longer carries**, and a fresh run is required.
+See §12.
 
 **The middle column exists so that a finding can be routed.** "Only the author could
 answer it" is a specific, fixable defect: it names the gap. "Nobody could answer it"
@@ -923,54 +1025,118 @@ fact.** The pass/fail decision is made against this section as written, or not a
 ### The criterion under test
 
 > *"A second engineer must be able to deploy a tested revision without manually
-> reconstructing the original environment."* — `docs/m4-plan.md:452-453`
+> reconstructing the original environment."* — recorded in a tracked document at
+> `docs/verification-milestone-4.md` §13.1
 
 ### PASS — all four must hold
 
 1. **The reviewer produced the complete procedure from repository information alone** —
    deploy, verification and rollback, in an order they determined, without being told
    what to look at.
-2. **Every required value was derivable from the repository and its CI record** — the
-   revision under test, its digest, the live database revision, the recovery path. No
-   value was supplied, confirmed, or corrected by the operator.
-3. **Zero author-only questions.** §9 contains no row answered **No** in the third
-   column.
+2. **Every required value was derivable** — either from the repository, or from the
+   authoritative external source the repository names as its route to it: the revision
+   under test, its digest, the live database revision, the recovery path. **No value was
+   supplied, confirmed, or corrected by the operator.**
+3. **Zero genuine documentation gaps.** §9 contains no row classified as a **genuine
+   documentation gap** under §9's three-way classification. **A correctly-external value
+   whose route is *undocumented* counts as a genuine documentation gap**, because the
+   documented route is what the repository owes for an external value. ❗ **A
+   correctly-external value whose route *is* documented is not a gap and does not fail
+   this condition.** ❗ **A host-state question is excluded from this condition entirely.**
 4. **The reviewer's written record is complete enough to execute** — another competent
    engineer could follow it without reconstructing anything.
 
+### ❗ The three-way distinction, stated explicitly because it is the whole point
+
+**Condition 3 does not mean "zero questions the reviewer could not answer from the tree."**
+It means zero questions the repository should have answered and did not. The four cases,
+and what each does to the measurement:
+
+| The reviewer asked about… | …and the repository… | Result |
+|---|---|---|
+| A value the repository **has** | — | ✅ **Pass contribution.** The work was the test. |
+| A value that lives in an **authoritative external source**, whose **route the repository documents** | documented how to obtain it | ✅ **Not a gap.** The value's absence is expected; **the measurement is the route, and the route is present.** |
+| A value that lives in an **authoritative external source**, whose **route the repository does not document** | never says where to look | ❌ **A genuine documentation gap.** *"Correctly external, undocumented route"* **is** a failure, and it is scored as a gap, not forgiven by the fact that the value was external. |
+| The **state of the live host** | — | ❗ **Excluded from the measurement.** Never a documentation failure. See below. |
+
 ### FAIL — any one of these
 
-1. **Any author-only question.** One is enough. See below.
-2. **Any required value that could not be derived** from the repository and CI evidence —
-   including the live database revision, which must be read from the database and not
-   taken from the runbook's written-down value.
+1. **Any genuine documentation gap.** One is enough. See below. **This includes a
+   correctly-external value whose route is undocumented.**
+2. **Any required value that could not be derived** — neither from the repository nor
+   from the authoritative external source the repository names as its route — including
+   the live database revision, which must be read from the database and not taken from
+   the runbook's written-down value.
 3. **The procedure is incomplete**, or could not be executed without information the
    reviewer did not have.
 4. **The reviewer's result depends on prior exposure** (§6) that was not declared. A
    compromised run is not a pass; it is an unmeasured run, and it is recorded as such.
 
-### ⚠️ A single author-only question disqualifies the pass
+### ❗ A host-state question is never a documentation failure
 
-**One question answerable only by the author fails the exercise, regardless of how
-confident the reviewer was, how much they managed, or how reasonable their workaround
-was.** The reasoning is the criterion's own: *"without manually reconstructing the
-original environment."* A procedure that required one question from the author is a
-procedure that required reconstruction from a person, and the confidence surrounding the
+**A question answerable only by inspecting the live host does not fail this exercise, and
+it cannot.** A repository **cannot and should not** record the state of a live host: the
+value is true at one moment and stale the next, so a document carrying it would be wrong
+soon after it was written. A Variant A run **does not contact the host at all** (§8's
+"What was *not* done"), so the reviewer had no way to obtain it and **no document could
+have given it to them.** Such a question is **recorded**, so that a later reader can see
+it was considered and was deliberately not counted — **and it is excluded from the
+measurement.** A run that recorded its absence as a defect was reporting the absence of
+the impossible.
+
+**Note the contrast that keeps this from becoming a loophole.** The question *"where is the
+RDS endpoint"* is not a host-state question — **the host's address is a fact the repository
+can point at**, and the fix is a route. The question *"is the rollback going to land on the
+defective branch for the record that exists on the host right now"* is a host-state
+question, because **no document can answer it in advance of a rollback nobody has
+performed.** The line is whether a route could exist, not whether the answer is currently
+knowable.
+
+### ⚠️ A single genuine documentation gap disqualifies the pass
+
+**One genuine documentation gap fails the exercise, regardless of how confident the
+reviewer was, how much they managed, or how reasonable their workaround was.** The
+reasoning is the criterion's own: *"without manually reconstructing the original
+environment."* A procedure that required one question the repository should have
+answered is a procedure that required reconstruction, and the confidence surrounding the
 other steps is not evidence about that one.
 
-**And an author-only question is a finding about the runbook, not a complaint about the
-reviewer.** It means a competent engineer following this documentation could not get
+**And a genuine documentation gap is a finding about the runbook, not a complaint about
+the reviewer.** It means a competent engineer following this documentation could not get
 this far. That is a defect in the documentation, it is exactly what this test exists to
 surface, and **it is worth more than a clean pass would have been.** A test that can
 only fail the documentation when the documentation is genuinely incomplete is not
 measuring anything.
 
-**When an author-only question occurs:** record it (§9, §10), **fix the runbook so the
+**When a genuine documentation gap occurs:** record it (§9, §10), **fix the runbook so the
 question has an answer in the repository, and re-run the exercise.** The re-run must be
 with a reviewer who has not been exposed to the original run, since a reviewer who has
 been told the answer once will not ask again — and the second run would then pass for
 the wrong reason. **A pass obtained after the reviewer was helped is not a pass; it is
 an unrecorded assistance.**
+
+### ⚠️ These criteria were revised after the run of 2026-10-15, and the recorded FAIL was scored against the previous wording
+
+**This section is stated before any result exists, which is the discipline it claims — and
+the classification it turns on was written afterwards, in the light of sorting that run's
+questions.** The revision is recorded here rather than made silently:
+
+- **What changed:** PASS condition 3 previously read **"zero author-only questions — §9
+  contains no row answered `No`"**, and FAIL condition 1 read **"any author-only question.
+  One is enough."** Both now turn on **genuine documentation gaps** under §9's three-way
+  scale, with correctly-external values excluded when their route is documented and
+  host-state questions excluded entirely.
+- **Why it had to change:** the two-way scale could not tell a value the repository is
+  **never able to hold apart from one it withheld, and it scored a question about a live
+  host as a documentation defect at all.** §9 states both errors in full.
+- **What this does to the recorded result:** the 2026-10-15 run was scored against the
+  **two-way** wording and returned **FAIL**, which **stands as recorded** (§12). Under the
+  revised wording, **five of the nine rows that carried `No` are genuine documentation
+  gaps** — so the run would still fail, for a narrower and more accurate reason. **This
+  is not a re-scoring of the run, and no new result has been produced**; it is a statement
+  of what the revised criteria measure. **A fresh run is required**, because the previous
+  FAIL was recorded against criteria this document no longer carries **and** against a
+  repository that has since changed. See §12.
 
 ### If Variant B is the one selected — additional requirements, conditional only
 
@@ -1048,6 +1214,64 @@ than acted on: **fix the runbook so the question has an answer in the repository
 re-run the exercise** — with a reviewer who has not been exposed to this run, since a
 reviewer who has been told the answer once will not ask again.
 
+### 📋 A documentation repair pass has since closed the genuine gaps, and a fresh run is required. The re-run has not happened.
+
+**The FAIL recorded above stands as recorded. Nothing in this subsection withdraws it,
+re-scores it, or replaces it.** What follows is an account of what changed *after* that
+FAIL was written, and why the run it describes can no longer serve as the current
+evidence for this criterion.
+
+**1. §11's criteria have been revised in light of the classification recorded in §9.**
+The FAIL above was scored against the **two-way** wording of PASS condition 3 — *zero rows
+answered `No`* — which this document no longer carries. **That wording scored a
+correctly-external value the same as a missing instruction, and it scored a question about
+a live host as a documentation failure at all.** §11 now turns on **genuine documentation
+gaps**, and the distinction between a correctly-external value with a **documented** route
+and one with an **undocumented** route is explicit there. **The revision was made by
+reading the questions the reviewer had already submitted; no new reviewer was engaged and
+no new question was asked.**
+
+**2. A documentation repair pass has since closed five of the eight gaps in §10.** Named
+individually, so that what was closed and what was not is checkable:
+
+| Gap | Closed by | What "closed" means here |
+|---|---|---|
+| **G-1** | `docs/verification-milestone-4.md` §13.1 records the acceptance criterion, its operationalisation and its restatement in a **tracked** document; and the citations to the untracked plan in **this** file have been retargeted onto that section and onto `docs/deployment.md` §10 item 18. | **The dangling references are gone.** ❗ **The two untracked paths were not staged, added or modified — that is stated here because "closed" must not be read as "committed", and they remain untracked.** |
+| **G-2** — ⛔ blocking | `docs/deployment.md` §7.1.1, *Reading the live database revision — the complete procedure*. | The command that did not exist anywhere now exists, in a tracked document. This was the ⛔ gap. |
+| **G-6** | `docs/deployment.md` §7.1.1 and `docs/deployment.md` §10 item 11; `RUNBOOK.md` now points the endpoint, secret ARN and username at the discovery route. | **Resolved by route, not by picking a value** — a corrected value would go stale again and nothing would detect it. The authoritative source is named (`DBInstances[0].MasterUsername`). |
+| **G-7** | `docs/deployment.md` §3.4, *What a **tested revision** is*, plus the unpushed-HEAD trap it records. | The criterion's central term now has an operational definition. |
+| **G-8** | `docs/deployment.md` §10 item 17, conditionally. | ❗ **Recorded, not solved.** The repository now says plainly that **no rehearsal host has ever been described, named, or confirmed to exist**, and states what each variant is blocked by. **Nothing in this pass creates a host** — `docs/verification-milestone-4.md` §13.1 says so in terms: this is an infrastructure limitation, not a documentation one. |
+
+**G-3, G-4 and G-5 are not closed by that pass and are not claimed to be.** They are
+unchanged, and a re-run would still encounter them.
+
+**3. A fresh cold-reader run is required, for two reasons, and both are structural:**
+
+- **The previous FAIL was recorded against criteria this document no longer carries.** A
+  reviewer reading §11 today would be measured against the revised scale; the recorded
+  FAIL was not. **Carrying it forward as though it were a current measurement would be
+  reporting a result against a protocol that does not exist.**
+- **The repository the run was performed against has changed.** The revision under test
+  was `678cef3bf46a3e15d79dbc20064f0ea43f22dca8` (§5); the five repairs above landed after
+  it. **The finding that Q4, Q5, Q8 and Q15 were unanswerable was true of that revision and
+  is not true of the current tree** — which is precisely why re-running is the only way to
+  learn whether the remaining gaps (G-3, G-4, G-5) and the correctly-external routes now
+  hold up.
+
+**And the re-run must be with a reviewer who has not been exposed to this run**, per §11's
+own remediation instruction: a reviewer who has been told an answer once will not ask
+again, **and the second run would then pass for the wrong reason. A pass obtained after
+the reviewer was helped is not a pass; it is an unrecorded assistance.**
+
+> ❗ **THE RE-RUN HAS NOT HAPPENED. There is no second run, no second reviewer, no new
+> question, no new evidence and no new result in this document.** **Every field that
+> describes the exercise — the reviewer in §6, the revision in §5, the evidence in §8, the
+> questions in §9, the gaps in §10 — still describes the single run of 2026-10-15 and
+> nothing else.** The **Verdict** field below **remains blank, and it remains the
+> assessor's.** ❗ **Nothing here predicts, anticipates or pre-empts what a re-run would
+> find, or whether it would pass. A re-run that fails is as likely as one that passes, and
+> the only thing this document can say about it is that it has not been done.**
+
 ### ❗ What this run is not
 
 - ❗ **NO DEPLOYMENT OCCURRED.** Nothing was deployed, no AWS call was made, no SSM
@@ -1115,6 +1339,19 @@ verdict rests on.**
 >   (§6), against `678cef3bf46a3e15d79dbc20064f0ea43f22dca8` (§5). **§11 was applied to
 >   its submitted evidence and the outcome is FAIL** (§12) — nine author-only questions
 >   are recorded in §9, and a single one disqualifies the pass.
+> - ⚠️ **⚠️ That FAIL is now superseded as a current measurement, and it still stands as a
+>   record.** It was scored against §11's **previous** wording — *zero rows answered
+>   `No`* — which this document **no longer carries**. §11 now turns on **genuine
+>   documentation gaps**, and §9 records the classification that forced the change: of the
+>   nine rows, **five are genuine documentation gaps, three are correctly external, and
+>   one (Q9) is a host-state question that is not a documentation failure at all.** **A
+>   fresh cold-reader run is required and has not happened** (§12). **The Verdict field is
+>   still blank.**
+> - ⚠️ **Five of the eight gaps in §10 were closed by a documentation repair pass after
+>   that FAIL was written — G-1, G-2 (the ⛔ blocking one), G-6, G-7 and G-8 — and the
+>   repository has since changed under it.** **G-3, G-4 and G-5 are not closed.** ❗
+>   **G-1's closure did not involve staging `docs/m3-study-guide/` or `docs/m4-plan.md`;
+>   both remain untracked, and nothing in this document may be read as committing them.**
 > - ❗ **NOTHING WAS DEPLOYED.** No AWS call, no SSM command, no container operation, no
 >   Terraform, no rollback. **This run must never be reported as a live-deployment
 >   demonstration.**
