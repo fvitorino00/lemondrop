@@ -512,6 +512,17 @@ The `AGREE` row is the one to be careful with, and it is the **normal** reading 
 
 **This is a known gap and it is UNFIXED.** Nothing in `deploy.sh` guards against it, and nothing in this runbook should be read as saying that a guard exists, might arrive soon, or is half-built. It was found by executing the deploy path on a live host during Milestone 4 and is recorded at `docs/verification-milestone-4.md` §8.2 ("a redundant deploy has no guard, and this is UNFIXED"), in that document's §10 item 3, and in its §12 table's row 22 ("Redundant-deploy guard in `deploy.sh` | **UNTESTED — and the guard does not exist**"). Fixing it is **deliberately out of scope** for that milestone. **Until it is fixed, the check above is the operator's responsibility** — it is a manual pre-flight step, not a diagnostic that runs for you.
 
+### 4.2.2 ⚠️ The M3-adopted host: the first digest-pinned deploy leaves `PREVIOUS_IMAGE_DIGEST` empty, and the next rollback takes the UNSAFE legacy branch
+
+**This sits on the same record fields as §4.2.1, and it is the hazard an operator who *adopts* an M3 host meets — so it is stated here, before §4.3, because that is when it has to be read.** A host adopted from M3 (`--adopt-current`, §7.1) carries **`UNPINNED (LEGACY)`** and an **empty** `IMAGE_DIGEST`. The chain from there, at `file:line`:
+
+1. **The first digest-pinned deploy reads `prev_digest` from that record and gets the empty string.** `deploy.sh:944` is `prev_digest="$(record_get IMAGE_DIGEST "$LEMDROP_RECORD_FILE")"`; on a legacy record that field is empty, as are `prev_rev` and `prev_head` beside it (`deploy.sh:942-947`).
+2. **It writes `PREVIOUS_IMAGE_DIGEST=` *empty*.** `deploy.sh:969` is `"PREVIOUS_IMAGE_DIGEST=${prev_digest}"`, and the value going in is the empty string.
+3. **The next `rollback.sh` finds no digest, finds a `ROLLBACK_TAG`, and takes the legacy branch.** `rollback.sh:163-190` selects `PREVIOUS_IMAGE_DIGEST` when it is non-empty and falls to the `ROLLBACK_TAG` branch (setting `legacy=1`) when it is empty. A digest-pinned deploy writes a `ROLLBACK_TAG` whenever a container was running before it (`deploy.sh:949-955`, written at `:967`), so the fallback is present.
+4. **That branch is UNSAFE — and its own checks will not notice.** It **re-tags** the target as `lemondrop-api` (`rollback.sh:238`) and **removes** the `API_IMAGE` key from `.env` (`rollback.sh:265-281`), expecting compose to resolve the bare name. But the compose default is now a **digest-pinned reference** (`docker-compose.yml:436`), so the re-tag is **inert** and the **wrong image starts** — while passing ordinary health checks, because the rollback's re-verification is a content check, not an identity check (`rollback.sh:376`, `verify_stack()`). `docs/deployment.md` §10 item 15 is the full account.
+
+⚠️ **It must not be rehearsed.** §6.5's rehearsal is sound **only for the digest branch** — its step 4 ("Deploy revision B over revision A") writes a `PREVIOUS_IMAGE_DIGEST`, which selects the safe path — and §10 item 15 says plainly not to rehearse the legacy branch. §6.4 is left as written. **The safe action on an M3-adopted host is to make the digest path available *before* relying on a rollback**: deploy a digest-pinned revision once so the record carries a real `PREVIOUS_IMAGE_DIGEST`, or adopt onto a digest-bearing image (§7.1).
+
 ### 4.3 Run the deploy
 
 ```
@@ -827,6 +838,8 @@ From `/var/lib/lemondrop/deployed-revision.env`:
 There is no third option and no prompting (in `rollback.sh`'s target-selection block): "an interactive question here is a question asked to someone who is already in the middle of an incident."
 
 ⚠️ **This field is destroyed by a redundant deploy, and the guard that would prevent it does not exist.** `PREVIOUS_IMAGE_DIGEST` is written from whatever `IMAGE_DIGEST` said when the deploy began (`deploy.sh:944` → `deploy.sh:969`), so deploying the digest that is already running writes this field with that same digest — and the rollback then selects the image that is running. §4.2.1 has the full consequence, the pre-flight check, and its status. **A rollback target that names the running image is a symptom, not a cause: look at what was deployed, not at what this command reports.**
+
+⚠️ **The same two fields carry a *second* hazard, and it is the one specific to an M3-adopted host: the empty `PREVIOUS_IMAGE_DIGEST` that a first digest-pinned deploy writes, which routes this command to the UNSAFE legacy branch.** `PREVIOUS_IMAGE_DIGEST` is consumed here regardless of *why* it is empty, and a legacy record's `IMAGE_DIGEST` is empty, so the *next* rollback falls through to `ROLLBACK_TAG` and takes the legacy branch. **§4.2.2 is the full chain, placed before §4.3 on purpose** — that is where it must be read. §10 item 15 is the record.
 
 ### 6.3 What it does, in order
 
