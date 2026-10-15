@@ -1969,6 +1969,7 @@ sudo git -C /opt/lemondrop cat-file -e <40-char-sha>^{commit} || \
 | Why digest and never tag | `docs/verification-milestone-3.md` §11.2; `release.yml`, under `── WHAT THE SHA TAG IS, AND WHAT IT IS NOT ──` |
 | Why migrations cannot run from EC2 | `infra/iam.tf`; `api/alembic/README.md` (the out-of-band migration procedure) |
 | **How to read the live database's alembic revision** | **§7.1.1** — the complete procedure. `docs/verification-milestone-4.md` §5 is the recorded instance of it |
+| What "a tested revision" means, and how to find its digest | §3.3, §3.4 |
 | The milestone this work belongs to, and its acceptance criteria | `docs/verification-milestone-4.md` (§8–§9 for the deploy and rollback performed; **§13 for the acceptance criteria**) |
 | The rollback decision table, in the script as well as here | `scripts/rollback.sh`, header block `── WHEN TO USE THIS, DECIDED IN ADVANCE ──` |
 | Infrastructure access mechanics | `RUNBOOK.md` — **and read §10 items 11 and 17 before trusting a value in it** |
