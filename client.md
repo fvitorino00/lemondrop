@@ -127,31 +127,33 @@ In the examples below, set the base URL once in your shell, to the value the
 service owner gave you:
 
 ```
-BASE_URL=<BASE_URL>
+BASE_URL="<BASE_URL>"
 ```
+
+(The examples use `-sS -i`: `-sS` shows errors instead of hiding them, and `-i` includes the response status line and headers — useful for diagnosing what the client actually received.)
 
 ### `GET /health`
 
 ```
-curl -s $BASE_URL/health
+curl -sS -i "$BASE_URL/health"
 ```
 
 ### `GET /health/live`
 
 ```
-curl -s $BASE_URL/health/live
+curl -sS -i "$BASE_URL/health/live"
 ```
 
 ### `GET /health/ready`
 
 ```
-curl -s $BASE_URL/health/ready
+curl -sS -i "$BASE_URL/health/ready"
 ```
 
 ### `POST /embed`
 
 ```
-curl -s $BASE_URL/embed \
+curl -sS -i "$BASE_URL/embed" \
   -H "Content-Type: application/json" \
   -d '{"text":"how do I reset my password"}'
 ```
@@ -159,7 +161,7 @@ curl -s $BASE_URL/embed \
 ### `POST /rerank`
 
 ```
-curl -s $BASE_URL/rerank \
+curl -sS -i "$BASE_URL/rerank" \
   -H "Content-Type: application/json" \
   -d '{
         "query": "how do I reset my password",
@@ -180,7 +182,7 @@ curl -s $BASE_URL/rerank \
 > uses `it-support` and `infrastructure`.
 
 ```
-curl -s $BASE_URL/documents \
+curl -sS -i "$BASE_URL/documents" \
   -H "Content-Type: application/json" \
   -d '{
         "document_id": "runbook-reset-password",
@@ -193,7 +195,7 @@ curl -s $BASE_URL/documents \
 ### `POST /search`
 
 ```
-curl -s $BASE_URL/search \
+curl -sS -i "$BASE_URL/search" \
   -H "Content-Type: application/json" \
   -d '{
         "collection": "it-support",
@@ -486,11 +488,14 @@ reproduce.
 
 Verified means observed against the deployed service:
 
-- **The seven routes in §3 exist and respond** — `/health`, `/health/live`,
-  `/health/ready` (with `"database":"ok"`), `/embed` (384 dimensions,
-  `bge-small-en-v1.5`), `/rerank` (result order `0, 2, 1`) and `/search`
-  (200, 10 candidates → 5 results). This was verified against the deployed
-  service.
+- **Six of the seven routes in §3 were observed responding at runtime** —
+  `GET /health`, `GET /health/live`, `GET /health/ready` (with
+  `"database":"ok"`), `POST /embed` (384 dimensions, `bge-small-en-v1.5`),
+  `POST /rerank` (result order `0, 2, 1`) and `POST /search` (200, 10 candidates
+  → 5 results) — verified against the deployed service. **`POST /documents`
+  exists and is declared to return 201 in the API's own schema, but was NOT
+  exercised at runtime** (it writes data and was out of scope); its behaviour is
+  source-verified only, not runtime-observed.
 - **`POST /search` works against the deployed service** — HTTP 200 in
   15.234854 s, 10 candidates, 5 results, the correct document ranked first
   (`support-recycle-bin-file-recovery` in `it-support`). This was verified
