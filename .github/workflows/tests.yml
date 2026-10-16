@@ -337,6 +337,7 @@ jobs:
           T1 = [
               "test_lemondrop_app_bootstrap.py",
               "api/tests/test_db_credentials.py",
+              "api/tests/test_request_models.py",
               "api/tests/test_db.py::test_the_redactor_removes_a_dsn_that_a_driver_quotes",
               "api/tests/test_db.py::test_missing_database_url_raises_an_error_naming_the_key",
               "api/tests/test_db.py::test_a_dsn_with_an_empty_password_is_rejected_and_leaks_nothing",
