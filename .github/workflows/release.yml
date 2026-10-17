@@ -58,8 +58,8 @@ name: release
 #
 # T3 IS NOT A GATE AT ALL, AND IS NOT ON `main`: the 28 live-stack tests are
 # still not in CI, for the reasons tests.yml's header gives at length. A green
-# release run is therefore NOT a claim that all 146 tests pass. It is a claim
-# about 118.
+# release run is therefore NOT a claim that all 196 tests pass. It is a claim
+# about 168.
 #
 # ── WHY `terraform-validate` IS COVERED BY `needs: [hygiene]` ────────────────
 # THIS COMMENT IS LOAD-BEARING. DO NOT "OPTIMISE" THE TERRAFORM GATE AWAY.
@@ -241,7 +241,7 @@ jobs:
   # T3 IS NOT RUN AT ALL — not a gate here, not a gate anywhere. The 28
   # live-stack tests are still not in CI, for the reasons tests.yml's header
   # gives at length. A green run of this pipeline is therefore NOT a claim that
-  # all 146 tests pass. It is a claim about 118. (The eighth gate in this file is
+  # all 196 tests pass. It is a claim about 168. (The eighth gate in this file is
   # the image-content gate in the `build` job, which is a different thing
   # entirely.)
   # ═════════════════════════════════════════════════════════════════════════

@@ -9,17 +9,18 @@ name: tests
 # The suite is split into three tiers by what it needs to run, and the split is
 # NOT the one the milestone plan assumed. It was measured, not guessed. Every
 # count below is what `pytest --collect-only` reports and what an actual run
-# confirms; `python -m pytest api/tests --collect-only -q` collects 106, and
-# `test_lemondrop_app_bootstrap.py` collects 40 more, for 146 tracked tests in
+# confirms; `python -m pytest api/tests --collect-only -q` collects 156, and
+# `test_lemondrop_app_bootstrap.py` collects 40 more, for 196 tracked tests in
 # total.
 #
 # ┌─────────┬──────┬───────────────────────────────────────────────────────────┐
 # │ TIER    │ COUNT│ WHAT IT NEEDS                                          │
 # ├─────────┼──────┼───────────────────────────────────────────────────────────┤
-# │ T1      │   90 │ Python + requirements-dev.txt. NOTHING else. No database,│
+# │ T1      │  140 │ Python + requirements-dev.txt. NOTHING else. No database,│
 # │ service-│      │ no HTTP, no models, no network.                          │
 # │ free    │      │   test_lemondrop_app_bootstrap.py ... 40               │
 # │         │      │   test_db_credentials.py ......... 44                   │
+# │         │      │   test_request_models.py ....... 50                    │
 # │         │      │   test_db.py (6 named nodes) ......... 6                │
 # ├─────────┼──────┼───────────────────────────────────────────────────────────┤
 # │ T2      │   28 │ T1's tier PLUS a disposable PostgreSQL 16 + pgvector     │
@@ -35,15 +36,17 @@ name: tests
 # │         │      │   test_search.py ...... 13   (POST /search)              │
 # └─────────┴──────┴───────────────────────────────────────────────────────────┘
 #
-#   90 + 28 + 28 = 146. Every tracked test is accounted for in exactly one tier,
+#   140 + 28 + 28 = 196. Every tracked test is accounted for in exactly one tier,
 #   and the T1 job and the T2 job share no test between them.
 #
 # ── THE GATE IS CLASSIFICATION COMPLETENESS, NOT A TEST COUNT ────────────────
-# Those counts are a MEASUREMENT, printed on every run. They are not a baseline
-# this gate enforces, and pinning one would be the wrong gate: a hardcoded 146
-# fails every pull request that adds a test, for the sole reason that a number
-# went stale, which teaches every engineer that the number is arbitrary — and the
-# next edit is to update the number in the same commit as the failing test.
+# Those counts are a MEASUREMENT, printed on every run. The tier gate itself
+# enforces classification completeness (every node in exactly one tier), not a
+# fixed headcount — but the `tier-classification` job ALSO compares the live
+# collected counts against the documented ones below and FAILS on drift, so a
+# stale number is detected rather than silently propagated. The documented
+# counts live in one place (DOCUMENTED_COUNTS in the classify step) and are
+# updated deliberately, in the same commit as an intentional test addition.
 #
 # What IS enforced, by the `tier-classification` job, is that every collected
 # test node is assigned to exactly one of T1, T2 or T3:
@@ -58,7 +61,9 @@ name: tests
 #
 # So a new test nobody assigned fails CI as "this test is unclassified", which is
 # the finding worth having, and adding a test, classifying it, watching it pass,
-# and seeing 146 become 147 requires NO edit to this file at all.
+# and seeing 196 become 197 requires updating DOCUMENTED_COUNTS in the same
+# commit, because the drift check below treats a live/documented mismatch as a
+# failure worth investigating.
 #
 # ── DISCREPANCIES AGAINST THE "100 TESTS" WORKING ASSUMPTION ────────────────
 # The 44 / 13 / 17 / 26 split is arithmetically correct but INCOMPLETE. It
@@ -168,8 +173,8 @@ name: tests
 #      llama.cpp container and downloads no weights.
 #
 # The consequence, stated plainly so nobody reads a green run as a claim about
-# the retrieval funnel: **THIS WORKFLOW IS NOT "ALL TESTS PASSING".** It is 118
-# of 146 tests, and the 28 it does not run are the ones that exercise
+# the retrieval funnel: **THIS WORKFLOW IS NOT "ALL TESTS PASSING".** It is 168
+# of 196 tests, and the 28 it does not run are the ones that exercise
 # cross-encoder ranking, index mapping and the /health contracts. Those are
 # verified locally against the real stack and, at the time of writing, are not
 # covered by any automated gate. That is a KNOWN GAP, recorded here on purpose.
@@ -244,7 +249,7 @@ name: tests
 # WHY THE DIRECT `push: branches: [main]` TRIGGER WAS REMOVED
 # Same reason as hygiene.yml, and the same argument. Leaving it in place would
 # run the whole suite TWICE per merge to main — once directly and once as
-# release.yml's `tests` job — which on this workflow means the 146 collected
+# release.yml's `tests` job — which on this workflow means the 196 collected
 # tests execute twice, the disposable pgvector container is started twice, and
 # two independent verdicts exist about the same revision with no principled way
 # to say which one gated the published image. One event, one set of runs.
@@ -400,13 +405,22 @@ jobs:
               "api/tests/test_search.py::test_scoring_ten_real_documents_costs_what_it_costs_measured_not_assumed",
           ]
 
+          # ── DOCUMENTED COUNTS — single source of truth for drift detection ──
+          # These are the measured counts (T1=140, T2=28, T3=28, total=196),
+          # independently verified by collecting the tier declarations. The
+          # tier-classification job compares the live collected counts against
+          # them below and FAILS on drift, so a stale number is detected rather
+          # than silently propagated. Update them deliberately, in the same
+          # commit as an intentional test addition.
+          DOCUMENTED_COUNTS = {"T1": 140, "T2": 28, "T3": 28}
+
           TIERS = (("T1", T1), ("T2", T2), ("T3", T3))
 
           def inventory() -> list:
               """Every tracked test, collected from BOTH roots.
 
               `api/tests` alone silently omits the repository-root
-              `test_lemondrop_app_bootstrap.py`, which is 40 of the 146 and is
+              `test_lemondrop_app_bootstrap.py`, which is 40 of the 196 and is
               T1. Naming both roots here is what makes the inventory complete.
               """
               proc = subprocess.run(
@@ -483,6 +497,13 @@ jobs:
                       f"{tier} selects zero tests - a tier that runs nothing passes by "
                       "testing nothing"
                   )
+              documented = DOCUMENTED_COUNTS[tier]
+              if n != documented:
+                  errors.append(
+                      f"{tier} collected {n} test(s) but the documented count is "
+                      f"{documented} — update DOCUMENTED_COUNTS and the tests.yml "
+                      "header together, in the same commit as the test change"
+                  )
 
           for case in collected:
               if case not in owners:
@@ -494,15 +515,15 @@ jobs:
 
           for tier, declarations in TIERS:
               print(f"--- {tier}: {len(declarations)} declaration(s), "
-                    f"{counts[tier]} test(s)")
+                    f"{counts[tier]} test(s) (documented: {DOCUMENTED_COUNTS[tier]})")
               for declaration in declarations:
                   print(f"      {declaration}")
 
           total = sum(counts.values())
           print(f"inventory={len(collected)} T1={counts['T1']} T2={counts['T2']} "
                 f"T3={counts['T3']} classified={total}")
-          print("no test-count baseline is enforced here: a tier that grows is fine; "
-                "a test in no tier is not.")
+          print("a tier that grows is fine; a test in no tier is not; a live count "
+                "that disagrees with DOCUMENTED_COUNTS fails this job.")
 
           # Published whether or not the classification passed, so the log of a
           # failing run still carries the selections the jobs below would have
@@ -565,6 +586,11 @@ jobs:
           ./scripts/test-diagnose.sh
           pwsh -NoProfile -File scripts/test-diagnose.ps1
           ./scripts/test-diagnose-parity.sh
+
+      - name: deploy/rollback/verify — syntax and stubbed end-to-end
+        run: |
+          set -euo pipefail
+          ./scripts/test-deploy-rollback.sh
 
   # ═════════════════════════════════════════════════════════════════════════
   t1-service-free:
