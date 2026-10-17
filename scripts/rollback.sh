@@ -63,6 +63,12 @@ set -Eeuo pipefail
 
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 # shellcheck source=scripts/lib/deploy-lib.sh
+# shellcheck disable=SC1091  # deploy-lib.sh is sourced dynamically via $_LIB_DIR;
+#                            # ShellCheck follows it only when it is also passed
+#                            # as an input (the combined run). The per-file runs
+#                            # used by the harness cannot, so this narrow,
+#                            # line-scoped suppression covers them; deploy-lib.sh
+#                            # is still checked independently on its own.
 . "$_LIB_DIR/deploy-lib.sh"
 
 usage() {
@@ -141,13 +147,6 @@ main() {
   prev_digest="$(record_get PREVIOUS_IMAGE_DIGEST "$LEMDROP_RECORD_FILE")"
   prev_head="$(record_get PREVIOUS_ALEMBIC_HEAD "$LEMDROP_RECORD_FILE")"
   rollback_tag="$(record_get ROLLBACK_TAG "$LEMDROP_RECORD_FILE")"
-  # Absent on every record written before the key existed, and on every
-  # digest-bearing record by design — see the note on IMAGE_ID in
-  # scripts/lib/deploy-lib.sh. Used only as a cross-check below, never as a
-  # target: `record_get` returns empty when the key is absent or the value is,
-  # which is the correct reading for both.
-  local recorded_image_id
-  recorded_image_id="$(record_get IMAGE_ID "$LEMDROP_RECORD_FILE")"
 
   say "  RECORD SAYS"
   say "    currently deployed : ${cur_digest:-<unknown>} (revision ${cur_rev:-<unknown>}, head ${cur_head:-<unknown>})"

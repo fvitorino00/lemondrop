@@ -48,6 +48,12 @@ set -Eeuo pipefail
 
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 # shellcheck source=scripts/lib/deploy-lib.sh
+# shellcheck disable=SC1091  # deploy-lib.sh is sourced dynamically via $_LIB_DIR;
+#                            # ShellCheck follows it only when it is also passed
+#                            # as an input (the combined run). The per-file runs
+#                            # used by the harness cannot, so this narrow,
+#                            # line-scoped suppression covers them; deploy-lib.sh
+#                            # is still checked independently on its own.
 . "$_LIB_DIR/deploy-lib.sh"
 
 PROBLEMS=0

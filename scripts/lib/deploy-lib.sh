@@ -106,9 +106,18 @@
 
 # Exit codes. Distinct values so a wrapper can tell the classes apart without
 # parsing text, and so "it refused" is never mistaken for "the network broke".
+# Shared constant: assigned here, consumed by deploy.sh/rollback.sh/
+# verify-deployment.sh, which ShellCheck cannot see when checking this file alone.
+# shellcheck disable=SC2034
 readonly EX_OK=0
+# Shared constant: assigned here, consumed by deploy.sh/rollback.sh/
+# verify-deployment.sh, which ShellCheck cannot see when checking this file alone.
+# shellcheck disable=SC2034
 readonly EX_REFUSED=2       # a guard said no: bad reference, schema mismatch, missing record
 readonly EX_FAILED=3        # something was attempted and did not work
+# Shared constant: assigned here, consumed by deploy.sh/rollback.sh/
+# verify-deployment.sh, which ShellCheck cannot see when checking this file alone.
+# shellcheck disable=SC2034
 readonly EX_LOCKED=4        # another deploy holds the lock
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -395,6 +404,11 @@ write_record() {
     printf '# deploy that cannot record cannot roll back.\n'
     printf '#\n'
     printf '# It is written to a temp file and renamed into place, so a reader never\n'
+    # The backtick in `source` is intentional literal text in an operator-facing
+    # message: single-quoted and never expanded. Same judgement call as the
+    # narrow SC2016 ignore in .github/workflows/hygiene.yml:900-962 — the
+    # backtick documents a command, it is not a substitution to perform.
+    # shellcheck disable=SC2016
     printf '# observes a partial record. Parse it with grep/sed, never with `source`.\n'
     printf '\n'
     local kv
@@ -741,6 +755,10 @@ resolve_deploy_facts() {
     DEPLOY_REVISION_SOURCE="image-label"
   elif [ -n "$arg_rev" ]; then
     DEPLOY_SOURCE_REVISION="$arg_rev"
+# Shared constant: assigned here, consumed by deploy.sh (the summary lines
+# that report where the revision came from), which ShellCheck cannot see when
+# checking this file alone.
+# shellcheck disable=SC2034
     DEPLOY_REVISION_SOURCE="operator-argument"
     warn_image_has_no_revision_label "$image" "$arg_rev"
   else
@@ -768,6 +786,10 @@ resolve_deploy_facts() {
     # stderr is NOT suppressed here. This is the path where the source tree is
     # the only source of the answer, so its failure has to be visible and named.
     DEPLOY_ALEMBIC_HEAD="$(alembic_head_at_revision "$DEPLOY_SOURCE_REVISION")" || return 1
+# Shared constant: assigned here, consumed by deploy.sh (the summary lines
+# that report where the head came from), which ShellCheck cannot see when
+# checking this file alone.
+# shellcheck disable=SC2034
     DEPLOY_HEAD_SOURCE="source-tree"
   fi
 
@@ -892,6 +914,11 @@ alembic_head_at_revision() {
     [ -n "$f" ] || continue
     r=$(git -C "$git_dir" show "${rev}:${f}" 2>/dev/null | sed -n 's/^revision[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
     if [ -z "$r" ]; then
+      # The backticks in `revision = "…"` are intentional literal text in an
+      # operator-facing message: single-quoted and never expanded. Same narrow
+      # SC2016 judgement as .github/workflows/hygiene.yml:900-962 — documenting
+      # a file format, not a substitution to perform.
+      # shellcheck disable=SC2016
       printf 'could not read a `revision = "…"` line from %s at %s.\n' "$f" "$rev" >&2
       return 1
     fi
