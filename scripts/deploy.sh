@@ -744,6 +744,40 @@ main() {
   [ -f "$LEMDROP_APP_DIR/.env" ] || fail "$LEMDROP_APP_DIR/.env does not exist. Has boot.sh run on this host?" "$EX_REFUSED"
   [ -f "$LEMDROP_APP_DIR/docker-compose.yml" ] || fail "$LEMDROP_APP_DIR is not a compose checkout." "$EX_REFUSED"
 
+  # ── GUARD: refuse a redundant deploy before anything is mutated ──────────────
+  # If the target digest is already the record's IMAGE_DIGEST, this deploy would
+  # write itself back as PREVIOUS_IMAGE_DIGEST (deploy.sh:969), making the record
+  # self-referential: rollback.sh would then restore the image that is already
+  # running and blank PREVIOUS_*, erasing the last record-level reference to what
+  # ran before (docs/deployment.md §4.2.1). Refuse here, before capture_state
+  # touches the record, before any tag, before any .env write. Nothing on this
+  # host is changed: nothing is tagged, pulled, restarted, or written.
+  if [ -f "$LEMDROP_RECORD_FILE" ] && record_is_valid "$LEMDROP_RECORD_FILE"; then
+    recorded="$(record_get IMAGE_DIGEST "$LEMDROP_RECORD_FILE")"
+    if [ -n "$recorded" ] && [ "$recorded" = "$target" ]; then
+      say ""
+      say "══════════════════════════════════════════════════════════════════════════════"
+      say "REDUNDANT DEPLOY — REFUSING"
+      say "  target        : $target"
+      say "  IMAGE_DIGEST  : $recorded  (in $LEMDROP_RECORD_FILE)"
+      say ""
+      say "  The digest you asked to deploy is already the recorded deployment — the"
+      say "  image that is running on this host."
+      say ""
+      say "  Deploying it would write itself back as PREVIOUS_IMAGE_DIGEST, so"
+      say "  scripts/rollback.sh would restore the image already running and then"
+      say "  blank PREVIOUS_*, erasing the last record-level reference to what was"
+      say "  running before. Nothing has been changed: nothing is tagged, pulled,"
+      say "  restarted, or written."
+      say ""
+      say "  Use scripts/verify-deployment.sh instead. It reports AGREE exactly"
+      say "  when the running image is the one the record names — which is this"
+      say "  state — and tells you whether a redeploy is meaningful at all."
+      say "══════════════════════════════════════════════════════════════════════════════"
+      exit "$EX_REFUSED"
+    fi
+  fi
+
   # ── 3 & 4. CAPTURE, THEN TAG ───────────────────────────────────────────────
   capture_state
   trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
@@ -954,20 +988,34 @@ main() {
     docker tag "$PREV_IMAGE_ID" "$rollback_tag" 2>/dev/null || rollback_tag="$PREV_ROLLBACK_TAG"
   fi
 
-  write_record "$LEMDROP_RECORD_FILE" \
-    "RECORD_VERSION=1" \
-    "REVISION=${source_rev}" \
-    "SOURCE_REVISION=${source_rev}" \
-    "IMAGE_DIGEST=${target}" \
-    "ALEMBIC_HEAD=${target_head}" \
-    "DEPLOYED_AT_UTC=$(date -u +%FT%TZ)" \
-    "DEPLOYED_BY=${SUDO_USER:-${USER:-unknown}}" \
-    "VERIFICATION=PASS" \
-    "VERIFIED_AT_UTC=$(date -u +%FT%TZ)" \
-    "ROLLBACK_TAG=${rollback_tag}" \
-    "PREVIOUS_REVISION=${prev_rev}" \
-    "PREVIOUS_IMAGE_DIGEST=${prev_digest}" \
-    "PREVIOUS_ALEMBIC_HEAD=${prev_head}" \
+    # BELT AND BRACES: the redundant-deploy guard above (before capture_state)
+    # makes this unreachable, but state the invariant at the write site so a
+    # future edit cannot silently reintroduce a self-referential record.
+    if [ -n "$prev_digest" ] && [ "$prev_digest" = "$target" ]; then
+      say ""
+      say "REFUSING: PREVIOUS_IMAGE_DIGEST would equal IMAGE_DIGEST ($target)."
+      say "  The record would become self-referential and scripts/rollback.sh could"
+      say "  no longer reach what ran before. Nothing has been changed."
+      say ""
+      say "  The deployment is live and verified but UNRECORDED: record what is"
+      say "  running now, by hand, from the values printed above."
+      exit "$EX_REFUSED"
+    fi
+
+    write_record "$LEMDROP_RECORD_FILE" \
+      "RECORD_VERSION=1" \
+      "REVISION=${source_rev}" \
+      "SOURCE_REVISION=${source_rev}" \
+      "IMAGE_DIGEST=${target}" \
+      "ALEMBIC_HEAD=${target_head}" \
+      "DEPLOYED_AT_UTC=$(date -u +%FT%TZ)" \
+      "DEPLOYED_BY=${SUDO_USER:-${USER:-unknown}}" \
+      "VERIFICATION=PASS" \
+      "VERIFIED_AT_UTC=$(date -u +%FT%TZ)" \
+      "ROLLBACK_TAG=${rollback_tag}" \
+      "PREVIOUS_REVISION=${prev_rev}" \
+      "PREVIOUS_IMAGE_DIGEST=${prev_digest}" \
+      "PREVIOUS_ALEMBIC_HEAD=${prev_head}" \
     || fail "verification passed but the record could not be written at $LEMDROP_RECORD_FILE.
         THE DEPLOYMENT IS LIVE AND UNRECORDED: the image is the one that was asked for and it
         has passed verification, so the service is correct. What is missing is the written

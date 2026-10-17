@@ -207,7 +207,25 @@ log "  commit: $(git -C "$APP_DIR" rev-parse --short HEAD)"
 # port. An operator-edited .env drifts out of agreement and produces a stack
 # that is healthy and unreachable — the worst combination of properties.
 log "step 4/6: generating .env from .env.example"
-cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+#
+# `.env` is machine-owned: a deploy's digest pin (API_IMAGE) lives here and
+# must survive a boot, so an EXISTING .env is preserved rather than clobbered.
+# What is re-synced on every boot is API_HOST_PORT only, because local.app_port
+# can change underneath a host (instance replacement, a different ALB target
+# group port) and a stack that is healthy but on the wrong port is the worst
+# failure mode. The port substitution below therefore always runs; the full
+# template copy runs only when there is no .env yet (fresh checkout / instance
+# replacement), which is the fail-closed path: it starts from the digest pinned
+# in .env.example.
+#
+# The M3 behaviour was an unconditional `cp .env.example .env` on every boot,
+# which destroyed a deploy's digest pin — exactly what
+# scripts/verify-deployment.sh's DIVERGENCE check exists to detect.
+# Preserving an existing .env makes the pin durable across boots; instance
+# replacement still starts from .env.example (no .env exists there yet).
+if [ ! -f "$APP_DIR/.env" ]; then
+  cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+fi
 sed -i "s|^API_HOST_PORT=.*|API_HOST_PORT=$APP_PORT|" "$APP_DIR/.env"
 # This VERIFIES the substitution; not decoration. sed only rewrites a line
 # already matching ^API_HOST_PORT=, so if .env.example ever loses that key the

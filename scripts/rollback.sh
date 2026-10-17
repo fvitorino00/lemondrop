@@ -224,62 +224,33 @@ main() {
   # ── RESTORE ────────────────────────────────────────────────────────────────
   say "restoring $target …"
 
-  local restored_image_id=""    # the legacy path's only identity for what it restored
+  local restored_image_id=""    # identity of what was restored; used on the
+                                # digest branch to write IMAGE_ID (the legacy
+                                # branch now refuses before reaching that point)
   if [ "$legacy" -eq 1 ]; then
-    # Legacy: .env goes back to having NO API_IMAGE key, so compose resolves the
-    # `lemondrop-api` name again — exactly the M3 wiring. Pointing API_IMAGE at
-    # the timestamped rollback tag would also work, but it would leave the host
-    # configured by a migration script rather than by boot.sh, and the next
-    # `docker compose up` from anywhere else would then disagree with it.
-    #
-    # The tag has to be re-created under the name compose will look for,
-    # because --no-build will not build it and the original `lemondrop-api` tag
-    # may since have been moved onto the newer image.
-    docker tag "$target" lemondrop-api \
-      || die "cannot re-tag $target as lemondrop-api (backup: $env_backup)"
-    say "  re-tagged $target as lemondrop-api"
-
-    # Say WHICH BYTES those are, by image ID. A tag is a name; an image ID is the
-    # identity, and this is the only branch of this script where the target was
-    # never digest-verified — so naming the ID is what makes "I restored the
-    # right thing" a checkable statement rather than an assertion.
-    restored_image_id="$(docker image inspect -f '{{.Id}}' "$target" 2>/dev/null || true)"
-    say "  restored image id: ${restored_image_id:-<could not read>}"
-    if [ -n "$restored_image_id" ] && [ -z "$recorded_image_id" ]; then
-      say "  the record carries no IMAGE_ID to check that against (it names its"
-      say "  image by digest, or predates that key), so this is stated, not verified."
-    elif [ -n "$recorded_image_id" ]; then
-      if [ "$recorded_image_id" = "$restored_image_id" ]; then
-        say "  this is the image ID the adoption record pinned (${recorded_image_id})."
-      else
-        say ""
-        say "⚠️  IMAGE ID MISMATCH against the adoption record:"
-        say "    record says the deployed image was : ${recorded_image_id}"
-        say "    the rollback tag resolves to        : ${restored_image_id:-<unreadable>}"
-        say "    Continuing — a rollback is not the moment to stop — but the tag"
-        say "    and the record are describing different images. Re-adopt afterwards"
-        say "    with a database-verified revision."
-      fi
-    fi
+    # REFUSE: the legacy M3 branch cannot run with this compose file.
+    # docker-compose.yml:436 defaults API_IMAGE to a digest-pinned reference,
+    # so re-tagging under the bare `lemondrop-api` name (:238) and stripping
+    # API_IMAGE from .env (:265-281) does NOT make compose run $target — it
+    # runs the digest-pinned default, an image nobody asked to deploy. The
+    # branch then reports success (its re-verification is a content check,
+    # not an identity check) while serving the wrong image. It is defective
+    # by construction and has never been executed (docs/deployment.md
+    # §10 item 15, §4.2.2); it must not run. Refuse before any mutation.
     say ""
-    if grep -q '^API_IMAGE=' "$LEMDROP_APP_DIR/.env"; then
-      # Remove the key rather than blanking it: an empty API_IMAGE is a
-      # different thing from an absent one, and compose's `:-` treats them the
-      # same only by accident of its default syntax.
-      #
-      # The temp file is created in the STATE directory, not beside `.env`: a
-      # half-written temp file left in the checkout is untracked clutter in a
-      # git tree, and this repository runs a hygiene gate over exactly that.
-      local stripped
-      stripped="$(mktemp "$LEMDROP_STATE_DIR/.env.stripped.XXXXXX")" \
-        || die "cannot create a temp file in $LEMDROP_STATE_DIR"
-      grep -v '^API_IMAGE=' "$LEMDROP_APP_DIR/.env" > "$stripped" \
-        || { rm -f "$stripped"; die "could not read .env"; }
-      cat "$stripped" > "$LEMDROP_APP_DIR/.env" \
-        || { rm -f "$stripped"; die "could not write .env (backup: $env_backup)"; }
-      rm -f "$stripped"
-      say "  removed the API_IMAGE key from .env (legacy wiring restored)"
-    fi
+    say "══════════════════════════════════════════════════════════════════════════════"
+    say "REFUSING: legacy M3 rollback branch is incompatible with this compose file."
+    say "  The record carries no previous digest, so rollback would take the legacy"
+    say "  branch: re-tag $target as lemondrop-api (rollback.sh:238) and strip the"
+    say "  API_IMAGE key from .env (rollback.sh:265-281), expecting compose to"
+    say "  resolve the bare name."
+    say "  But docker-compose.yml:436 pins the default to"
+    say "  ghcr.io/fvitorino00/lemondrop-api@sha256:0bdb7afa566bbff0c8db481cd78a048b130bb8fc8531739530d98fe3cde42986,"
+    say "  so compose would start that digest-pinned image — not $target — and the"
+    say "  rollback's content check would not notice."
+    say "  Nothing has been changed. The legacy path must not run."
+    say "══════════════════════════════════════════════════════════════════════════════"
+    exit "$EX_REFUSED"
   else
     # Pull the previous digest if it is not already here. It usually is — the
     # image it names is the one that was running a moment ago — but "usually" is
