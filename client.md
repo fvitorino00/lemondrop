@@ -50,8 +50,10 @@ The API is the single point of access. It is the only reachable component.
 `<BASE_URL>` stands for the scheme-and-host prefix of the service — the prefix
 you put in front of every path in §3. **The actual base URL, and the
 authorization to reach it, are provided separately by the service owner and are
-not printed in this document.** Set it once in your shell and use it for every
-request; the examples below use `$BASE_URL` for the same value.
+not printed in this document.** To get started, contact the service owner: the
+owner supplies the base URL and adds your source address to the network
+allow-list (§2). Set it once in your shell and use it for every request; the
+examples below use `$BASE_URL` for the same value.
 
 The deployment that was observed while this document was written was reached
 over **plain HTTP on port 80** (not HTTPS). Use the exact scheme and host the
@@ -85,8 +87,13 @@ this document.
 
 ## 3. Supported endpoints and HTTP methods
 
-These are the **complete** set of routes the API serves. There are exactly
-seven. Anything not in this table is not part of the API.
+These are the **complete** set of **application** routes the API serves. There
+are exactly seven. Anything not in this table is not an application route of
+the API. FastAPI additionally serves the standard documentation endpoints
+`/openapi.json`, `/docs` and `/redoc` (the default FastAPI constructor in
+`api/app/main.py`); `api/tests/test_search.py` asserts `/openapi.json` is
+reachable. Those three are framework-served, not application routes, and are not
+listed in this table.
 
 | Method | Path | Purpose | Body fields |
 |---|---|---|---|
@@ -115,6 +122,32 @@ Field rules, all enforced by the service:
   candidates considered (see §6).
 - `top_n` on `/rerank` must be **≥ 1** if supplied. When omitted, the API does
   not send it to the worker at all, and the worker applies its own default.
+
+- Worker-bound text fields — `text` on `POST /embed`, `query` on `POST /search`,
+  and each document entry on `POST /rerank` — are limited to **2048 characters**.
+  A longer value is refused at the API edge with **422** naming the field and the
+  limit, instead of being forwarded to a worker that would answer with a permanent
+  502. The 2048-character figure is a CHARACTER proxy for the worker's 512-token
+  ceiling (512 tokens × ~4 chars/token of realistic BPE prose) and cannot be
+  exact: tokenisation is not a function of character count alone, so pathological
+  low-density input (long unbroken character runs) can still exceed the worker's
+  token limit below 2048 characters and produce a non-retryable 502. That is a
+  KNOWN residual (see §5).
+
+- Identifiers (`document_id`, `collection`) have **no length limit**. They are
+  never forwarded to an inference worker, so the worker's token ceiling does not
+  apply to them; only non-blankness is required.
+
+- `POST /rerank` document **entries**: an entry that is whitespace-only is
+  rejected (422). A non-blank entry is accepted and passed through **unchanged**
+  — entries are NOT stripped or rewritten. Padding such as `"  padded  "` is kept
+  verbatim.
+
+- `POST /rerank`'s 512-token worker limit applies to the (query, passage)
+  **PAIR**, not to either field in isolation. Two values that are each
+  individually in limit can still be refused by the worker because their combined
+  length exceeds the ceiling. That is a known, accepted residual and is stated
+  honestly here rather than concealed behind the per-field limit.
 
 ---
 
@@ -337,14 +370,29 @@ and for an empty document list:
 
 **502 — bad gateway.** The API itself is reachable; one of its inference workers
 failed while serving this request. This covers a worker that is unreachable,
-that answered a non-2xx status, or that returned a body that was not JSON. The
-body is a short sentence, for example:
+that answered a non-2xx status, or that returned a body that was not JSON.
+
+A 502 is **either transient or permanent**:
+
+- **Transient (retryable):** the worker is unreachable, answered a non-2xx
+  status, or returned a non-JSON body. A request that returns 502 for one of
+  these reasons may be retried, optionally with backoff.
+- **Permanent (not retryable):** the input the API forwarded is one the worker
+  refuses — for example pathological low-density text whose character count is
+  below the 2048-character edge limit but still exceeds the worker's 512-token
+  ceiling. Oversized input is caught at the edge with a 422 naming the field
+  and the limit (§3), but the character proxy cannot be exact, so this residual
+  remains: do not retry a permanent 502, because retrying will fail the same way
+  every time.
+
+The body is a short sentence naming the worker and the HTTP status, for example:
 
 ```json
-{"detail":"embedder is unreachable (ConnectError)"}
+{"detail":"embedder returned HTTP 500"}
 ```
 
-A request that returns 502 may be retried (optionally with backoff).
+The full upstream worker detail is logged server-side only and is NOT echoed
+into the client-facing response.
 
 **503 — service unavailable.** The **database** is unavailable or erroring while
 serving `POST /documents` or `POST /search`; the body is:
@@ -391,10 +439,19 @@ POST a document with a `document_id` you choose. The response is **201**, and
   in place**: its content, metadata, embedding **and collection** were
   overwritten.
 
-Because `document_id` is the global key, re-posting the same id under a
-**different** `collection` **moves** the document rather than copying it.
-Ingestion is therefore idempotent by id — re-running a loader is safe — and there
-is no 409 "already exists".
+**`document_id` is a GLOBAL key.** Re-posting the same `document_id` under a
+**different** `collection` does not create a second row: it **moves** the
+document — it is removed from its original collection and stored under the new
+one. The move is **silent**: there is no 409 "already exists" and no response
+flag tells you the document left another collection.
+
+Ingestion is idempotent by id, but **only** for a loader that always uses the
+same id→collection mapping: re-posting the same id under the same collection is
+safe (it replaces the row in place). A single POST with the wrong collection can
+irreversibly remove a document from its collection — there is **no delete
+endpoint** and **no undo through the API**. A stored document cannot be removed
+through the API at all. (You can restore it by re-ingesting the same content
+under the original collection, if you still have the content.)
 
 ### Step 2 — search (`POST /search`)
 
@@ -488,14 +545,13 @@ reproduce.
 
 Verified means observed against the deployed service:
 
-- **Six of the seven routes in §3 were observed responding at runtime** —
+- **All seven routes in §3 were observed responding at runtime** —
   `GET /health`, `GET /health/live`, `GET /health/ready` (with
   `"database":"ok"`), `POST /embed` (384 dimensions, `bge-small-en-v1.5`),
   `POST /rerank` (result order `0, 2, 1`) and `POST /search` (200, 10 candidates
-  → 5 results) — verified against the deployed service. **`POST /documents`
-  exists and is declared to return 201 in the API's own schema, but was NOT
-  exercised at runtime** (it writes data and was out of scope); its behaviour is
-  source-verified only, not runtime-observed.
+  → 5 results) — verified against the deployed service; and `POST /documents`
+  was exercised at runtime during Milestone 3, with 40/40 documents ingested
+  through it (see `docs/verification-milestone-3.md` §5.2 and §12.5).
 - **`POST /search` works against the deployed service** — HTTP 200 in
   15.234854 s, 10 candidates, 5 results, the correct document ranked first
   (`support-recycle-bin-file-recovery` in `it-support`). This was verified

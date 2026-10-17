@@ -25,6 +25,10 @@ authority.
 
 ## Architecture
 
+This section describes the **local** Compose stack. The **deployed AWS**
+topology — the VPC, subnets, the load balancer, the security-group chain and the
+request flow — is in `docs/architecture.md`.
+
 Four services are defined in `docker-compose.yml`: three that run by default,
 and one development database behind an optional profile.
 
@@ -34,8 +38,10 @@ and one development database behind an optional profile.
 2. **`reranker`** — `llama.cpp` serving `bge-reranker-base` (Q8_0 GGUF).
    Cross-encoder relevance scoring with rank pooling. Endpoint `/v1/rerank`.
    Same image.
-3. **`api`** — FastAPI orchestrator, built from `./api` rather than pulled.
-   It serves every route in [API routes](#api-routes) — `GET /health`,
+3. **`api`** — FastAPI orchestrator, pulled as a digest-pinned GHCR image
+   rather than built from `./api`. `docker-compose.yml` has no `build:` key for
+   `api`, so `docker compose up --build` no longer builds this service. It
+   serves every route in [API routes](#api-routes) — `GET /health`,
    `GET /health/live`, `GET /health/ready`, `POST /embed`, `POST /rerank`,
    `POST /documents` and `POST /search` — and it is the only service with a
    published port.
@@ -51,7 +57,7 @@ and one development database behind an optional profile.
                   :8000   │   the only published port
                           ▼
                   ┌───────────────┐
-                  │      api      │   FastAPI, built from ./api
+                  │      api      │   FastAPI, digest-pinned GHCR image
                   └──┬────────┬───┘
                      │        │
        ┌─────────────┴┐       └────────────┴
@@ -165,8 +171,10 @@ Step by step:
 - `./scripts/fetch-models.sh` — downloads the two GGUF files into `./models`.
   Run this **before** the first `docker compose up`. Re-running is safe: a file
   that is already present and non-empty is skipped. The script is idempotent.
-- `docker compose up -d --build` — starts the stack in the background, building
-  the `api` image from `./api`.
+- `docker compose up -d --build` — starts the stack in the background. The
+  `api` service is pulled as a digest-pinned GHCR image (`docker-compose.yml`
+  has no `build:` key for `api`), so `--build` does not build the API; it is a
+  no-op for that service.
 - `docker compose ps` — all three services reach `(healthy)`.
 
 If a service does not reach `(healthy)`, read its logs rather than restarting —
@@ -206,6 +214,9 @@ dims: 384
 model: bge-small-en-v1.5
 ```
 
+The numbers above show the response shape and magnitude; they are illustrative
+and are not reproducible guarantees.
+
 **3. Reranking.** Confirms the reranker is loaded and ordering correctly:
 
 ```
@@ -217,6 +228,9 @@ curl -s http://localhost:8000/rerank \
 ```
 {"results":[{"index":0,"relevance_score":2.747},{"index":2,"relevance_score":-7.242},{"index":1,"relevance_score":-10.195}],"model":"bge-reranker-base"}
 ```
+
+The relevance scores above show the response shape and magnitude; they are
+illustrative and are not reproducible guarantees.
 
 Note the `index` values: **0, 2, 1 — not 0, 1, 2.** This is correct. `index` is
 the position the document occupied in the array you sent, not its rank in the
@@ -235,8 +249,11 @@ pip install -r api/requirements-dev.txt
 python -m pytest api/tests/test_integration.py -v
 ```
 
-Six tests, all passing against the running stack. Test names and count only —
-pytest's own column layout and timings are not shown:
+Six tests, all passing against the running stack. These are the live-stack (T3)
+tests: they require the full stack (API, both llama.cpp workers and the dev
+database) to be running, and they are NOT executed by CI (CI runs T1+T2 =
+168 of 196 tracked tests; T3 is deliberately not run in this workflow). Test
+names and count only — pytest's own column layout and timings are not shown:
 
 ```
 test_health_reports_all_dependencies_ok          PASSED
@@ -271,8 +288,10 @@ full teardown and are still there after the next `docker compose up`.
 
 ## API routes
 
-All seven routes below are served by the `api` service on `localhost:8000`, and
-they are the complete list — `api/app/main.py` registers no others. Three came
+All seven routes below are the complete set of **application** routes served by
+the `api` service on `localhost:8000`. `api/app/main.py` registers no others
+beyond those seven; FastAPI additionally serves the standard documentation
+endpoints `/openapi.json`, `/docs` and `/redoc`. Three came
 from the retrieval-free milestone (`/health`, `/embed`, `/rerank`); the other
 four arrived with the database phase. `POST /documents` and `POST /search` are
 the two that use the store; their behaviour and cloud evidence are recorded in
@@ -493,6 +512,43 @@ sentence, not a traceback.
 by calling the two proxy handlers rather than reimplementing them. A **503** on
 either route means the database is unavailable, which is the same claim
 `/health/ready` makes with the same status code.
+
+Edge guard on worker-bound input (422):
+
+Worker-bound text fields — `text` on `POST /embed`, `query` on `POST /search`,
+and each document entry on `POST /rerank` — are capped at **2048 characters**.
+A longer value is refused at the API edge with **422** naming the field and the
+limit, instead of being forwarded to a worker that would answer with a permanent
+502.
+
+The 2048-character figure is a CHARACTER proxy for the worker's 512-token
+ceiling and cannot be exact: tokenisation is not a function of character count
+alone, so pathological low-density input (long unbroken character runs) can
+still exceed the worker's token limit below 2048 characters. That input is
+passed through and produces a **502** — permanent, not retryable (retrying
+fails the same way every time).
+
+`POST /rerank`'s 512-token ceiling applies to the **(query, passage) PAIR**, not
+to either field in isolation. Two values that are each individually valid can
+still be refused by the worker because their combined length exceeds the
+ceiling. That is a known residual, stated here rather than concealed behind the
+per-field limit.
+
+502: transient vs permanent:
+
+A **502** is **either**:
+
+- **Transient (retryable):** the worker is unreachable, answered a non-2xx
+  status, or returned a body that was not JSON. Retry, optionally with backoff.
+- **Permanent (not retryable):** the input the API forwarded is one the worker
+  refuses — for example pathological low-density text below the 2048-character
+  edge limit that still exceeds the worker's 512-token ceiling. Do not retry;
+  it will fail the same way every time.
+
+The client-facing detail is a short sentence naming the worker and the HTTP
+status, e.g. `{"detail":"embedder returned HTTP 500"}`. The full upstream worker
+detail is logged server-side only and is **not** echoed into the client-facing
+response.
 
 ## Configuration
 
