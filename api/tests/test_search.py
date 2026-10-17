@@ -51,9 +51,10 @@ whose body reads two environment variables and asserts on an `if` — lands at
 This is why no test in this file is declared T1 in `.github/workflows/tests.yml`,
 and why Section 0's five funnel tests are declared in T2 rather than T1: five
 declarations that expand to 13 collected cases, all of them on the database side
-of that line. The comment banner above Section 0 still says "No services
-required", and it is wrong for the same reason; it has been left in place here
-rather than fixed in a change scoped to this docstring.
+of that line. The comment banner above Section 0 used to say "No services required"; it now
+states that a database IS required — no running API, no llama.cpp worker and no
+model are needed. That correction is in the banner itself rather than only in
+this docstring.
 
 What this file protects, in rough order of how much damage its absence causes:
 
@@ -122,9 +123,12 @@ EMPTY_COLLECTION = "search-empty-probe"
 # exactly two variables into the container — `DATABASE_URL` and `EMBEDDING_DIM` —
 # so the container resolves `RETRIEVAL_CANDIDATES` and `RERANK_TOP_K` from
 # `config.py`'s defaults no matter what this machine's `.env` says. A test that
-# read the local environment would expect 50 (the stale value in this repo's
-# `.env`) while the API correctly used 10, and would fail while reporting a
-# configuration problem that does not exist.
+# read the local environment would see this repo's `.env` value of 10 (matching
+# the code default), but the container does not read `.env` for this variable —
+# `docker-compose.yml` passes only DATABASE_URL and EMBEDDING_DIM into the `api`
+# container — so the API always resolves `RETRIEVAL_CANDIDATES` from config.py's
+# default. Basing the test on the code default keeps it correct even if `.env`
+# later changes.
 #
 # If `docker-compose.yml` ever gains these variables, this is the line to change,
 # and the assertion in `test_the_api_runs_the_configured_funnel` says so out loud.
@@ -277,9 +281,10 @@ def _clean_probe_collection():
 # ── 0. The funnel's configuration rules. A DATABASE is required. ──────────────
 #
 # These tests are pure configuration logic: they read two environment variables
-# and assert on an `if`. That is exactly why this banner used to say "No services
-# required", and why it was wrong — it was corrected in e3e7d25 together with this
-# module's docstring, and the correction is not confined to the docstring.
+# and assert on an `if`. They need a DATABASE — no running API, no llama.cpp
+# worker and no model are required here. `_clean_probe_collection` empties this
+# file's probe collection before AND after every test, so with no database
+# reachable the fixture raises in SETUP and the test never reaches its own body.
 #
 # They DO need a database. `_clean_probe_collection` above is declared
 # `@pytest.fixture(autouse=True)` and empties this file's probe collection before

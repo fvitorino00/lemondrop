@@ -37,7 +37,7 @@ from typing import Annotated, Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, Field, StringConstraints
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import config, db, store
@@ -105,9 +105,31 @@ RERANKER_MODEL_ALIAS = os.environ.get("RERANKER_MODEL_ALIAS", "bge-reranker-base
 # work budget.
 INFERENCE_TIMEOUT_SECONDS = 120.0
 
-# How much of an upstream worker's error body may be echoed back to the client.
-# See _summarise for why it is capped rather than passed through whole.
-_MAX_UPSTREAM_DETAIL_CHARS = 200
+# The largest input the API will forward to an inference worker, in characters.
+#
+# Derivation: llama.cpp runs with n_ctx_slot = 512 (confirmed in the worker's
+# startup log: "n_slots = 4, n_ctx_slot = 512", docker-compose.yml:197-199), so
+# any input above 512 tokens is REJECTED by the worker, not truncated. Real BPE
+# prose runs about 4 chars/token, not the ~2 chars/token measured on repeated
+# 'A' characters, so 512 tokens is about 2048 characters of real prose.
+#
+# 2048 chars = 512 tokens × 4 chars/token (realistic BPE prose density). It
+# exceeds the corpus maximum of 1874 chars (data/corpus.json), so all 40
+# verified-good documents remain acceptable
+# (docs/verification-milestone-3.md §5.2: 40/40 ingested through POST /documents).
+#
+# This is a CHARACTER proxy for the worker's 512-TOKEN limit and cannot be
+# exact: tokenisation is not a function of character count alone. At realistic
+# prose density (~4 chars/token) 2048 chars ≈ 512 tokens and is the ceiling.
+# Pathological low-density input — long unbroken character runs at ~2
+# chars/token — can still exceed the worker's token limit below 2048 characters
+# and will produce an upstream 502. That is a KNOWN residual, not a solved case.
+# The n_ctx_slot = 512 evidence source is docker-compose.yml:197-199.
+#
+# Anything at or below this limit is accepted; anything above is refused at the
+# edge with a 422 naming the field, instead of being forwarded to a worker that
+# would answer with a permanent, non-retryable 500.
+MAX_INFERENCE_INPUT_CHARS = 2048
 
 # Strings a caller must actually provide. Declared here, once, so that the
 # rejection rule is written down in a single place and cannot drift between the
@@ -125,14 +147,54 @@ _MAX_UPSTREAM_DETAIL_CHARS = 200
 # stripping first turns a whitespace-only string into "", which min_length then
 # rejects. min_length alone would accept "   ", and an empty string is not
 # something either worker can do anything useful with.
-NonBlankText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+NonBlankText = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_INFERENCE_INPUT_CHARS,
+    ),
+]
+
+# Identifiers (document_id, collection) are never forwarded to an inference
+# worker, so they have no worker-imposed token limit and must NOT carry
+# max_length. strip_whitespace then min_length=1: a blank identifier is not a
+# usable key, but a non-blank identifier of any length is accepted.
+NonBlankIdentifier = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+    ),
+]
 
 # The same rule for document entries, minus the stripping. Documents are not
 # compared for equality against anything and a reranker scores whatever text it
-# is given, so there is no reason to silently rewrite the caller's strings — only
-# a reason to refuse an empty one, which would score as noise and, depending on
-# the caller's mapping back to its own data, quietly corrupt a ranking.
-NonBlankItem = Annotated[str, StringConstraints(min_length=1)]
+# is given, so there is no reason to silently rewrite the caller's strings.
+#
+# A WHITESPACE-ONLY entry IS rejected: it is blank after stripping and would be
+# scored as noise, producing a meaningless ranking. The validator below checks
+# `not value.strip()` and raises a validation error, but returns the original
+# string untouched otherwise — so "  padded  " is accepted verbatim, while "   "
+# is refused. The entry is also capped at MAX_INFERENCE_INPUT_CHARS so a rerank
+# call never forwards an input the worker would permanently reject.
+def _reject_blank_after_strip(value: str) -> str:
+    """Reject a string that is blank after stripping, without rewriting it.
+
+    Returns the original value unchanged when it is non-blank. Raises a
+    ValueError when `value.strip()` is empty, so whitespace-only entries are
+    refused while non-blank caller strings are preserved exactly as given.
+    """
+    if not value.strip():
+        raise ValueError("string must not be blank or whitespace-only")
+    return value
+
+
+NonBlankItem = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=MAX_INFERENCE_INPUT_CHARS),
+    AfterValidator(_reject_blank_after_strip),
+]
 
 # Module logger. Exceptions are logged HERE, server-side, and never returned to
 # the caller — see the docstring on _post_upstream.
@@ -496,25 +558,6 @@ async def health_ready(request: Request, response: Response) -> ReadinessRespons
 # a door, not a worker.
 
 
-def _summarise(text: str) -> str:
-    """Reduce an upstream error body to one short, single-line description.
-
-    Two things happen here that matter. Whitespace is collapsed, so a multi-line
-    body cannot smuggle a wall of text into a JSON field the caller will print.
-    And the result is capped at _MAX_UPSTREAM_DETAIL_CHARS, so what reaches the
-    caller is a description rather than a dump — a worker's error body can be an
-    entire page, and there is no reason for one client to receive it all.
-
-    The FULL body is written to the server log by the caller of this function.
-    That is the division of labour: the operator gets everything, the client gets
-    enough to act on.
-    """
-    collapsed = " ".join(text.split())
-    if len(collapsed) > _MAX_UPSTREAM_DETAIL_CHARS:
-        return collapsed[:_MAX_UPSTREAM_DETAIL_CHARS] + "..."
-    return collapsed
-
-
 async def _post_upstream(url: str, payload: dict[str, Any], worker: str) -> Any:
     """POST one JSON payload to an inference worker and return its parsed body.
 
@@ -575,17 +618,16 @@ async def _post_upstream(url: str, payload: dict[str, Any], worker: str) -> Any:
         # one request. That is a bad gateway, and a client that retries a 502
         # (optionally with backoff) is behaving correctly in a way it should not
         # be doing for a 503.
+        #
+        # The FULL upstream body is logged above (logger.warning) for the
+        # operator. It is deliberately NOT echoed into the client-facing detail:
+        # a worker's error body can expose internal configuration (for example
+        # "current batch size: 512") that a caller must not see and cannot act
+        # on, and some 502s (an oversized input) are permanent and must not be
+        # retried. The client gets a status code and a plain sentence; the
+        # operator gets the body in the server log.
         logger.warning("%s returned HTTP %s: %s", worker, exc.response.status_code, exc.response.text)
-        summary = _summarise(exc.response.text)
         detail = f"{worker} returned HTTP {exc.response.status_code}"
-        # A bare status code tells the caller nothing they can act on — HTTP 400
-        # from the reranker could mean a typo in the model alias or an empty
-        # document list, and those are different bugs. A capped, collapsed
-        # excerpt distinguishes them. The cap is what keeps this a description
-        # rather than a traceback pasted into a response body; the whole body,
-        # including anything sensitive or enormous, went to the log line above.
-        if summary:
-            detail = f"{detail}: {summary}"
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from None
     except httpx.HTTPError as exc:
         # Connection refused, DNS failure, network unreachable, TLS error —
@@ -738,6 +780,17 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
     return EmbedResponse(embedding=vector, dimensions=len(vector), model=EMBEDDER_MODEL_ALIAS)
 
 
+# ── /rerank is a PER-PAIR constraint ──────────────────────────────────────────
+# /rerank scores (query, passage) PAIRS; the worker's 512-token ceiling applies
+# to the COMBINED pair, not to either field in isolation. The per-field
+# character limit (MAX_INFERENCE_INPUT_CHARS) therefore cannot guarantee a pair
+# fits: two individually in-limit fields can still exceed the ceiling together.
+# That is a known, accepted residual — a joint-length validator is NOT the
+# smallest defensible change, and deliberately attempting to enforce a combined
+# limit here would be false precision over a character proxy for a token limit.
+# A comment stating the residual is the honest position.
+
+
 class RerankRequest(BaseModel):
     """Body of POST /rerank — one query scored against one list of documents."""
 
@@ -883,20 +936,19 @@ class DocumentRequest(BaseModel):
     `id TEXT PRIMARY KEY` over a generated column.
     """
 
-    # The caller's own identifier, and the upsert key. NonBlankText (strip, then
-    # reject blank) for the same reason as everything else: a blank id is not a
-    # usable primary key, and it is exactly the kind of bad row that is
-    # invisible in a UI and permanent in the database.
-    document_id: NonBlankText
+    # The caller's own identifier, and the upsert key. NonBlankIdentifier
+    # (strip, then reject blank) — an identifier is never forwarded to an
+    # inference worker, so it carries NO max_length: only non-blankness matters.
+    document_id: NonBlankIdentifier
 
-    # The partition every retrieval query filters on. NonBlankText rather than
-    # NonBlankItem: unlike a reranker document, a collection name is compared
-    # for equality by the caller (they will pass the same string to /search
-    # later), so silently rewriting it with `strip()` would create a collection
-    # the caller cannot name. It is also belt-and-braces with the database's own
-    # `documents_collection_not_blank` CHECK — validated here so the caller gets
-    # a 422 naming the field instead of a constraint violation.
-    collection: NonBlankText
+    # The partition every retrieval query filters on. NonBlankIdentifier rather
+    # than NonBlankText: a collection name is compared for equality by the
+    # caller (they will pass the same string to /search later), so silently
+    # rewriting it would matter — but crucially it is NEVER sent to a worker,
+    # so it carries NO max_length either. It is also belt-and-braces with the
+    # database's own `documents_collection_not_blank` CHECK — validated here so
+    # the caller gets a 422 naming the field instead of a constraint violation.
+    collection: NonBlankIdentifier
 
     # The text to embed and store. NonBlankText: stripping is safe here because
     # the caller's intent is "this document", not "this exact byte sequence", and
@@ -1076,6 +1128,15 @@ async def create_document(request: Request, body: DocumentRequest) -> DocumentRe
         # bug report. The response detail is a fixed sentence for the same
         # reason: it names the failure without quoting data back to a caller who
         # sent it.
+        #
+        # The 502 here is DELIBERATE and is documented in client.md §5: "the
+        # document could not be stored" is a bad-gateway for a write that did not
+        # complete, while `POST /search` returns 503 for the same SQLAlchemyError
+        # class ("the document store could not be searched"). The divergence is
+        # intentional — the API itself is fine in both cases; the status code
+        # tells the client which dependency failed (the document store for a
+        # write vs. a read) and what the client should do next. Do not unify
+        # these codes without updating client.md §5 and both handlers together.
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="the document could not be stored",
@@ -1133,11 +1194,11 @@ class SearchRequest(BaseModel):
     default that a later configuration change would silently contradict.
     """
 
-    # Which partition to search. NonBlankText, exactly as on `DocumentRequest`:
-    # the same string will be compared for equality by the caller when they post
-    # a document, so stripping it here would create a collection name the caller
-    # cannot then address.
-    collection: NonBlankText
+    # Which partition to search. NonBlankIdentifier, exactly as on
+    # `DocumentRequest`: the same string will be compared for equality by the
+    # caller when they post a document, and an identifier is never forwarded to
+    # an inference worker so it carries NO max_length.
+    collection: NonBlankIdentifier
 
     # The query. NonBlankText, and this is a QUERY by construction — it is the
     # one field in this service that is guaranteed to be on the retrieval pair's
@@ -1155,6 +1216,35 @@ class SearchRequest(BaseModel):
     # resolved candidate count: the reranker cannot produce more results than
     # there were documents to rerank.
     top_k: int | None = Field(default=None, ge=1)
+
+
+# Keys that are internal test-scaffolding / audit evidence and must never be
+# returned to an external client. They remain in storage: store.retrieve copies
+# `dict(row.metadata)` verbatim (store.py:579) because these keys are
+# load-bearing audit evidence for collection isolation —
+# docs/verification-milestone-3.md §12.3 records
+# `grep -c '"isolation_canary": true' data/corpus.json` = 10, and the corpus
+# canary pairs are exercised by api/tests/test_search.py §3.
+#
+# Filtering happens here, at the API RESPONSE layer, when building
+# SearchResultDocument.metadata. The set is explicit and narrow: only internal
+# scaffolding keys are excluded, never arbitrary caller metadata. Currently the
+# only such key is `isolation_canary`.
+INTERNAL_METADATA_KEYS = frozenset({"isolation_canary"})
+
+
+def _strip_internal_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return `metadata` with internal scaffolding keys removed.
+
+    Internal audit keys (see INTERNAL_METADATA_KEYS) must not reach external
+    clients through a search response, but they must remain in storage for the
+    collection-isolation evidence. Ordinary caller keys are preserved verbatim.
+    """
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key not in INTERNAL_METADATA_KEYS
+    }
 
 
 class SearchResultDocument(BaseModel):
@@ -1415,6 +1505,16 @@ async def search(request: Request, body: SearchRequest) -> SearchResponse:
         # SQLSTATE for the reasons spelled out in `create_document`: the message
         # is not logged because asyncpg's DETAIL lines carry row contents, and
         # the query parameters here include the caller's query vector.
+        #
+        # The 503 here is DELIBERATE and is documented in client.md §5: "the
+        # document store could not be searched" is a service-unavailable for a
+        # read that could not complete, while `POST /documents` returns 502 for
+        # the same SQLAlchemyError class ("the document could not be stored").
+        # The divergence is intentional — the API itself is fine in both cases;
+        # the status code tells the client which dependency failed (a read vs. a
+        # write to the document store) and what the client should do next. Do
+        # not unify these codes without updating client.md §5 and both handlers
+        # together.
         logger.error(
             "retrieval for collection %r failed: %s (SQLSTATE %s)",
             body.collection,
@@ -1496,7 +1596,7 @@ async def search(request: Request, body: SearchRequest) -> SearchResponse:
             document_id=candidate.document_id,
             collection=candidate.collection,
             content=candidate.content,
-            metadata=candidate.metadata,
+            metadata=_strip_internal_metadata(candidate.metadata),
             relevance_score=result.relevance_score,
             # Stage 1's opinion, carried from the candidate. Both scores, because
             # a result showing only stage 2 cannot explain why it was considered.

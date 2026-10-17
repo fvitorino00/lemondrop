@@ -19,10 +19,13 @@ built from it. The rule lives in `app.main` — `NonBlankText` strips whitespace
 rule from the outside, through the same constructor FastAPI uses, so an accidental
 relaxation of it fails here rather than as a 200 with a blank vector in it.
 
-**What this file deliberately does NOT assert.** See the terminal comment in the
-`RerankRequest` section: a whitespace-only *document entry* is currently accepted
-by `NonBlankItem`, and that behaviour is observed-but-unreviewed. It is recorded,
-not codified, in either direction.
+**What this file deliberately does NOT assert.** The status code of a real HTTP
+502 from an inference worker (work item A1(d)): producing a genuine worker
+502 requires a live inference worker, which this service-free module cannot
+provide. That guarantee — the client-facing 502 detail must not contain worker
+internals such as "batch size" — is verified by code review on `app.main`
+(`_post_upstream` performs a real httpx call and cannot be exercised without a
+worker).
 """
 
 from __future__ import annotations
@@ -30,7 +33,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.main import DocumentRequest, EmbedRequest, RerankRequest, SearchRequest
+from app.main import (
+    DocumentRequest,
+    EmbedRequest,
+    MAX_INFERENCE_INPUT_CHARS,
+    RerankRequest,
+    SearchRequest,
+    _strip_internal_metadata,
+)
 
 # ── EmbedRequest ──────────────────────────────────────────────────────────────
 #
@@ -56,6 +66,26 @@ def test_embed_accepts_a_normal_text() -> None:
     request = EmbedRequest(text="hello")
 
     assert request.text == "hello"
+
+
+def test_embed_rejects_oversized_text() -> None:
+    """Text above MAX_INFERENCE_INPUT_CHARS is refused with a `string_too_long` error naming `text` and the limit."""
+    oversized = "x" * (MAX_INFERENCE_INPUT_CHARS + 1)
+    with pytest.raises(ValidationError) as excinfo:
+        EmbedRequest(text=oversized)
+    errors = excinfo.value.errors()
+    assert any(
+        e["type"] == "string_too_long"
+        and "text" in e["loc"]
+        and e.get("ctx", {}).get("max_length") == MAX_INFERENCE_INPUT_CHARS
+        for e in errors
+    ), errors
+
+
+def test_embed_accepts_text_at_and_just_under_limit() -> None:
+    """Text at and just under the limit is accepted; the limit itself is inclusive."""
+    EmbedRequest(text="x" * MAX_INFERENCE_INPUT_CHARS)
+    EmbedRequest(text="x" * (MAX_INFERENCE_INPUT_CHARS - 1))
 
 
 # ── RerankRequest ─────────────────────────────────────────────────────────────
@@ -122,18 +152,23 @@ def test_rerank_minimal_request_defaults_top_n_to_none() -> None:
     assert request.top_n is None
 
 
-# ── OBSERVATION, NOT AN ASSERTION. DO NOT TURN THIS INTO A TEST YET. ───────────
-#
-# `RerankRequest(query="q", documents=["   "])` is currently ACCEPTED. That is
-# what `NonBlankItem` (app/main.py:135) does by construction: it applies
-# `min_length=1` with NO `strip_whitespace`, so a whitespace-only entry has
-# length > 1 and passes. Whether that is intended has NOT been reviewed, so this
-# module records the observation and asserts NOTHING about it in either
-# direction — locking it in as "correct" would bless an unreviewed behaviour, and
-# locking it in as "wrong" would fail against the current app without a decision
-# to change it. If you are reading this because you want to assert it: get the
-# decision first, then either add the test here or change `NonBlankItem` in
-# `app/main.py` — do not let a test decide it by accident.
+def test_rerank_rejects_oversized_document_entry() -> None:
+    """A document entry above MAX_INFERENCE_INPUT_CHARS is refused before it reaches the reranker."""
+    oversized = "x" * (MAX_INFERENCE_INPUT_CHARS + 1)
+    with pytest.raises(ValidationError):
+        RerankRequest(query="q", documents=[oversized])
+
+
+def test_rerank_rejects_whitespace_only_document_entry() -> None:
+    """A whitespace-only document entry is blank after stripping and is refused."""
+    with pytest.raises(ValidationError):
+        RerankRequest(query="q", documents=["   "])
+
+
+def test_rerank_accepts_padded_document_without_rewrite() -> None:
+    """A non-blank document entry is accepted verbatim: whitespace is NOT stripped or rewritten."""
+    request = RerankRequest(query="q", documents=["  padded  "])
+    assert request.documents == ["  padded  "]
 
 
 # ── DocumentRequest ───────────────────────────────────────────────────────────
@@ -195,6 +230,40 @@ def test_document_metadata_round_trips() -> None:
     assert request.metadata == {"source": "x"}
 
 
+# REGRESSION: docs/verification-milestone-3.md §5.2 records 40/40 documents
+# ingested through POST /documents, and data/corpus.json measures document
+# content at 1244–1874 characters (median 1384.5, maximum 1874). The old
+# 768-character cap was BELOW the corpus minimum and would have rejected all
+# 40 documents with a 422 — a 100% regression on a verified path. A realistic
+# 1874-character document must be accepted.
+def test_document_accepts_corpus_maximum_length_content() -> None:
+    """A realistic 1874-character document (the measured corpus maximum) is accepted.
+
+    Cites data/corpus.json (§5.2's 40/40 record): content of this length must
+    not be refused by MAX_INFERENCE_INPUT_CHARS, which is now 2048 chars
+    (= 512 tokens x ~4 chars/token at realistic BPE prose density).
+    """
+    content = "x" * 1874
+    request = DocumentRequest(document_id="id", collection="c", content=content)
+    assert request.content == content
+
+
+# Identifiers (document_id, collection) are never forwarded to an inference
+# worker, so they carry NO max_length. A 1000-character identifier must be
+# accepted — it never reaches a worker and has no token ceiling.
+def test_document_accepts_long_identifiers_uncapped() -> None:
+    """document_id and collection of 1000 characters are accepted (no max_length)."""
+    long_id = "x" * 1000
+    long_collection = "y" * 1000
+    request = DocumentRequest(
+        document_id=long_id,
+        collection=long_collection,
+        content="t",
+    )
+    assert request.document_id == long_id
+    assert request.collection == long_collection
+
+
 # ── SearchRequest ─────────────────────────────────────────────────────────────
 #
 # Two required `NonBlankText` fields (`collection`, `query`) and two optional
@@ -251,3 +320,24 @@ def test_search_accepts_positive_sizes() -> None:
     assert request.query == "q"
     assert request.candidates == 10
     assert request.top_k == 3
+
+
+def test_search_rejects_oversized_query() -> None:
+    """A search query above MAX_INFERENCE_INPUT_CHARS is refused before it reaches the embedder."""
+    oversized = "x" * (MAX_INFERENCE_INPUT_CHARS + 1)
+    with pytest.raises(ValidationError):
+        SearchRequest(collection="c", query=oversized)
+
+
+def test_strip_internal_metadata_removes_canary_preserves_caller_keys() -> None:
+    """The response-metadata filter drops `isolation_canary` and preserves ordinary caller keys."""
+    metadata = {"source": "x", "isolation_canary": True, "page": 3}
+    assert _strip_internal_metadata(metadata) == {"source": "x", "page": 3}
+    # The input dict is not mutated.
+    assert metadata == {"source": "x", "isolation_canary": True, "page": 3}
+
+
+def test_strip_internal_metadata_keeps_caller_metadata_intact_without_canary() -> None:
+    """Ordinary caller metadata with no internal keys passes through unchanged."""
+    metadata = {"source": "x", "page": 3}
+    assert _strip_internal_metadata(metadata) == metadata
