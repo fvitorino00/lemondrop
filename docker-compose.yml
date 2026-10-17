@@ -442,7 +442,7 @@ services:
     # The default is therefore a FULLY-QUALIFIED, DIGEST-PINNED reference to an
     # image this project published, verified, and can pull anonymously:
     #
-    #     ghcr.io/fvitorino00/lemondrop-api@sha256:0bdb7afa566b…42986
+    #     ghcr.io/fvitorino00/lemondrop-api@sha256:8cf759f688da…f6110
     #
     # There are now exactly TWO reachable values for this line:
     #
