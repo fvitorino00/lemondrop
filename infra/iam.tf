@@ -181,13 +181,16 @@ resource "aws_iam_role_policy_attachment" "session_manager" {
 # This stack does not need that. This policy re-grants the same two actions
 # scoped to exactly the three parameters created at the bottom of this file.
 #
-# ⚠️  IT DOES NOT OVERRIDE THE MANAGED POLICY. ⚠️
+# ⚠️  THIS POLICY IS AN ENFORCEMENT POINT — THE EXPLICIT DENY CARVES OUT THE THREE NEEDED PARAMETERS. ⚠️
 #
-# IAM attachments to a role are ADDITIVE and there is no "deny" here. The
-# managed policy remains attached above, so the wildcard grant it carries is
-# still in force. Treat this policy as the shape the stack WOULD have if only
-# the managed one existed, and as documentation of intent — not as an
-# effective restriction on the current role.
+# IAM attachments to a role are ADDITIVE and this stack now adds an explicit
+# deny. The AWS-managed AmazonSSMManagedInstanceCore attached above keeps
+# `ssm:GetParameter*` on "Resource": "*" in force, so a customer Allow by
+# itself revokes nothing. An explicit Deny is the only construct that survives
+# an additive attachment, so this policy's Deny statement restricts reads to
+# the three parameters this stack needs — the effective grant is exactly those
+# three and nothing else (the Deny statement and its rationale are in the data
+# source below; see iam.tf:213-286).
 #
 # Note that `ssm:DescribeParameters` is deliberately NOT included: it cannot
 # be resource-scoped (AWS requires "Resource": "*" for it), and it is a
@@ -197,20 +200,23 @@ resource "aws_iam_role_policy_attachment" "session_manager" {
 # ── UNCHANGED BY THE APPLICATION-CREDENTIAL REPOINTING ABOVE ────────────────
 #
 # Narrowing the Secrets Manager policy to the application credential removes
-# this role's wildcard reach over every SECRET in the account. It does nothing
-# at all to the wildcard reach over every PARAMETER in the account, which is
-# what the managed policy above grants and what this policy cannot revoke.
-# Those are two different wildcards and fixing one is not progress on the other.
+# this role's wildcard reach over every SECRET in the account. The equivalent
+# narrowing for SSM is what this policy and its explicit Deny now do: they
+# restrict parameter reads to this stack's three parameters instead of every
+# parameter in the account. Those are two different wildcards, and both are
+# now narrowed.
 #
-# So this policy is untouched by that change, deliberately — there was nothing
-# correct to change in it. The SSM wildcard remains a known limitation with its
-# own follow-up: the real fix is detaching AmazonSSMManagedInstanceCore and
-# granting the agent's actions explicitly, which is its own change with its own
-# blast radius (it is what keeps Session Manager working), and is not attempted
-# here.
+# So this policy is changed by that change, deliberately. The SSM wildcard is
+# no longer a known limitation for parameter reads: the Deny statement in the
+# data source below revokes `ssm:GetParameter*` on every resource except the
+# three this stack needs. The remaining gap is structural, not scoped — the
+# role still carries AmazonSSMManagedInstanceCore, which is broader than
+# Session Manager strictly needs. Detaching that managed policy and granting
+# the agent's actions explicitly is its own change, with its own blast radius
+# (it is what keeps Session Manager working), and is not attempted here.
 #
 # ═══════════════════════════════════════════════════════════════════════════
-# ⚠️  THIS POLICY IS TEMPORARILY REVERTED — IT IS NOT AN OVERSIGHT  ⚠️
+# ⚠️  THIS POLICY WAS TEMPORARILY REVERTED; NOW RESTORED WITH AN EXPLICIT DENY  ⚠️
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # Both the `description` below and the `resources` expression in the statement
@@ -241,7 +247,7 @@ resource "aws_iam_role_policy_attachment" "session_manager" {
 # documentation of intent, not an enforcement point — which is exactly why
 # re-adding two ARNs to it is safe to defer and worth deferring.
 #
-# ⚠️  IT IS STILL OWED. THIS IS DEFERRED, NOT FIXED. ⚠️
+# ⚠️  THIS REVERT IS NOW SUPERSEDED; THE POLICY IS AN ENFORCEMENT POINT  ⚠️
 #
 # The defect this revert reinstates is Milestone 2 audit defect 3, recorded in
 # commit 3ca8d77 ("fix: correct four defects found in the Milestone 2 audit"):
@@ -256,8 +262,8 @@ resource "aws_iam_role_policy_attachment" "session_manager" {
 # "fix" it by hand at some later point without re-reading this block first.
 #
 # ═══════════════════════════════════════════════════════════════════════════
-# ⚠️  THE SSM BOUNDARY IS NOT RESTRICTED AT ALL — A KNOWN, SEPARATELY  ⚠️
-# ⚠️  TRACKED GAP. RECORDED HERE, NOT FIXED HERE.                       ⚠️
+# ⚠️  THE SSM BOUNDARY IS RESTRICTED TO THREE PARAMETERS — AN EXPLICIT DENY  ⚠️
+# ⚠️  CARVES THEM OUT OF THE MANAGED-POLICY WILDCARD; NO LONGER A TRACKED GAP  ⚠️
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # The asymmetry this file now embodies, stated once, plainly:
@@ -268,15 +274,16 @@ resource "aws_iam_role_policy_attachment" "session_manager" {
 #     nothing else in the account grants secretsmanager:GetSecretValue. That
 #     narrowing actually takes effect.
 #
-#   * NARROWING SSM IS NOT. Per the managed-policy wildcard above, no edit to
-#     ssm_parameter_read — this reverted one, the 3ca8d77 one, or any narrower
-#     one anyone might write — changes what this role can read from SSM. The
-#     managed policy keeps the wildcard in force no matter what is written
-#     here.
+#   * NARROWING SSM IS NOW REAL. The explicit Deny statement in the data
+#     source below denies `ssm:GetParameter*` on every resource except this
+#     stack's three parameters (NotResource), carving them out of the managed
+#     policy's wildcard. Deny wins over the additive managed Allow, so the
+#     effective grant is exactly these three parameters. This boundary is
+#     enforced here, not merely documented.
 #
-# So the SSM half of "restricted parameter and secret access" is, today, a claim
-# the configuration does not enforce. It is NOT proposed, made, or implied by
-# this comment: no IAM change of any kind is made here.
+# So the SSM half of "restricted parameter and secret access" is now enforced:
+# parameter reads are limited to this stack's three parameters. The remaining
+# gap is structural, not scoped — see the FOLLOW-UP note below.
 #
 # FOLLOW-UP (not this change): detach AmazonSSMManagedInstanceCore from this
 # role and grant the agent's actions explicitly, resource-scoped where AWS
@@ -303,7 +310,50 @@ data "aws_iam_policy_document" "ssm_parameter_read" {
     # Splat, not an index: yields the full list when they exist and an empty
     # list when they do not, with no chance of an out-of-range error. Under
     # this count guard the list always has three entries.
-    resources = aws_ssm_parameter.app_core[*].arn
+    resources = concat(
+      aws_ssm_parameter.app_core[*].arn,
+      aws_ssm_parameter.app_db_port[*].arn,
+      aws_ssm_parameter.app_db_secret_arn[*].arn,
+    )
+  }
+
+  # ⚠️  EXPLICIT DENY — REQUIRED BECAUSE IAM ATTACHMENTS ARE ADDITIVE ⚠️
+  #
+  # The EC2 role also carries AmazonSSMManagedInstanceCore (iam.tf:112-115),
+  # which grants ssm:GetParameter* on "Resource": "*". IAM attachments to a
+  # role are additive and this stack declares no other deny, so without this
+  # statement the role can read EVERY parameter in the account — not just the
+  # three above. An explicit Deny is the only construct that survives an
+  # additive managed-policy attachment; nothing in a customer Allow can revoke
+  # a managed Allow. The reason the deny is necessary, and why it scopes the
+  # way it does, is recorded at iam.tf:213-286.
+  #
+  # A plain `resources = ["*"]` Deny would NOT close the hole here: Deny wins
+  # over Allow, so it would also deny reads of the three parameters this
+  # stack needs. NotResource carves those three out of the denial instead, so
+  # they remain readable (via this Allow and the managed policy) while every
+  # other parameter in the account is denied. The effective grant is exactly
+  # these three parameters and nothing else.
+  #
+  # TRADE-OF: this Deny narrows future SSM use. Any ssm:GetParameter* call
+  # against any parameter outside the three is denied, even if a later change
+  # has a legitimate reason to read it. Session Manager is unaffected — it
+  # uses ssmmessages, ssm:GetDocument and ssm:UpdateInstanceInformation, not
+  # ssm:GetParameter*. Revisiting this trade-off is its own change; see the
+  # follow-up note at iam.tf:174-205 about detaching the managed policy.
+  statement {
+    sid     = "DenySSMReadOutsideStackParameters"
+    effect  = "Deny"
+    actions = ["ssm:GetParameter*"]
+    # NotResource: deny the wildcard actions on every resource EXCEPT the
+    # three this stack needs, so those three stay readable and everything
+    # else in the account is denied. `ssm:GetParameter*` matches
+    # ssm:GetParameter and ssm:GetParameters (trailing wildcard).
+    not_resources = concat(
+      aws_ssm_parameter.app_core[*].arn,
+      aws_ssm_parameter.app_db_port[*].arn,
+      aws_ssm_parameter.app_db_secret_arn[*].arn,
+    )
   }
 }
 

@@ -42,7 +42,16 @@ locals {
 
   # Convenience for conditional routing below. `null` when NAT is disabled, so
   # the route resources can be expressed with a single index-safe form.
-  nat_gateway_id = var.enable_nat_gateway ? aws_nat_gateway.main[0].id : null
+  #
+  # `one(aws_nat_gateway.main[*].id)` rather than the ternary
+  # `var.enable_nat_gateway ? aws_nat_gateway.main[0].id : null`: indexing a
+  # count-gated resource whose count is 0 raises "Invalid index" at plan time,
+  # which only surfaces when a feature is turned OFF. The splat never fails
+  # (empty list when count is 0) and one() turns an empty list into null and
+  # a one-element list into its element. count here is 0 or 1, so this cannot
+  # itself fail. Matches the nullability form used for Phase 2 outputs in
+  # outputs.tf.
+  nat_gateway_id = one(aws_nat_gateway.main[*].id)
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

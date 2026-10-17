@@ -120,6 +120,15 @@ services:
     # Survive host reboots and crashes, but respect an explicit `stop`.
     restart: unless-stopped
 
+    # Memory bound — see the reranker block for the full OOM history
+    # (docs/verification-milestone-3.md §12.3). Short form: three kernel
+    # OOM kills of llama-server on a ~194Mi host; the dominant term is
+    # fixed model weights plus the llama.cpp runtime, not KV cache. The
+    # embedder's GGUF is ~35 MiB (far below the reranker's 289.8 MiB), so
+    # 512 MiB is generous headroom for a healthy worker while bounding a
+    # runaway. The real fix was capacity (t3.small); this is a safety net.
+    mem_limit: "512m"
+
     # The upstream image ALREADY ships a HEALTHCHECK against port 8080. We
     # restate it explicitly rather than inherit it silently, for one reason:
     # this URL is hardcoded to 8080 on purpose. The image's built-in probe is
@@ -226,17 +235,33 @@ services:
     #
     # ── WHY --ctx-size AND --batch-size ARE DELIBERATELY LEFT ALONE ───────────
     # These are the obvious next two knobs, and adding them here would be a
-    # mistake dressed as thoroughness. llama.cpp TRUNCATES over-long inputs rather
-    # than rejecting them: shrink `--ctx-size` below what a real (query, passage)
-    # pair needs and the server quietly scores a cut-off passage. It still returns
-    # 200, every document still comes back, and every index still lines up — the
-    # only symptom is that relevance scores are quietly worse than they should be,
-    # with no failure anywhere to trace. A silent relevance regression is a worse
-    # failure than a loud one, because nothing alerts on it and the corpus drifts.
-    # `--batch-size` carries the same class of risk for the same reason. So both
-    # stay unset until there is a MEASURED maximum input length in hand to size
-    # them against — a corpus of real runbooks and the longest passage in it, not
-    # an average, because averages are what make truncation invisible.
+    # mistake dressed as thoroughness. The original comment here claimed
+    # llama.cpp TRUNCATES over-long inputs rather than rejecting them — that
+    # claim was wrong. llama.cpp REJECTS oversized input:
+    #
+    #   * CONFIRMED LOCALLY, not assumed. The server logs
+    #     "initializing, n_slots = 1, n_ctx_slot = 512" (this block, lines
+    #     197-199) — a 512-token default context. A 512-token context cannot
+    #     silently score a 4002-token input as complete; it must reject it.
+    #   * OBSERVED LIVE against the deployed service: POST /embed with
+    #     1024 chars (514 tokens) and 8000 chars (4002 tokens) both returned
+    #     HTTP 500 from the worker with
+    #     "input (N tokens) is too large to process. increase the physical
+    #     batch size (current batch size: 512)", surfaced by the API as a 502
+    #     in ~0.16s. This is the first and only recorded observation of the
+    #     behaviour and it appears in NO milestone or evidence document.
+    #
+    # So over-long inputs do NOT silently produce worse relevance scores —
+    # they fail loud, fast, and traceably (502 from the API). The risk that
+    # motivated leaving these flags unset ("silent relevance regression with
+    # no failure to trace") does not exist.
+    #
+    # That said, both flags remain unset, and for a different reason: there
+    # is still no MEASURED maximum input length in hand to size them against
+    # — a corpus of real runbooks and the longest passage in it, not an
+    # average. The rejection path is now understood and documented; sizing
+    # --ctx-size / --batch-size against a measured corpus maximum is the
+    # remaining open task, not a correctness fix.
     command:
       - "-m"
       - "/models/bge-reranker-base-q8_0.gguf"
@@ -257,6 +282,26 @@ services:
       - ./models:/models
 
     restart: unless-stopped
+
+    # Memory bound. THREE kernel OOM kills of llama-server were recorded
+    # in this service's cgroup on a ~194Mi host with no swap
+    # (docs/verification-milestone-3.md §12.3): anon-RSS 425504 / 428608 /
+    # 437408 kB, RestartCount = 2. The reranker weights alone are 289.8
+    # MiB — larger than the entire available memory before a single byte
+    # of KV cache — and the dominant term is fixed weights plus the
+    # llama.cpp runtime, not KV cache: --parallel 1 removed 71.5 MiB
+    # (RSS 720.1 → 648.6 MiB) but the third kill (437408 kB) happened
+    # AFTER that change. The fix that worked was capacity (resize to
+    # t3.small, 2 GiB), not configuration.
+    #
+    # Sizing: observed RSS with --parallel 1 is 648.6 MiB. A healthy
+    # worker must not be killed, so the bound sits above that with
+    # headroom for spikes: 1024 MiB (~58% headroom over observed). One
+    # worker must not starve a 2 GiB host, so the bound is well under it.
+    # Combined worst-case (reranker 1024m + embedder 512m + api 512m =
+    # 2 GiB) is the host size; expected usage (~850 MiB combined) leaves
+    # headroom for the OS and Docker. This is a safety net, not the fix.
+    mem_limit: "1024m"
 
     # Literal 8080, and for the same upstream-image reason as the embedder:
     # the published image hardcodes its own healthcheck to port 8080. Because
@@ -611,6 +656,16 @@ services:
     # Same restart policy as the workers, for the same reason: come back after a
     # host reboot, but respect an explicit `stop`.
     restart: unless-stopped
+
+    # Memory bound — same rationale as the workers (see reranker block):
+    # bound a runaway so it cannot starve the host. The api is a Python
+    # application with no model weights, so its resident footprint is far
+    # below the workers'. 512 MiB is generous headroom for a healthy
+    # worker while keeping the combined worst-case (reranker 1024m +
+    # embedder 512m + api 512m = 2 GiB) at the t3.small host size, leaving
+    # headroom for the OS and Docker at expected usage (~850 MiB combined).
+    # The real fix was capacity (t3.small); this is a safety net.
+    mem_limit: "512m"
 
     # Our own healthcheck, and it MUST use the variable. The llama.cpp image
     # ships a probe hardcoded to 8080 (which is why both workers are pinned to
