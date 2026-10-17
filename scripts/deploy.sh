@@ -725,7 +725,13 @@ main() {
       ;;
   esac
 
-  [ $# -ge 1 ] && [ $# -le 2 ] || { usage; fail "expected 1 or 2 arguments, got $#." "$EX_REFUSED"; }
+  # SC2015: A && B || C is not if-then-else; C may run when A is true. The explicit
+  # if below behaves identically (usage + fail → exit EX_REFUSED for 0 or 3+ args)
+  # and silences SC2015 on every ShellCheck version.
+  if ! { [ $# -ge 1 ] && [ $# -le 2 ]; }; then
+    usage
+    fail "expected 1 or 2 arguments, got $#." "$EX_REFUSED"
+  fi
   target="$1"
   source_rev="${2-}"
 

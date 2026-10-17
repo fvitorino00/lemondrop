@@ -587,6 +587,18 @@ jobs:
           pwsh -NoProfile -File scripts/test-diagnose.ps1
           ./scripts/test-diagnose-parity.sh
 
+      - name: install shellcheck 0.11.0
+        run: |
+          set -euo pipefail
+          SC_VERSION=0.11.0
+          SC_URL="https://github.com/koalaman/shellcheck/releases/download/v${SC_VERSION}/shellcheck-v${SC_VERSION}.linux.x86_64.tar.xz"
+          SC_DIR="$(mktemp -d)"
+          curl -fsSL -o "${SC_DIR}/shellcheck.tar.xz" "${SC_URL}"
+          tar -xJf "${SC_DIR}/shellcheck.tar.xz" -C "${SC_DIR}"
+          install -m 0755 "${SC_DIR}/shellcheck-v${SC_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          rm -rf "${SC_DIR}"
+          shellcheck --version
+
       - name: deploy/rollback/verify — syntax and stubbed end-to-end
         run: |
           set -euo pipefail
