@@ -577,8 +577,10 @@ not, and no equivalent exists for them.
 > *"A second engineer must be able to deploy a tested revision without manually reconstructing
 > the original environment."*
 
-**That text is recorded here because the document it was written in is now tracked in
-this repository.** `docs/m4-plan.md` is **tracked** — `git ls-files docs/m4-plan.md`
+**That text is recorded here because it is the canonical statement of the §13.1 criterion,
+and the document it was written in is now tracked in this repository — committed in `0e2761c`
+("docs: preserve the M4 and M5 acceptance records") — so a reader can consult it directly.**
+`docs/m4-plan.md` is **tracked** — `git ls-files docs/m4-plan.md`
 lists it, and it was committed in `0e2761c` ("docs: preserve the M4 and M5 acceptance
 records") on 2026-10-17 — so a clean clone of this repository contains it. Every
 tracked file that cited it by line number, **including this one**, now resolves to a file
