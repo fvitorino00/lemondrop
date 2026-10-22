@@ -2,9 +2,10 @@
 
 Cost reference for the AWS stack. Region `eu-west-1`, on-demand pricing. All
 figures below are **estimates for an always-on deployment** — the *expected*
-column. **No figure in this file has been read off a real bill.** The section
-[Observed cost](#observed-cost--unverified--not-yet-observed) is the place that
-will hold real numbers once a bill exists, and it is empty on purpose.
+column. The [Observed cost](#observed-cost--partially-observed) section now
+holds a Cost Explorer capture for an **open** period; that capture is marked
+`Estimated: true`, its total is near-zero, and the discrepancy with the derived
+EC2 estimate is unexplained. It is **not** a bill.
 
 > **Audited for Milestone 5.** The M5 work is operating, troubleshooting,
 > recovering and dismantling this system, so this file now also records **what
@@ -44,7 +45,7 @@ re-estimate:
 A billing record has been read, but the period is open and the record is
 estimated. Do not read a derived estimate as an observed charge.
 
-| Line item | Expected (from the table above) | **Observed (from a real bill)** | Period | Source of the observation |
+| Line item | Expected (from the table above) | **Observed (Cost Explorer estimate, open period)** | Period | Source of the observation |
 |---|---|---|---|---|
 | ALB | ~$16/mo + LCU | AWS Cost Explorer total BlendedCost ≈ $0.00 (near-zero, negative by sub-penny rounding) | 2026-10-01 to 2026-10-21 inclusive (Cost Explorer end exclusive) | `aws ce get-cost-and-usage`, account 615105803772, `Estimated: true` (`~/lemondrop-investigation/OBSERVED-COST-EVIDENCE.txt` §4) |
 | NAT gateway | ~$32/mo + per-GB | included in near-zero total above | same | same |
@@ -185,7 +186,7 @@ milestone, which requires cost to be estimated *before* provisioning against an
 
 | Required by the milestone | Status |
 |---|---|
-| Cost estimated before provisioning | Estimates exist in this file — but they are estimates, not a bill (§[Observed cost](#observed-cost--unverified--not-yet-observed)). |
+| Cost estimated before provisioning | Estimates exist in this file — but the observed column is a Cost Explorer estimate for an open period, not a bill (§[Observed cost](#observed-cost--partially-observed)). |
 | Estimated against an **approved** budget | **NOT RECORDED.** No approved budget figure is on file, and no document names one. |
 | A budget alert configured | **MISSING.** No budget resource exists in the Terraform. |
 | Alert understood as a notification, not a limit | Recorded here, so it is not re-litigated. |

@@ -133,7 +133,7 @@ section, following the five-stage template in `INCIDENTS.md` §4.
 
 | # | Deliverable | Status |
 |---|---|---|
-| a | Git repo with app / Terraform / Docker / tests / automation | **PRESENT/PASS.** The repository is present at `HEAD 3e298f83906fa1c17e3e19f778f11fd2868c93c1`; `api/`, `infra/`, `docker-compose.yml`, `scripts/`, `models/` and `.github/workflows/` are all committed. |
+| a | Git repo with app / Terraform / Docker / tests / automation | **PRESENT/PASS.** The repository is present at `HEAD 9dd90c9`; `api/`, `infra/`, `docker-compose.yml`, `scripts/` and `.github/workflows/` are committed. `models/` contains only the `.gitkeep` placeholder — the `*.gguf` weight files are gitignored and are not tracked. |
 | b | Architecture diagram (networks, routing, ports, security groups, dependencies) | **PASS.** `docs/architecture.md` is present and committed; its content covers §1 network topology, §2 ports, §3 the security-group matrix, §4 request flow, §6 non-reachability/egress, and §7 service dependencies. The adequacy judgement remains the operator's gate. |
 | c | Reproducible README | **PARTIAL.** `README.md` is committed and corrected. A static documentation audit now exists as a dated record at `/home/zaratustra0/lemondrop-investigation/README-RUNBOOK-AUDIT.md` (99 claim rows — 74 MATCH, 6 PARTIAL, 13 MISMATCH, 6 NOT-CHECKABLE-STATICALLY; all 13 mismatches corrected, including the T3-tier subset wording in `README.md`). That audit is a static text check, not a runtime proof. A **clean-host reproduction still does not exist** and remains the outstanding part. |
 | d | Operational RUNBOOK | **PARTIAL.** A static documentation audit now exists at `/home/zaratustra0/lemondrop-investigation/README-RUNBOOK-AUDIT.md` (99 claim rows — 74 MATCH, 6 PARTIAL, 13 MISMATCH, 6 NOT-CHECKABLE-STATICALLY; all 13 mismatches corrected). The artefact establishes that every documented command's path, flags, variables, counts and citations in `README.md`, `RUNBOOK.md`, `COSTS.md` and `docs/end-to-end-demo.md` was checked statically against the repository at HEAD. It does **not** establish that any recovery command was executed, that any command works at runtime, or that the end-to-end command audit was performed — that remains outstanding. The `db_skip_final_snapshot` correction in `RUNBOOK.md` is in place and is not at risk. |
@@ -417,10 +417,11 @@ The fix was proven against the **deployed** service through the public ALB.
     been updated to state 1991. The limits of `/embed`, `/documents` and `/rerank` are **UNCHANGED
     at 2048**.
   - **Verification evidence (all local, all observed):**
-    - **RED baseline demonstrated before the fix:** the regression test for the 2048-character
-      query failed with `DID NOT RAISE ValidationError` against the unfixed code; independently,
-      a reviewer reproduced the original 500 in a scratch copy of the pre-fix `api/app/main.py`
-      (`500`, `text/plain`, `Internal Server Error`).
+    - **RED baseline demonstrated before the fix:** in a scratch copy under `/tmp/opencode/red-scratch`
+      (pre-fix `api/app/main.py` from `04ab05d^` plus the current test files), the model-level
+      probe failed with `DID NOT RAISE ValidationError` and the ASGI-level boundary test failed
+      with `AssertionError: Internal Server Error; assert 500 == 422`. The verbatim output is
+      captured in `POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 2.
     - **Red/green discrimination experiment:** with the boundary loosened back to 2048 while the
       constant stayed, the two boundary tests went red. The OLD suite passed 50/50 against the
       unfixed code, which proves the old suite could not have caught this bug.
@@ -436,10 +437,14 @@ The fix was proven against the **deployed** service through the public ALB.
     - **Per-tier results of the final local run** against a container built from the working
       tree, with the container's `main.py` SHA-256 proven equal to the working tree's: T1
       **149 passed**, T2 **28 passed**, T3 **31 passed**, full suite **208 passed** (plus
-      9 subtests). The CI tier-classification drift gate reproduces as PASS with
-      `inventory=208 T1=149 T2=28 T3=31 classified=208`.
-    - **Independent review of the fix returned PASS_WITH_FINDINGS** (strip-order analysis —
-      recorded under the DEP finding below).
+      9 subtests). The verbatim commands, counts, image-hash proof and localhost proof are in
+      `POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 1. The CI tier-classification drift gate
+      reproduces as PASS with `inventory=208 T1=149 T2=28 T3=31 classified=208`.
+    - **Strip-order analysis:** the boundary safety of the E5 fix was verified by measurement
+      (`POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 3): pydantic 2.14.1 strips before the length
+      check, and under either strip ordering the forwarded string stays within the worker budget.
+      The independent review that reported `PASS_WITH_FINDINGS` is referenced in the record, but
+      its transcript is not a retained artefact in the published repository.
   - **Deployment facts, stated plainly (2026-10-21):** at the time this fix record was
     written, the deployed image (`sha256:8cf759f6…`, source revision `6b37a78…`) was unchanged
     and still carried E5. The 2026-10-22 release and deployment recorded below carried the
@@ -657,20 +662,22 @@ The fix was proven against the **deployed** service through the public ALB.
 - **Consequence for acceptance:** Recorded as a finding for the next release cycle. No acceptance
   verdict is changed by this observation.
 - **2026-10-21 addition — pydantic strip-order analysis (from the independent review of the E5
-  fix, verdict PASS_WITH_FINDINGS).** The boundary safety of the E5 fix does not depend on
-  pydantic's strip ordering: an accepted input cannot exceed the worker 2048-character budget
-  under either ordering. Measured behaviour of the installed pydantic: it **strips BEFORE the
-  length checks** — a raw 2000-character input of which 9 are trailing whitespace is accepted,
-  stored as 1991, and forwarded as `QUERY_PREFIX + 1991` = 2048, which is exactly inside the
-  worker budget. Under the opposite ordering (length check on the unstripped string) the
-  behaviour would be stricter, not looser; under NEITHER ordering can an accepted input exceed
-  the worker budget. The old code path was byte-identical in what it forwarded: constructing the
-  old `EmbedRequest` re-stripped an already-stripped string, a no-op. **This analysis narrows the
-  E5 fix's residual risk but does NOT close this finding:** the DEP finding stays OPEN — the
-  pydantic version remains unpinned in `api/requirements.txt` while `main.py` imports it
-  directly, against that file's own "Exact pins, no ranges" rule. Pinning is a RELEASE decision
-  that changes the dependency set relative to the deployed image's provenance, so it is carried
-  to the operator, not applied here.
+  fix, verdict PASS_WITH_FINDINGS).** The review transcript is not a retained artefact in the
+  published repository; the strip-order property is grounded in the measurement captured in
+  `POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 3 (pydantic 2.14.1). The boundary safety of the E5
+  fix does not depend on pydantic's strip ordering: an accepted input cannot exceed the worker
+  2048-character budget under either ordering. Measured behaviour of the installed pydantic: it
+  **strips BEFORE the length checks** — a raw 2000-character input of which 9 are trailing
+  whitespace is accepted, stored as 1991, and forwarded as `QUERY_PREFIX + 1991` = 2048, which
+  is exactly inside the worker budget. Under the opposite ordering (length check on the
+  unstripped string) the behaviour would be stricter, not looser; under NEITHER ordering can an
+  accepted input exceed the worker budget. The old code path was byte-identical in what it
+  forwarded: constructing the old `EmbedRequest` re-stripped an already-stripped string, a no-op.
+  **This analysis narrows the E5 fix's residual risk but does NOT close this finding:** the DEP
+  finding stays OPEN — the pydantic version remains unpinned in `api/requirements.txt` while
+  `main.py` imports it directly, against that file's own "Exact pins, no ranges" rule. Pinning is
+  a RELEASE decision that changes the dependency set relative to the deployed image's provenance,
+  so it is carried to the operator, not applied here.
 
 ### What was NOT captured
 

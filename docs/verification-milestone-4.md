@@ -25,6 +25,8 @@
 > | **§12** | UNTESTED — six items, none of them softened |
 > | **§13** | The M4 acceptance criteria, and why the criterion's wording matters |
 > | **§14** | The eleven commits this milestone consists of |
+> | **§16** | Post-remediation addendum — supersedes the §1 and §12 statuses **without erasing them** |
+> | **§16.9** | Cross-reference: E5 fix deployed, no M4 status changed |
 >
 > **The headline verified facts, compactly.** CI run **`38646911142`** finished **SUCCESS with
 > all nine jobs green**, including `pip-audit --strict` (**zero vulnerabilities**) and
@@ -812,14 +814,14 @@ counts, not that the full CI log is retained.
 
 ### 16.5 Production deployment
 
-The currently deployed image is:
+The deployed image as of the 2026-10-22 release is:
 
 | Field | Value | Source |
 |---|---|---|
-| Image digest | `sha256:8cf759f688daad5c5fbcc8a4efb6101de1de0f8efdf18c70e6aa7a8cd99f6110` | `PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3; `PHASE-B-ROLLBACK-EVIDENCE.txt` §6 Step 10 |
-| Source revision | `6b37a780e293003ba952c3e9062e8c5d126639e9` | image OCI label; `PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3 |
-| Alembic head | `0001` | image OCI label; `PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3 |
-| `verify-deployment.sh` | exit 0, verdict AGREE/PROVENANCE AGREE/SCHEMA AGREE | `PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3; `PHASE-B-ROLLBACK-EVIDENCE.txt` §6 |
+| Image digest | `sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4` | `RELEASE-DEPLOY-EVIDENCE.txt` §IMAGE_DIGEST |
+| Source revision | `6cc54bc4c09182e37575c5fedb2ad57c71dc7d58` | image OCI label; `RELEASE-DEPLOY-EVIDENCE.txt` §PROVENANCE |
+| Alembic head | `0001` | image OCI label; `RELEASE-DEPLOY-EVIDENCE.txt` §SCHEMA |
+| `verify-deployment.sh` | exit 0, verdict AGREE/PROVENANCE AGREE/SCHEMA AGREE | `RELEASE-DEPLOY-EVIDENCE.txt` §VERIFY |
 
 Witness: `~/lemondrop-investigation/HANDOFF-20261021.md` §2;
 `~/lemondrop-investigation/PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3;
