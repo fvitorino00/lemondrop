@@ -390,13 +390,18 @@ criterion gets quietly resolved in whichever direction the result happens to poi
 > This section used to cite `docs/m4-plan.md` by line number. **That file is untracked**,
 > so a clean clone of any revision does not contain it, and a protocol that judges a
 > milestone against a sentence a second reader cannot reach is the worst kind of
-> dangling reference — which is what §10 G-1 records. A documentation repair pass has
-> since recorded the same substance in tracked files: **the acceptance criterion, its
-> operationalisation, the *weaker than it reads* finding and the recommended restatement
-> are all in `docs/verification-milestone-4.md` §13.1**, and **the walk-forward path
-> never having been walked end to end is in `docs/deployment.md` §10 item 18.** The
-> quotations above are unaltered; only the pointers to them were retargeted, and each
-> now names a location a clean clone can open.
+> dangling reference — which is what §10 G-1 records.
+>
+> > **2026-10-22 correction — SUPERSEDED.** `docs/m4-plan.md` was committed in `0e2761c`
+> > on 2026-10-17 and is now tracked; "untracked" and "a clean clone of any revision does
+> > not contain it" are false as written.
+>
+> A documentation repair pass has since recorded the same substance in tracked files:
+> **the acceptance criterion, its operationalisation, the *weaker than it reads* finding
+> and the recommended restatement are all in `docs/verification-milestone-4.md` §13.1**,
+> and **the walk-forward path never having been walked end to end is in
+> `docs/deployment.md` §10 item 18.** The quotations above are unaltered; only the
+> pointers to them were retargeted, and each now names a location a clean clone can open.
 
 ### ⚠️ The reviewer's kind — an agent run is a weaker proxy than a human run
 
@@ -1667,7 +1672,7 @@ individually, so that what was closed and what was not is checkable:
 
 | Gap | Closed by | What "closed" means here |
 |---|---|---|
-| **G-1** | `docs/verification-milestone-4.md` §13.1 records the acceptance criterion, its operationalisation and its restatement in a **tracked** document; and the citations to the untracked plan in **this** file were retargeted onto that section and onto `docs/deployment.md` §10 item 18. | **The first retarget did not fully close G-1 — two citations to the untracked plan survived it, outside this file** (`scripts/rollback.sh:50`, `.github/workflows/tests.yml:176`), **and this repair pass retargets both; with them retargeted, no tracked file cites either untracked path.** ❗ **The two untracked paths were not staged, added or modified — that is stated here because "closed" must not be read as "committed", and they remain untracked.** |
+| **G-1** | `docs/verification-milestone-4.md` §13.1 records the acceptance criterion, its operationalisation and its restatement in a **tracked** document; and the citations to the untracked plan in **this** file were retargeted onto that section and onto `docs/deployment.md` §10 item 18. | **The first retarget did not fully close G-1 — two citations to the untracked plan survived it, outside this file** (`scripts/rollback.sh:50`, `.github/workflows/tests.yml:176`), **and this repair pass retargets both; with them retargeted, no tracked file cites either untracked path.** ❗ **The two untracked paths were not staged, added or modified — that is stated here because "closed" must not be read as "committed", and they remain untracked.** *(2026-10-22 correction — SUPERSEDED: both paths were committed in `0e2761c` on 2026-10-17 and are now tracked; "remain untracked" is false as written.)* |
 | **G-2** — ⛔ blocking | `docs/deployment.md` §7.1.1, *Reading the live database revision — the complete procedure*. | The command that did not exist anywhere now exists, in a tracked document. This was the ⛔ gap. |
 | **G-6** | `docs/deployment.md` §7.1.1 and `docs/deployment.md` §10 item 11; `RUNBOOK.md` now points the endpoint, secret ARN and username at the discovery route. | **Resolved by route, not by picking a value** — a corrected value would go stale again and nothing would detect it. The authoritative source is named (`DBInstances[0].MasterUsername`). |
 | **G-7** | `docs/deployment.md` §3.4, *What a **tested revision** is*, plus the unpushed-HEAD trap it records. | The criterion's central term now has an operational definition. |
@@ -1860,6 +1865,9 @@ left blank and belongs to the assessor.**
 >   pass, `9b8fcf0` — see §12.** ❗
 >   **G-1's closure did not involve staging `docs/m3-study-guide/` or `docs/m4-plan.md`;
 >   both remain untracked, and nothing in this document may be read as committing them.**
+>
+> > **2026-10-22 correction — SUPERSEDED.** Both paths were committed in `0e2761c` on
+> > 2026-10-17 and are now tracked; "both remain untracked" is false as written.
 > - ❗ **NOTHING WAS DEPLOYED.** No AWS call, no SSM command, no container operation, no
 >   Terraform, no rollback. **This run must never be reported as a live-deployment
 >   demonstration.**

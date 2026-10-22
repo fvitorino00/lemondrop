@@ -442,10 +442,15 @@ The fix was proven against the **deployed** service through the public ALB.
     - **Per-tier results of the final local run** against a container built from the working
       tree, with the container's `main.py` SHA-256 proven equal to the working tree's: T1
       **149 passed**, T2 **28 passed**, T3 **31 passed**, full suite **208 passed** (plus
-      9 subtests). The verbatim commands, counts, image-hash proof and localhost proof are in
-      `/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 1 (the
-      evidence corpus lives outside the repository by project convention). The CI tier-classification
-      drift gate reproduces as PASS with `inventory=208 T1=149 T2=28 T3=31 classified=208`.
+      9 subtests). The T2, T3 and full-suite counts, the image-hash proof and the localhost proof
+      are in `/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 1
+      (the evidence corpus lives outside the repository by project convention). The T1 count and
+      the CI tier-classification drift gate are in
+      `/home/zaratustra0/lemondrop-investigation/POST-FIX-TEST-EVIDENCE.txt` (the evidence corpus
+      lives outside the repository by project convention): T1 = `149 passed`
+      (`POST-FIX-TEST-EVIDENCE.txt:340`, `============== 149 passed, 1 warning, 9 subtests passed in 0.92s ===============`);
+      the drift-gate line is `inventory=208 T1=149 T2=28 T3=31 classified=208`
+      (`POST-FIX-TEST-EVIDENCE.txt:111`, `tier-classification: PASS (0 problem(s))`).
     - **Strip-order analysis:** the boundary safety of the E5 fix was verified by measurement
       (`/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 3; the
       evidence corpus lives outside the repository by project convention): pydantic 2.14.1 strips

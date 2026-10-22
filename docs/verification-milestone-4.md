@@ -628,16 +628,19 @@ not pick a winner:
    capability be *demonstrated* or merely *documented* is exactly what the restatement in item 2
    settles and the original sentence does not.
 2. **The criterion was already flagged as weaker than it reads** — before any of this happened,
-   by the same untracked plan, which is where the quoted text below comes from: *"The
-   acceptance criterion is therefore weaker than it reads"*, with a recommended restatement as
-   *"A second engineer can deploy a tested revision to the running environment without manually
-   reconstructing the original deployment steps."* **The ambiguity is pre-identified there, not
-   manufactured here.** Note what the restatement changes: **"the original deployment steps"**
-   rather than **"the original environment."** Under the restated criterion, the walk-forward
-   path — `terraform apply` and a from-zero rebuild — is excluded, and **`docs/deployment.md`
-   §10 item 18 records, in a tracked document, that this path has never been walked end to end
-   from zero.** That fact existed only in the untracked plan; it is now recorded where a reader
-   can reach it.
+    by the same untracked plan (**2026-10-22 correction — SUPERSEDED:** `docs/m4-plan.md` was
+    committed in `0e2761c` on 2026-10-17 and is now tracked; "untracked" is false as written),
+    which is where the quoted text below comes from: *"The acceptance criterion is therefore
+    weaker than it reads"*, with a recommended restatement as *"A second engineer can deploy a
+    tested revision to the running environment without manually reconstructing the original
+    deployment steps."* **The ambiguity is pre-identified there, not manufactured here.** Note
+    what the restatement changes: **"the original deployment steps"**
+    rather than **"the original environment."** Under the restated criterion, the walk-forward
+    path — `terraform apply` and a from-zero rebuild — is excluded, and **`docs/deployment.md`
+    §10 item 18 records, in a tracked document, that this path has never been walked end to end
+    from zero.** That fact existed only in the untracked plan (**2026-10-22 correction —
+    SUPERSEDED:** `docs/m4-plan.md` was committed in `0e2761c` on 2026-10-17 and is now tracked;
+    "untracked" is false as written); it is now recorded where a reader can reach it.
 3. **A command-identification exercise would not close it either.** Even if a second party
    later reads the runbook and names the right commands, that is evidence they can *find* the
    commands. **The criterion is about executing a deployment**, and a correct command list
@@ -678,7 +681,7 @@ problem any more — it is an infrastructure one, and nothing in this pass creat
 | Real rollback by digest | **VERIFIED** — §9 |
 | **Redundant-deploy guard** | **UNTESTED — the guard does not exist** — §8.2 |
 | **Legacy rollback branch** | **UNTESTED, known-defective** — §12.2 |
-| **Second-engineer acceptance criterion** | **UNTESTED** — §13.1. **The criterion text is recorded in this section, because the document it came from is untracked.** |
+| **Second-engineer acceptance criterion** | **UNTESTED** — §13.1. **The criterion text is recorded in this section, because the document it came from is untracked.** *(2026-10-22 correction — SUPERSEDED: `docs/m4-plan.md` was committed in `0e2761c` on 2026-10-17 and is now tracked; "is untracked" is false as written.)* |
 | **What "a tested revision" is** | **DEFINED, after the walkthrough found it undefined** — `docs/deployment.md` §3.4 |
 | **A throwaway host to rehearse a rollback on** | **NONE DESCRIBED** — `docs/deployment.md` §10 item 17, conditional on the variant |
 | **Provisioning the stack from zero** | **NEVER WALKED END TO END** — `docs/deployment.md` §10 item 18 |
@@ -823,11 +826,11 @@ The deployed image as of the 2026-10-22 release is:
 | Alembic head | `0001` | image OCI label; `~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §VERIFY (labels on the image) |
 | `verify-deployment.sh` | exit 0, verdict AGREE/PROVENANCE AGREE/SCHEMA AGREE | `~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §VERIFY (AGREE verdicts) |
 
-Witness: `~/lemondrop-investigation/HANDOFF-20261021.md` §2 (release handoff);
-`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §DEPLOY and §VERIFY (the 2026-10-22
-deploy command, the image it pulled, and the post-deploy verification record). The
-PHASE-A/PHASE-B artefacts in the same corpus record the earlier M4-cycle image
-(`sha256:8cf759f6…`) and are not the witness for the 2026-10-22 image in the table above.
+Witness: `~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §DEPLOY and §VERIFY (the
+2026-10-22 deploy command, the image it pulled, and the post-deploy verification record).
+`~/lemondrop-investigation/HANDOFF-20261021.md` §2 and the PHASE-A/PHASE-B artefacts in the
+same corpus record the earlier M4-cycle image (`sha256:8cf759f6…` / `6b37a78…`) and are not
+the witness for the 2026-10-22 image in the table above.
 
 ### 16.6 Rollback rehearsal
 

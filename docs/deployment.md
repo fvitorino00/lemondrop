@@ -87,11 +87,9 @@ $ git status --short --branch
 
 `scripts/` is **clean**. The digest-pinned compose default and `.env.example`'s `API_IMAGE` are committed. The untracked files listed above are documentation, not deploy tooling.
 
-> ⚠️ **The two `docs/` paths in that listing have never been committed, and nothing tracked may cite them.**
+> ⚠️ **The two `docs/` paths in that listing were untracked when the capture was taken, but they are tracked now.** Both `docs/m3-study-guide/` and `docs/m4-plan.md` were committed in `0e2761c` ("docs: preserve the M4 and M5 acceptance records") on 2026-10-17, so a clean clone of the current repository contains both. `git ls-files docs/m4-plan.md` lists it, and `git status --porcelain` reports no `??` line for either path.
 >
-> `docs/m3-study-guide/` and `docs/m4-plan.md` are **untracked** — `git status` reports them as `??`, and a clean clone of this repository does not contain either. **The listing above is a historical capture and it is stale in two ways**: this document was itself untracked when it was taken, and those two paths are still untracked now. It is kept because §0.4 is about what the capture proved at the time.
->
-> **The consequence is a rule, not a curiosity: a tracked file may not point a reader at either path.** A citation to an untracked document is a dangling reference — the reader follows it and arrives at nothing, and if the citation was to a *criterion*, the criterion is unavailable to everyone who was not already holding the file. Every such citation in this repository has been replaced with a tracked document that carries the substance. **Nothing here was fixed by committing the two files: their untracked status is a finding about the repository, not a licence to change it.**
+> **The listing above is a historical capture and is kept because §0.4 is about what the capture proved at the time.** The rule it illustrates — that a tracked file may not cite an untracked document — still holds; the specific case is now resolved because the paths are tracked. Every citation that was retargeted into tracked documents remains retargeted.
 
 **What this changes operationally:** the host's `git pull --ff-only` is now a real delivery path for the deploy scripts (§2.3, Option A), and the digest pinned in `docker-compose.yml` and `.env.example` is on `main` rather than being a local-only belief (§3.2). The checkout on the host still has to actually be a checkout, and still has to have been pulled — confirm with §2.2 rather than assuming.
 
