@@ -422,7 +422,12 @@ The fix was proven against the **deployed** service through the public ALB.
       probe failed with `DID NOT RAISE ValidationError` and the ASGI-level boundary test failed
       with `AssertionError: Internal Server Error; assert 500 == 422`. The verbatim output is
       captured in `/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt`
-      Capture 2 (the evidence corpus lives outside the repository by project convention).
+      Capture 2 (the evidence corpus lives outside the repository by project convention). Capture 2
+      states two limits: "A minimal model-level probe (`tests/test_red_model_probe.py`) was added
+      because the current `test_request_models.py` imports `MAX_SEARCH_QUERY_CHARS` at module load
+      and therefore cannot even be collected against the pre-fix main.py. The probe asserts exactly
+      what the record claims: that a 2048-character `SearchRequest.query` should raise
+      `ValidationError".
     - **Red/green discrimination experiment:** with the boundary loosened back to 2048 while the
       constant stayed, the two boundary tests went red. The OLD suite
       (`api/tests/test_request_models.py` at `04ab05d^`) passed **50/50** against the unfixed
@@ -448,9 +453,9 @@ The fix was proven against the **deployed** service through the public ALB.
       the CI tier-classification drift gate are in
       `/home/zaratustra0/lemondrop-investigation/POST-FIX-TEST-EVIDENCE.txt` (the evidence corpus
       lives outside the repository by project convention): T1 = `149 passed`
-      (`POST-FIX-TEST-EVIDENCE.txt:340`, `============== 149 passed, 1 warning, 9 subtests passed in 0.92s ===============`);
+      (`~/lemondrop-investigation/POST-FIX-TEST-EVIDENCE.txt:340`, `============== 149 passed, 1 warning, 9 subtests passed in 0.92s ===============`);
       the drift-gate line is `inventory=208 T1=149 T2=28 T3=31 classified=208`
-      (`POST-FIX-TEST-EVIDENCE.txt:111`, `tier-classification: PASS (0 problem(s))`).
+      (`~/lemondrop-investigation/POST-FIX-TEST-EVIDENCE.txt:111`, `tier-classification: PASS (0 problem(s))`).
     - **Strip-order analysis:** the boundary safety of the E5 fix was verified by measurement
       (`/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 3; the
       evidence corpus lives outside the repository by project convention): pydantic 2.14.1 strips
@@ -794,7 +799,7 @@ so the same variables appear 48 lines lower there.
 - The future hop-by-hop recording plan (`docs/end-to-end-demo.md` D04) — a
   plan, not an executed recording.
 - The README "all passing against the running stack" claim (`README.md` A19) —
-  corroborated by `LOCAL-VERIFICATION-REPORT.md:18` (T3 28/28), but not
+  corroborated by `~/lemondrop-investigation/LOCAL-VERIFICATION-REPORT.md:18` (T3 28/28), but not
   re-executed here.
 
 This audit does **not** establish that the stack runs, that the README quick

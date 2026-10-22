@@ -67,3 +67,13 @@ crash.*.log
 
 # ── Agent workflow state ─────────────────────────────────────────────────
 .workflows/
+
+# ── Agentic instructions / scratch ─────────────────────────────────────────
+# Editor- and agent-specific instruction files and scratch directories. These
+# are not product files and must never be swept into a release commit by a
+# blanket `git add`.
+AGENTS.md
+.agents/
+.cursor/
+.claude/
+copilot-instructions.md

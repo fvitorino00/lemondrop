@@ -583,8 +583,8 @@ lists it, and it was committed in `0e2761c` ("docs: preserve the M4 and M5 accep
 records") on 2026-10-17 — so a clean clone of this repository contains it. Every
 tracked file that cited it by line number, **including this one**, now resolves to a file
 a second reader can reach. **So the sentence is recorded here, in a tracked document,
-and this section is its home.** `docs/deployment.md` §6.5 cites this section rather than
-a file that is not there.
+and this section is its home.** `docs/deployment.md` §6.5 cites this section, and that
+file is also present in a clean clone.
 
 **The operationalisation of the same sentence, as written:**
 
