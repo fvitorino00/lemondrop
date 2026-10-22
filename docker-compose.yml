@@ -478,7 +478,7 @@ services:
     # fresh boot straight at `docker.io/library/lemondrop-api`. The local
     # developer's two-command override is documented beside that line in
     # `.env.example`.
-    image: ${API_IMAGE:-ghcr.io/fvitorino00/lemondrop-api@sha256:8cf759f688daad5c5fbcc8a4efb6101de1de0f8efdf18c70e6aa7a8cd99f6110}
+    image: ${API_IMAGE:-ghcr.io/fvitorino00/lemondrop-api@sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4}
 
     # The only `ports:` key in this file. Host side from .env so the door can be
     # moved without editing this file; container side from .env to match the port
