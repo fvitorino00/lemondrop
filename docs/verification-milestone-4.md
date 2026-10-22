@@ -733,3 +733,159 @@ must not ask a reader to do casually.
 run against a real host, it recorded what it actually found, it rolled back, and it kept a
 manifest digest and an image config ID distinct without mistaking one for a corrupted copy of
 the other (§9.2). **What has not happened is anyone else using it.** §13.
+
+---
+
+## 16. Post-remediation addendum — 2026-10-21
+
+This section records the state of the M4 deliverables after the remediation work described in
+`~/lemondrop-investigation/REMEDIATION-AND-VERIFICATION-REPORT.md` and
+`~/lemondrop-investigation/LOCAL-VERIFICATION-REPORT.md`, and after the production deploy/rollback
+rehearsal captured in `~/lemondrop-investigation/PHASE-A-DEPLOY-EVIDENCE.txt` and
+`~/lemondrop-investigation/PHASE-B-ROLLBACK-EVIDENCE.txt`. It supersedes the earlier statuses below
+**without erasing** the original sections, which were true when written.
+
+### 16.1 Redundant-deploy guard
+
+The redundant-deploy guard is now implemented in `scripts/deploy.sh` and is regression-tested by
+the stubbed harness `scripts/test-deploy-rollback.sh` (section `[2]`). The guard compares the
+target digest to the recorded `IMAGE_DIGEST` and refuses with `EX_REFUSED` before any tag, pull,
+`.env` write, or service recreation. It was **not rehearsed against a real host**; the evidence is
+the stubbed harness only.
+
+Witness: `scripts/test-deploy-rollback.sh` lines 152–173;
+`~/lemondrop-investigation/REMEDIATION-AND-VERIFICATION-REPORT.md` §3.2 and §8.
+
+### 16.2 Legacy rollback branch refusal
+
+The legacy M3-era rollback branch in `scripts/rollback.sh` now refuses at the top with
+`EX_REFUSED` before any mutation. The stubbed harness asserts that the branch cannot silently
+resolve to the digest-pinned compose default and that `.env` is not stripped. It was **deliberately
+not run live**.
+
+Witness: `scripts/test-deploy-rollback.sh` lines 184–200;
+`~/lemondrop-investigation/REMEDIATION-AND-VERIFICATION-REPORT.md` §3.3 and §8.
+
+### 16.3 Deploy/rollback test coverage and assertion count
+
+The deploy/rollback/verify regression suite is `scripts/test-deploy-rollback.sh`. The script's
+count is **environment-dependent** because of a conditional shellcheck block:
+
+- 19 functional assertions (`check`, `has`, `hasnt`) in sections `[2]`–`[5]`;
+- 4 `bash -n` syntax assertions in section `[1]`;
+- a conditional shellcheck block that contributes **4 assertions** when `shellcheck` is installed,
+  or **1 skip assertion** when it is not.
+
+Therefore:
+
+- In an environment **without** shellcheck, the script reports **24 passed**.
+- In the CI environment that pins **shellcheck 0.11.0**, the script reports **27 passed**.
+
+`~/lemondrop-investigation/LOCAL-VERIFICATION-REPORT.md` §6 and
+`~/lemondrop-investigation/REMEDIATION-AND-VERIFICATION-REPORT.md` §3.5/§5 record the **24 passed**
+run and explicitly note that shellcheck was not installed locally. That is accurate for the
+environment in which they ran.
+
+`~/lemondrop-investigation/HANDOFF-20261021.md` §3 states "27 assertions" without noting the
+environment dependency. That figure is correct only when shellcheck is present. Because the
+repository's CI workflow installs shellcheck 0.11.0 immediately before running the script
+(`.github/workflows/tests.yml` lines 590–605), 27 is the expected count in CI. A captured CI run
+record for this job **does exist**: `~/lemondrop-investigation/SHELLCHECK-REPRODUCTION.txt` §5 cites
+CI run **39031189284** and reports counts of **23 passed, 4 failed**, exactly matching the local
+reproduction with shellcheck 0.11.0. The record is a captured reproduction artefact, not a retained
+CI job-log download, so it establishes that the job ran and what its counts were, not that the full
+CI log is retained. This discrepancy is recorded here rather than promoted to a green claim.
+
+Method: manual line-by-line count of every `check`, `has`, `hasnt`, `ok`, and `bad` call in
+`scripts/test-deploy-rollback.sh`, treating the `for` loops as one call per iteration.
+
+### 16.4 ShellCheck in CI
+
+ShellCheck is pinned to **0.11.0** in the CI workflow (`.github/workflows/tests.yml` lines
+590–600). The same job runs `scripts/test-deploy-rollback.sh`, whose conditional shellcheck block
+exercises all four deploy/rollback scripts (`deploy.sh`, `rollback.sh`, `verify-deployment.sh`,
+`lib/deploy-lib.sh`) when shellcheck is present. A captured CI run record **does exist**:
+`~/lemondrop-investigation/SHELLCHECK-REPRODUCTION.txt` §5 cites CI run **39031189284** with counts
+**23 passed, 4 failed**, matching the local shellcheck 0.11.0 reproduction. The record is a captured
+reproduction artefact, not a retained CI job-log download; it is evidence the job ran with those
+counts, not that the full CI log is retained.
+
+### 16.5 Production deployment
+
+The currently deployed image is:
+
+| Field | Value | Source |
+|---|---|---|
+| Image digest | `sha256:8cf759f688daad5c5fbcc8a4efb6101de1de0f8efdf18c70e6aa7a8cd99f6110` | `PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3; `PHASE-B-ROLLBACK-EVIDENCE.txt` §6 Step 10 |
+| Source revision | `6b37a780e293003ba952c3e9062e8c5d126639e9` | image OCI label; `PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3 |
+| Alembic head | `0001` | image OCI label; `PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3 |
+| `verify-deployment.sh` | exit 0, verdict AGREE/PROVENANCE AGREE/SCHEMA AGREE | `PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3; `PHASE-B-ROLLBACK-EVIDENCE.txt` §6 |
+
+Witness: `~/lemondrop-investigation/HANDOFF-20261021.md` §2;
+`~/lemondrop-investigation/PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3;
+`~/lemondrop-investigation/PHASE-B-ROLLBACK-EVIDENCE.txt` §6 (Step 10) and §8.
+
+### 16.6 Rollback rehearsal
+
+A real rollback was rehearsed on 2026-10-17 and the old image was proven to have run.
+
+- Rollback target: `sha256:6036f7247fbb1f4bb7af8b6d88d80345df2c133c7005edba0dcfcd003d73dbc1`
+  (SSM Step 7, command `8af4b275-b721-4a06-b7d8-21342ef5bdde`, exit 0).
+- The old image came up healthy: `/health`, `/health/live`, `/health/ready` all HTTP 200, and
+  `POST /search` returned `support-recycle-bin-file-recovery` first (SSM Step 8,
+  `b6eee8d2-a29a-451a-8eb9-cf4125ab7c51`, exit 0).
+- **Decisive behaviour flip:** on the old image, a 2049-character `POST /embed` request returned
+  HTTP **502** with the worker-internal detail
+  `"input (1026 tokens) is too large to process... current batch size: 512"`. The repaired image
+  returns HTTP **422** for input over 2048 characters and does not echo worker internals.
+  This flip proves the old image actually ran during the rehearsal.
+- Step 8 retry: the first attempt to print the OCI labels failed with
+  `template parsing error: template: :1: bad character U+0024 '$'`; a separate Step 8 retry
+  (`843420d7-bb2e-4fc4-adba-e398956d1d37`) successfully captured the old image revision label
+  `1eba3b600f1551868318e401d9479a27298c8a35` and Alembic head `0001`.
+- The repaired image was redeployed (SSM Step 9, `424a2391-2beb-45f3-ba7c-fbfe1a85a83b`, exit 0)
+  and final verification passed (SSM Step 10, `ad370083-40be-4313-bd0f-1675c7462f0d`, exit 0).
+
+Witness: `~/lemondrop-investigation/PHASE-B-ROLLBACK-EVIDENCE.txt` §2–§7;
+`~/lemondrop-investigation/HANDOFF-20261021.md` §2.
+
+### 16.7 Limitations preserved
+
+Both limitations that keep M4 open are unchanged by this addendum:
+
+1. **Second-engineer criterion — UNTESTED and NOT MET.** No independent second-engineer transcript
+   exists. The operator-directed, agent-executed rehearsal recorded here does not satisfy the
+   criterion as operationalised in §13.1.
+2. **Public-ALB health check from the authorized workstation was NOT performed by the agent during
+   the M4 cycle.** That check was performed on **2026-10-21** during the client-perspective phase
+   and is recorded in `docs/verification-milestone-5.md`, not as M4 evidence.
+
+### 16.8 Evidence index
+
+This addendum draws on the following witness files:
+
+- `~/lemondrop-investigation/HANDOFF-20261021.md`
+- `~/lemondrop-investigation/PHASE-A-DEPLOY-EVIDENCE.txt`
+- `~/lemondrop-investigation/PHASE-B-ROLLBACK-EVIDENCE.txt`
+- `~/lemondrop-investigation/REMEDIATION-AND-VERIFICATION-REPORT.md`
+- `~/lemondrop-investigation/LOCAL-VERIFICATION-REPORT.md`
+- `scripts/test-deploy-rollback.sh`
+- `.github/workflows/tests.yml`
+
+### 16.9 Cross-reference added after the M4 cycle — 2026-10-21
+
+**This note adds a cross-reference only; it does not alter any M4 status, any
+witness above, or the two limitations preserved in §16.7.**
+
+The image this addendum describes — digest `sha256:8cf759f688daad5c5fbcc8a4efb6101de1de0f8efdf18c70e6aa7a8cd99f6110`,
+source revision `6b37a780e293003ba952c3e9062e8c5d126639e9` (§16.5) — was found,
+**after the M4 cycle**, to carry a **CRITICAL defect in `/search`**: a
+`POST /search` request with a query of exactly 2048 characters returns an opaque
+HTTP 500 (`Internal Server Error`, `text/plain`). The fix for this defect
+(candidate fault **E5**, root cause confirmed) exists **in the local tree only**;
+**the deployed image still carries the defect** and still returns the opaque 500
+for a 1992-to-2048-character query. A new image build and a deployment are
+required to carry the fix. The full symptom capture, fix record and verification
+evidence are in `docs/verification-milestone-5.md` §8 (the E5 entry and the
+dated 2026-10-21 entry there). No M4 status above is changed by this defect; M4
+remains subject to the limitations in §16.7 exactly as recorded.

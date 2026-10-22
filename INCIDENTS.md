@@ -250,6 +250,29 @@ baseline, and do not treat "the last deployed digest" here as current without
 re-running §6.2's read-only tools — the committed digests go stale on every merge
 (`docs/deployment.md` §10 item 8).
 
+**2026-10-17 correction — a newer verified baseline exists.** The table above
+remains the M4-session baseline and is **superseded, not deleted**. The current
+verified baseline is:
+
+| Field | Value |
+|---|---|
+| Record | `~/lemondrop-investigation/PHASE-B-ROLLBACK-EVIDENCE.txt` Step 10; `~/lemondrop-investigation/HANDOFF-20261021.md` §2 |
+| Digest verdict | **AGREE** |
+| Provenance verdict (revision label vs record) | **AGREE** |
+| Schema verdict (`ALEMBIC_HEAD`) | **AGREE** |
+| Readiness | **HTTP 200** |
+| Semantic search | **PASS** |
+| Host checkout | **`3e298f8`** |
+| Running image digest | **`sha256:8cf759f6…f6110`** |
+| Image source revision | **`6b37a78…`** |
+| Live database revision | **`0001`** |
+| Date | 2026-10-17 |
+
+This newer baseline was produced by the operator-directed, agent-executed Phase-B
+rollback rehearsal; it is not an independent second-engineer acceptance and does
+not close M4 (`docs/verification-milestone-4.md` §13.1 remains UNTESTED and NOT
+MET).
+
 ### 6.2 Inventory of diagnostic tools
 
 What exists today, and — the part that matters — what each one does **not** tell
@@ -294,10 +317,30 @@ These are not style notes; each one destroys evidence or makes a record wrong.
    image that is running and the intended previous image is orphaned. It was
    **executed** on the live host during M4. Status **UNFIXED**.
    `docs/deployment.md` §10 item 16; `docs/verification-milestone-4.md` §8.2.
+
+   **2026-10-17 correction — SUPERSEDED.** The redundant-deploy guard is now
+   implemented in `scripts/deploy.sh` and is regression-tested in
+   `scripts/test-deploy-rollback.sh` section `[2]`. The guard compares the target
+   digest to the recorded `IMAGE_DIGEST` and refuses with `EX_REFUSED` (exit 2)
+   before any tag, pull, `.env` write, or service recreation. It was exercised live
+   during the Phase-B cycle, where a redundant redeploy was refused (see
+   `~/lemondrop-investigation/PHASE-B-ROLLBACK-EVIDENCE.txt` Step 9 and
+   `~/lemondrop-investigation/HANDOFF-20261021.md` §2). The historical defect
+   description above is kept visible; this dated entry supersedes it.
 3. **Do not rehearse the legacy rollback branch** of `rollback.sh`. It can start
    an image that is not the rollback target and its own checks will not notice.
    It is **UNSAFE and UNVERIFIED**; do not construct the state that selects it.
    `docs/deployment.md` §10 item 15; `docs/verification-milestone-4.md` §12.2.
+
+   **2026-10-17 correction — SUPERSEDED.** The legacy M3-era branch now refuses
+   **before any mutation**, unconditionally and with no bypass
+   (`scripts/rollback.sh:230-258`), and is regression-tested in
+   `scripts/test-deploy-rollback.sh` section `[4]`
+   (`~/lemondrop-investigation/RELEASE-READINESS-REPORT.md` §4). The historical
+   warning above is kept visible; this dated entry supersedes it. The residual
+   caution remains sound: the branch has still never been deliberately run live,
+   and the warning against constructing the state that selects it on a live host
+   still applies.
 4. **Do not try to run a migration from the host.** The EC2 instance role can
    read only the application database secret, never the RDS master, so the
    `lemondrop_app` role has no DDL rights and a migration cannot run there.
@@ -334,3 +377,26 @@ The reports above are the read-only pair and say nothing about `/search`; if the
 incident is in retrieval, add the recorded search probe from
 `docs/verification-milestone-3.md` §8.2 as a third measurement, from a single
 consistent vantage point, and note the ALB timeout caveat (§6.2).
+
+## 7. Candidate fault register — NOT incident records
+
+This section was previously `§5.4 Candidate faults observed (not incident records)`;
+it was moved to a top-level section on 2026-10-21 so that no subsection under the
+incident-record heading could be mistaken for an incident record.
+
+On 2026-10-21 the client-perspective session captured the candidate faults below.
+Their current status in `docs/verification-milestone-5.md` §8 is:
+
+| ID | Description | Severity in §8 | Current status |
+|---|---|---|---|
+| **E5** | `/search` 2048-character query → opaque HTTP 500 | **CRITICAL** | Fixed in the local tree on 2026-10-21 (root cause confirmed; boundary now 1991; see `docs/verification-milestone-5.md` §8). **NOT deployed** — the deployed image (`8cf759f6…`, revision `6b37a78…`) still carries the defect and still returns the opaque 500 for a 1992-to-2048-character query; a new image build and deployment are required. |
+| **H2** | `/search` collection with trailing whitespace echoes the wrong collection | **WITHDRAWN-AS-RECORDED** (was BLOCKING) | Refuted by 2026-10-21 controlled A/B reproduction; trailing space is stripped consistently for lookup and echo. |
+| **A8** | NUL byte and control characters in a collection value reach a 503 path | **MINOR** | Open observation. |
+| **A14** | 990 KB `/embed` body echoed back in the 422 response | **COSMETIC** | Open observation. |
+| **E1/E2** | `/embed` 502 on low-density 2047/2048-character input | **MINOR** | Documented residual observed live. |
+
+These are **NOT incident records**. None of them was produced by an operator-driven
+fault exercise with a pre-recorded hypothesis, a broken state captured before
+correction, a smallest-defensible correction, and an identical read-only pair
+after recovery. The three required incident records therefore remain at **0 of 3**,
+pending an operator-led exercise.

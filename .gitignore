@@ -64,3 +64,6 @@ crash.*.log
 # behaviour change underneath the operator with no diff anywhere to show for it.
 # The copy under `infra/bootstrap/` is committed alongside this rule for the
 # same reason.
+
+# ── Agent workflow state ─────────────────────────────────────────────────
+.workflows/

@@ -73,7 +73,7 @@ terraform {
     bucket       = "lemondrop-tfstate-filipe"
     key          = "lemondrop/dev/terraform.tfstate"
     region       = "eu-west-1"
-    use_locking  = true
+    use_lockfile = true
   }
 }
 ```

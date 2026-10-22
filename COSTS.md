@@ -163,7 +163,7 @@ milestone, which requires cost to be estimated *before* provisioning against an
 *approved* budget.**
 
 - The credit situation is recorded above: **$120 in credits, expiring April 4,
-  2027** — roughly 1.6 months at the estimated burn.
+  2027** — roughly 1.5 months at the estimated burn.
 - **No AWS Budgets resource exists.** A `grep` of `infra/` for `aws_budgets` or
   `budget` returns **prose only** — that is, the word "Budget" in
   `infra/README.md`'s "budget for the resources that exist but are idle", and

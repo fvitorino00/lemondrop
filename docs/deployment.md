@@ -7,7 +7,7 @@ Every claim in this document is either (a) read directly out of a file in this r
 
 **A note on citations, because a stale citation is worse than none.** Line numbers are given for files that are effectively frozen — chiefly `infra/compute.tf` (§9.2 declares any edit to it replaces the instance), plus `infra/iam.tf`, `infra/variables.tf`, `infra/outputs.tf`, `api/app/main.py` and `RUNBOOK.md` — **and, deliberately, for `scripts/**` as well.**
 
-**The `scripts/**` line numbers are deliberate and load-bearing, and an earlier draft of this note said the opposite.** §4.2.1, §6.2 and §10 items 15 and 16 exist to tell an operator exactly **which line does the damage** — `deploy.sh:944` reading `prev_digest` out of the record, `deploy.sh:969` writing it back as `PREVIOUS_IMAGE_DIGEST`, `rollback.sh:238` re-tagging under the bare `lemondrop-api` name, `rollback.sh:265-281` stripping `API_IMAGE` from `.env`. **A function name alone would not point at *the line that must not be reached*, which on this document is the whole point of those sections**, so those citations are numbers on purpose, not a lapse from the rule the draft stated.
+**The `scripts/**` line numbers are deliberate and load-bearing, and an earlier draft of this note said the opposite.** §4.2.1, §6.2 and §10 items 15 and 16 exist to tell an operator exactly **which line does the damage** — `deploy.sh:990` reading `prev_digest` out of the record, `deploy.sh:1029` writing it back as `PREVIOUS_IMAGE_DIGEST`, `rollback.sh:238` re-tagging under the bare `lemondrop-api` name, `rollback.sh:265-281` stripping `API_IMAGE` from `.env`. **A function name alone would not point at *the line that must not be reached*, which on this document is the whole point of those sections**, so those citations are numbers on purpose, not a lapse from the rule the draft stated.
 
 **What changed is not whether to cite lines, but how to keep them from rotting.** Every `scripts/**` line citation is paired with a function name and, where it matters, the quoted words, so a reader can re-resolve it if the number has moved: `alembic_head_at_revision()`, `schema_gate()`, the `PREVIOUS_IMAGE_DIGEST=` write, the `removed the API_IMAGE key from .env` message. **Trust the anchor over the number: if they disagree, the number is stale and the anchor is right.** The empirical caution the earlier draft gave still applies — those four scripts grew by roughly 300 lines between this document's first draft and the commit that landed them, and every number in that draft silently stopped resolving while still *looking* correct — which is why a `scripts/**` line citation here is never trusted on its own, and why the anchors that accompany them must stay.
 
@@ -240,7 +240,7 @@ sudo chmod 0644 /opt/lemondrop/scripts/lib/deploy-lib.sh   # sourced, not execut
 ⚠️ **An earlier draft of this section said the gate "needs the target commit's source tree present in `/opt/lemondrop`", full stop. That is true only of the unlabelled image, and §4.4 and §4.5 say the correct thing — this section was the outlier.** Read from the code:
 
 - **Unlabelled image — the tree is required.** On the last-resort path, when the image carries no `org.lemondrop.alembic-head` label, `resolve_deploy_facts()` calls `alembic_head_at_revision()` and fails if the tree cannot answer (`deploy-lib.sh`, `resolve_deploy_facts()`, the label-absent `else` branch at `deploy-lib.sh:766-771`).
-- **Labelled image — the tree is optional, on both passes.** The authoritative gate runs on the label (`deploy.sh` step 6c). The early pre-pull gate consults the tree only when an operator supplied a revision, and when the tree cannot answer it prints *"Skipping the pre-pull schema gate"* and **continues** (`deploy.sh:793-826`; the continuing message is at `deploy.sh:816`, and `deploy.sh`'s own comment says the check "saves a download by refusing early" and "the decision belongs to the authoritative gate after the pull"). The one other use — a cross-check of the label against the tree at the named revision — is wrapped in `2>/dev/null || true`, so a `--depth 1` clone that cannot answer is not an error (`deploy-lib.sh:787`).
+- **Labelled image — the tree is optional, on both passes.** The authoritative gate runs on the label (`deploy.sh` step 6c). The early pre-pull gate consults the tree only when an operator supplied a revision, and when the tree cannot answer it prints *"Skipping the pre-pull schema gate"* and **continues** (`deploy.sh:839-872`; the continuing message is at `deploy.sh:862`, and `deploy.sh`'s own comment says the check "saves a download by refusing early" and "the decision belongs to the authoritative gate after the pull"). The one other use — a cross-check of the label against the tree at the named revision — is wrapped in `2>/dev/null || true`, so a `--depth 1` clone that cannot answer is not an error (`deploy-lib.sh:787`).
 
 **So the check below matters for an unlabelled image, and for the cross-check when you choose to pass the revision** (§4.4). It is not a prerequisite for the ordinary one-argument deploy:
 
@@ -450,40 +450,46 @@ Pay attention to the `── do they agree? ──` section. `AGREE` means the r
 
 If there is no usable record, the script says so and adds: "scripts/rollback.sh would refuse." That is true; §7.1 covers it.
 
-### 4.2.1 ⚠️ UNFIXED — deploying the digest that is already running destroys the rollback pointer
+### 4.2.1 FIXED — `deploy.sh` refuses a redundant deploy before any mutation
 
-**This section is here because it is the last thing read before §4.3, not because it is the last thing that matters.** Running `deploy.sh` with the digest that is **already running** is not a no-op, and nothing in the script stops it. There is **no redundant-deploy guard**: `deploy.sh` contains no comparison of the target digest against the running image, anywhere. The deploy runs to completion, verifies, prints the green `DEPLOYED` banner, and exits 0 — leaving the record **self-referential**, with `IMAGE_DIGEST` and `PREVIOUS_IMAGE_DIGEST` naming the same image.
+**This section is here because it is the last thing read before §4.3, not because it is the last thing that matters.** Running `deploy.sh` with the digest that is **already running** is now refused before anything is mutated. A redundant-deploy guard exists at `deploy.sh:759-780`: if the target digest equals the recorded `IMAGE_DIGEST`, the script exits `EX_REFUSED` without tagging, pulling, switching, or writing the record. A redundant deploy therefore cannot leave the record self-referential.
 
-**This is not hypothetical. It happened on the live EC2 host during the Milestone 4 acceptance rehearsal.** `deploy.sh` was run twice against the same digest, and the second run overwrote the rollback pointer with the digest it had just deployed. `docs/verification-milestone-4.md` §8.2 is the record, and §10 item 3 of that document carries it into the list of what its green verdicts do not mean.
+**This happened before the guard was implemented.** On the live EC2 host during
+the Milestone 4 acceptance rehearsal, `deploy.sh` was run twice against the same
+digest, and the second run overwrote the rollback pointer with the digest it had
+just deployed. The guard was later implemented and regression-tested
+(`docs/verification-milestone-4.md` §8.2); the table below explains the mechanism
+the guard now prevents.
 
 **What a redundant deploy does, in order.** Nothing in this table is conditional. It is the whole of what `deploy.sh` does when the target is the running digest:
 
 | Step | What happens | Reference |
 |---|---|---|
-| capture | Tags a **new** timestamped rollback tag — `lemondrop-api:rollback-<UTCstamp>` — on the image that is **already running**. A second tag naming the same bytes, not a second image | `deploy.sh:305-308`, from `PREV_IMAGE_ID` read at `deploy.sh:293` |
-| pull | Pulls the image again. Same bytes; a full download to arrive where it started | `deploy.sh:846` |
-| switch | Rewrites `API_IMAGE` in `.env`, then **recreates the api container** — `compose up -d --no-build --no-deps --force-recreate api`. Connections dropped, models untouched, and up to a **300 s** readiness wait for a service that never changed (`LEMDROP_READY_TIMEOUT`, `deploy-lib.sh:67`) | `deploy.sh:913`, then `deploy.sh:925` |
-| record | Re-points `ROLLBACK_TAG` at the image that is running now, and writes the record with `IMAGE_DIGEST` and `PREVIOUS_IMAGE_DIGEST` **naming the same image** | `deploy.sh:953`, `deploy.sh:967`, `deploy.sh:961`, `deploy.sh:969` |
+| capture | Tags a **new** timestamped rollback tag — `lemondrop-api:rollback-<UTCstamp>` — on the image that is **already running**. A second tag naming the same bytes, not a second image | `deploy.sh:312`, from `PREV_IMAGE_ID` read at `deploy.sh:299` |
+| pull | Pulls the image again. Same bytes; a full download to arrive where it started | `deploy.sh:892` |
+| switch | Rewrites `API_IMAGE` in `.env`, then **recreates the api container** — `compose up -d --no-build --no-deps --force-recreate api`. Connections dropped, models untouched, and up to a **300 s** readiness wait for a service that never changed (`LEMDROP_READY_TIMEOUT`, `deploy-lib.sh:67`) | `deploy.sh:959`, then `deploy.sh:971` |
+| record | Re-points `ROLLBACK_TAG` at the image that is running now, and writes the record with `IMAGE_DIGEST` and `PREVIOUS_IMAGE_DIGEST` **naming the same image** | `deploy.sh:1017`, `deploy.sh:1027`, `deploy.sh:1028`, `deploy.sh:1029` |
 
-**Why the record becomes self-referential — the two lines that do the damage.** `deploy.sh:944`:
+**Why the record would become self-referential if the guard were absent — the two
+lines at the write site.** `deploy.sh:990`:
 
 ```
     prev_digest="$(record_get IMAGE_DIGEST "$LEMDROP_RECORD_FILE")"
 ```
 
-and `deploy.sh:969`:
+and `deploy.sh:1029`:
 
 ```
     "PREVIOUS_IMAGE_DIGEST=${prev_digest}" \
 ```
 
-`:944` reads the previous digest from the record's **then-current** `IMAGE_DIGEST`. On a redundant deploy that value **is the target** — the record is already naming the image you are about to deploy. `:969` then writes it back out as `PREVIOUS_IMAGE_DIGEST`. The result is `IMAGE_DIGEST` == `PREVIOUS_IMAGE_DIGEST`, and `PREVIOUS_IMAGE_DIGEST` is documented as **the rollback target** (§4.6). It now names the image that is running.
+`:990` reads the previous digest from the record's **then-current** `IMAGE_DIGEST`. On a redundant deploy that value **is the target** — the record is already naming the image you are about to deploy. `:1029` then writes it back out as `PREVIOUS_IMAGE_DIGEST`. The result is `IMAGE_DIGEST` == `PREVIOUS_IMAGE_DIGEST`, and `PREVIOUS_IMAGE_DIGEST` is documented as **the rollback target** (§4.6). It now names the image that is running. The guard at `deploy.sh:759-780` refuses before this path is reached; the check at `deploy.sh:1006-1015` is belt-and-braces at the write site.
 
 **The consequence, end to end, in one sentence.** The intended previous image is no longer reachable through the normal path, because `rollback.sh:163-171` selects `PREVIOUS_IMAGE_DIGEST` as its target whenever that key is non-empty, so the rollback restores the image that is already running — and re-running `rollback.sh` in that state does not help either, because it restores what is running, reports success, and then blanks `PREVIOUS_*` (`rollback.sh:438`), erasing the last record-level reference.
 
 On the rehearsal host this cost the pointer to the original legacy image. **The image itself survived** in the local store under its timestamped tag — `docs/verification-milestone-4.md` §9.1 records `lemondrop-api:rollback-20261014T232428Z` intact — but nothing in the record pointed at it any more, and that is the only place a rollback can look (§6.2).
 
-**⚠️ `Undo with: scripts/rollback.sh` is not true of a redundant deploy.** The `DEPLOYED` banner quoted in §4.5 ends with that line, and `deploy.sh:988` prints it:
+**⚠️ `Undo with: scripts/rollback.sh` would not be true of a redundant deploy if the guard failed.** The `DEPLOYED` banner quoted in §4.5 ends with that line, and `deploy.sh:1048` prints it:
 
 ```
   say "  Undo with:               scripts/rollback.sh"
@@ -491,16 +497,22 @@ On the rehearsal host this cost the pointer to the original legacy image. **The 
 
 On a redundant deploy the record it is pointing at is the one described above, and `rollback.sh` **cannot usefully undo it** — it has no target but the running image. Read that banner line as "rollback is available if this deploy created a rollback point", which on this path it did not.
 
-#### The pre-flight check you must run by hand
+#### The pre-flight check you should still run by hand
 
-**Nothing performs this check for you, so it is a checklist item, not a reassurance.** The question to ask is exact: *is the digest I am about to deploy the one already recorded as deployed?* Answer it **before** typing the command, from the record:
+**The guard at `deploy.sh:759-780` now performs this check, but a manual
+confirmation remains worthwhile.** The question to ask is exact: *is the digest
+I am about to deploy the one already recorded as deployed?* Answer it **before**
+typing the command, from the record:
 
 ```bash
 sudo grep '^IMAGE_DIGEST=' /var/lib/lemondrop/deployed-revision.env
 sudo grep '^PREVIOUS_IMAGE_DIGEST=' /var/lib/lemondrop/deployed-revision.env
 ```
 
-**If your target digest equals the value in `IMAGE_DIGEST`, do not deploy it.** That equality is precisely the condition under which `deploy.sh:944` reads the target back as its own "previous" digest.
+**If your target digest equals the value in `IMAGE_DIGEST`, do not deploy it.**
+That equality is the condition the guard at `deploy.sh:759-780` refuses, and it
+is also the condition under which `deploy.sh:990` would read the target back as
+its own "previous" digest.
 
 `scripts/verify-deployment.sh` (§4.2, which you are about to have run anyway) answers the same question, and this is how to read it:
 
@@ -512,17 +524,22 @@ sudo grep '^PREVIOUS_IMAGE_DIGEST=' /var/lib/lemondrop/deployed-revision.env
 
 The `AGREE` row is the one to be careful with, and it is the **normal** reading on a healthy digest-pinned host. `AGREE` is a good verdict about the host and it is simultaneously the signal that **the digest you just read out of the record is the one you must not deploy.** A green `verify-deployment.sh` is not permission to redeploy what it just told you is running.
 
-#### Status: UNFIXED, tracked, deferred
+#### Status: FIXED
 
-**This is a known gap and it is UNFIXED.** Nothing in `deploy.sh` guards against it, and nothing in this runbook should be read as saying that a guard exists, might arrive soon, or is half-built. It was found by executing the deploy path on a live host during Milestone 4 and is recorded at `docs/verification-milestone-4.md` §8.2 ("a redundant deploy has no guard, and this is UNFIXED"), in that document's §10 item 3, and in its §12 table's row 22 ("Redundant-deploy guard in `deploy.sh` | **UNTESTED — and the guard does not exist**"). Fixing it is **deliberately out of scope** for that milestone. **Until it is fixed, the check above is the operator's responsibility** — it is a manual pre-flight step, not a diagnostic that runs for you.
+**This is no longer a gap.** `deploy.sh` now contains a redundant-deploy guard
+(`deploy.sh:759-780`) and a belt-and-braces check at the write site
+(`deploy.sh:1006-1015`). It was found by executing the deploy path on a live host
+during Milestone 4 and is recorded at `docs/verification-milestone-4.md` §8.2;
+that document also records the guard as implemented and regression-tested. The
+manual check above is a confirmation, not the only prevention.
 
 ### 4.2.2 ⚠️ The M3-adopted host: the first digest-pinned deploy leaves `PREVIOUS_IMAGE_DIGEST` empty, and the next rollback takes the UNSAFE legacy branch
 
 **This sits on the same record fields as §4.2.1, and it is the hazard an operator who *adopts* an M3 host meets — so it is stated here, before §4.3, because that is when it has to be read.** A host adopted from M3 (`--adopt-current`, §7.1) carries **`UNPINNED (LEGACY)`** and an **empty** `IMAGE_DIGEST`. The chain from there, at `file:line`:
 
-1. **The first digest-pinned deploy reads `prev_digest` from that record and gets the empty string.** `deploy.sh:944` is `prev_digest="$(record_get IMAGE_DIGEST "$LEMDROP_RECORD_FILE")"`; on a legacy record that field is empty, as are `prev_rev` and `prev_head` beside it (`deploy.sh:942-947`).
-2. **It writes `PREVIOUS_IMAGE_DIGEST=` *empty*.** `deploy.sh:969` is `"PREVIOUS_IMAGE_DIGEST=${prev_digest}"`, and the value going in is the empty string.
-3. **The next `rollback.sh` finds no digest, finds a `ROLLBACK_TAG`, and takes the legacy branch.** `rollback.sh:163-190` selects `PREVIOUS_IMAGE_DIGEST` when it is non-empty and falls to the `ROLLBACK_TAG` branch (setting `legacy=1`) when it is empty. A digest-pinned deploy writes a `ROLLBACK_TAG` whenever a container was running before it (`deploy.sh:949-955`, written at `:967`), so the fallback is present.
+1. **The first digest-pinned deploy reads `prev_digest` from that record and gets the empty string.** `deploy.sh:990` is `prev_digest="$(record_get IMAGE_DIGEST "$LEMDROP_RECORD_FILE")"`; on a legacy record that field is empty, as are `prev_rev` and `prev_head` beside it (`deploy.sh:988-993`).
+2. **It writes `PREVIOUS_IMAGE_DIGEST=` *empty*.** `deploy.sh:1029` is `"PREVIOUS_IMAGE_DIGEST=${prev_digest}"`, and the value going in is the empty string.
+3. **The next `rollback.sh` finds no digest, finds a `ROLLBACK_TAG`, and takes the legacy branch.** `rollback.sh:163-190` selects `PREVIOUS_IMAGE_DIGEST` when it is non-empty and falls to the `ROLLBACK_TAG` branch (setting `legacy=1`) when it is empty. A digest-pinned deploy writes a `ROLLBACK_TAG` whenever a container was running before it (`deploy.sh:996-1000`, written at `:1027`), so the fallback is present.
 4. **That branch is UNSAFE — and its own checks will not notice.** It **re-tags** the target as `lemondrop-api` (`rollback.sh:238`) and **removes** the `API_IMAGE` key from `.env` (`rollback.sh:265-281`), expecting compose to resolve the bare name. But the compose default is now a **digest-pinned reference** (`docker-compose.yml:436`), so the re-tag is **inert** and the **wrong image starts** — while passing ordinary health checks, because the rollback's re-verification is a content check, not an identity check (`rollback.sh:376`, `verify_stack()`). `docs/deployment.md` §10 item 15 is the full account.
 
 ⚠️ **It must not be rehearsed.** §6.5's rehearsal is sound **only for the digest branch** — its step 4 ("Deploy revision B over revision A") writes a `PREVIOUS_IMAGE_DIGEST`, which selects the safe path — and §10 item 15 says plainly not to rehearse the legacy branch. §6.4 is left as written. **The safe action on an M3-adopted host is to make the digest path available *before* relying on a rollback**: deploy a digest-pinned revision once so the record carries a real `PREVIOUS_IMAGE_DIGEST`, or adopt onto a digest-bearing image (§7.1).
@@ -841,7 +858,14 @@ From `/var/lib/lemondrop/deployed-revision.env`:
 
 There is no third option and no prompting (in `rollback.sh`'s target-selection block): "an interactive question here is a question asked to someone who is already in the middle of an incident."
 
-⚠️ **This field is destroyed by a redundant deploy, and the guard that would prevent it does not exist.** `PREVIOUS_IMAGE_DIGEST` is written from whatever `IMAGE_DIGEST` said when the deploy began (`deploy.sh:944` → `deploy.sh:969`), so deploying the digest that is already running writes this field with that same digest — and the rollback then selects the image that is running. §4.2.1 has the full consequence, the pre-flight check, and its status. **A rollback target that names the running image is a symptom, not a cause: look at what was deployed, not at what this command reports.**
+⚠️ **A redundant deploy would destroy this field, but `deploy.sh:759-780` now
+refuses before that can happen.** `PREVIOUS_IMAGE_DIGEST` is written from
+whatever `IMAGE_DIGEST` said when the deploy began (`deploy.sh:990` →
+`deploy.sh:1029`), so deploying the digest that is already running would write
+this field with that same digest — and the rollback would then select the image
+that is running. §4.2.1 has the full consequence, the pre-flight check, and its
+status. **A rollback target that names the running image is a symptom, not a
+cause: look at what was deployed, not at what this command reports.**
 
 ⚠️ **The same two fields carry a *second* hazard, and it is the one specific to an M3-adopted host: the empty `PREVIOUS_IMAGE_DIGEST` that a first digest-pinned deploy writes, which routes this command to the UNSAFE legacy branch.** `PREVIOUS_IMAGE_DIGEST` is consumed here regardless of *why* it is empty, and a legacy record's `IMAGE_DIGEST` is empty, so the *next* rollback falls through to `ROLLBACK_TAG` and takes the legacy branch. **§4.2.2 is the full chain, placed before §4.3 on purpose** — that is where it must be read. §10 item 15 is the record.
 
@@ -1856,13 +1880,15 @@ This codebase's value is that its documentation is trustworthy. That means the l
 
     **This item narrows §10 item 1, and only item 1.** Item 1 asserts that `deploy.sh`, `rollback.sh` and `verify-deployment.sh` "have never been executed against a host with a real Docker daemon". **That is no longer true** — they were executed live during Milestone 4, and `docs/verification-milestone-4.md` is the record — so of item 1's *"unexercised in CI and unexercised on a live host"*, only the CI half still stands. What remains unexercised is the legacy branch above, and the mutating control flow generally: **no test suite invokes any of the three scripts, and their first live use was this milestone.** Item 1 is left in place rather than rewritten, per the convention item 7 sets.
 
-**16. ⚠️ UNFIXED — `deploy.sh` has no redundant-deploy guard, and deploying the digest that is already running destroys the rollback pointer.** Unlike item 15 this one is **not** a reading of code that has never run: **it was executed, on the live host, during Milestone 4.** `deploy.sh` was run twice against the same digest, and the second run overwrote `PREVIOUS_IMAGE_DIGEST` with the digest it had just deployed. The record became self-referential, and the intended previous image stopped being reachable through the normal path. `docs/verification-milestone-4.md` §8.2 is the record; §10 item 3 of that document carries it into the list of what its green verdicts do not mean.
+**16. FIXED — `deploy.sh` has a redundant-deploy guard, and deploying the digest that is already running is refused before any mutation.** Unlike item 15 this one is **not** a reading of code that has never run: **it was executed, on the live host, during Milestone 4, before the guard existed.** `deploy.sh` was run twice against the same digest, and the second run overwrote `PREVIOUS_IMAGE_DIGEST` with the digest it had just deployed. The record became self-referential, and the intended previous image stopped being reachable through the normal path. `docs/verification-milestone-4.md` §8.2 is the record; that document also records the guard as implemented and regression-tested.
 
-    **The defect, at `file:line`.** Nothing in `deploy.sh` compares the target digest against the running image. `deploy.sh:944` reads `prev_digest="$(record_get IMAGE_DIGEST "$LEMDROP_RECORD_FILE")"` from the record's **then-current** value, which on a redundant deploy **is the target**, and `deploy.sh:969` writes it back out as `"PREVIOUS_IMAGE_DIGEST=${prev_digest}"`. `PREVIOUS_IMAGE_DIGEST` is the rollback target (§4.6), so `rollback.sh:163-171` then selects the image that is running. The deploy still tags a rollback point (`deploy.sh:305-308`), pulls again (`deploy.sh:846`), rewrites `.env` (`deploy.sh:913`), recreates the `api` container (`deploy.sh:925`), verifies, and prints the green `DEPLOYED` banner — which ends in `Undo with: scripts/rollback.sh` (`deploy.sh:988`), a line that **cannot** be true of this record.
+    **The guard, at `file:line`.** `deploy.sh:759-780` compares the target digest against the recorded `IMAGE_DIGEST` and exits `EX_REFUSED` if they match, before `capture_state` touches the record, before any tag, before any `.env` write. A belt-and-braces check at `deploy.sh:1006-1015` refuses at the record-write site if the same equality somehow reaches it.
 
-    **What to do about it today.** §4.2.1 is the operator-facing statement, placed before §4.3 for that reason: what to check before deploying, how to read `verify-deployment.sh`'s `── do they agree? ──` verdict for the purpose, and why `AGREE` — the *good* verdict — is the one that means "do not deploy this digest". **The check is manual because nothing performs it.** It is also the manual step that the same document's §11 pre-flight checklist assumes nobody has to think about, which is why it is called out here rather than left to §4.2.
+    **Why a redundant deploy would be dangerous if the guard were absent.** On a redundant deploy the record's **then-current** `IMAGE_DIGEST` **is the target**. `deploy.sh:990` reads `prev_digest="$(record_get IMAGE_DIGEST "$LEMDROP_RECORD_FILE")"` from that value, and `deploy.sh:1029` writes it back out as `"PREVIOUS_IMAGE_DIGEST=${prev_digest}"`. `PREVIOUS_IMAGE_DIGEST` is the rollback target (§4.6), so `rollback.sh:163-171` would then select the image that is running. The deploy would still tag a rollback point (`deploy.sh:312`), pull again (`deploy.sh:892`), rewrite `.env` (`deploy.sh:959`), recreate the `api` container (`deploy.sh:971`), verify, and print the green `DEPLOYED` banner — which ends in `Undo with: scripts/rollback.sh` (`deploy.sh:1048`), a line that **cannot** be true of a self-referential record.
 
-    **Status: UNFIXED, and deliberately deferred.** No guard exists, none is in flight, and no fix is scheduled. Nothing in `deploy.sh` should be read as offering partial protection: the nearest candidate, `deploy.sh:855`, compares the **just-pulled** image's `RepoDigests` against the requested reference, and is an explanatory note that continues — not a redundancy check. Until this is fixed, **a redundant deploy is a manual-prevention-only hazard, and the image it orphans may still be recoverable from its timestamped rollback tag (§6.4) even though the record no longer names it.**
+    **What to do about it today.** §4.2.1 is the operator-facing statement, placed before §4.3 for that reason: what to check before deploying, how to read `verify-deployment.sh`'s `── do they agree? ──` verdict for the purpose, and why `AGREE` — the *good* verdict — is the one that means "do not deploy this digest". **The guard now performs this check automatically; the manual check is a belt-and-braces confirmation.**
+
+    **Status: FIXED.** The redundant-deploy guard exists, is implemented, and is regression-tested. Nothing in `deploy.sh` should be read as offering only partial protection: the check at `deploy.sh:897` compares the **just-pulled** image's `RepoDigests` against the requested reference, and is an explanatory note that continues — not a redundancy check.
 
 **17. ⚠️ There is no rehearsal host, and that is conditional on which variant of the second-engineer exercise is run.** §6.5 says to rehearse a rollback on a throwaway host and never on the one serving traffic, and item 1 above says the same. **This repository has never described such a host, never named one, and never stated whether one exists.** Nothing here provisions one and **nothing should be read as offering to.**
 

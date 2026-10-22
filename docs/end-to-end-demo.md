@@ -80,7 +80,7 @@ components", and they are why the plan records them separately.
 | Evidence source | Exists today? | Detail |
 |---|---|---|
 | `curl -i` from the operator | **Yes** | The normal client path; nothing to enable |
-| `docker compose logs api` / `embedder` / `reranker` | **Yes** | On the host; `json-file` rotation at `10m` × 3 per service (`docker-compose.yml:152-158`). Collected over SSM Session Manager |
+| `docker compose logs api` / `embedder` / `reranker` | **Yes** | On the host; `json-file` rotation at `10m` × 3 per service (`docker-compose.yml:161-167`). Collected over SSM Session Manager |
 | RDS `postgresql` + `upgrade` logs → CloudWatch | **Yes — exported** | `enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]` (`infra/database.tf:280`) |
 | ALB CloudWatch metrics | **Yes — published by default** | But **no dashboard and no alarm** are configured anywhere in `infra/*.tf` |
 | Deployment / boot logs | **Yes** | `/var/log/lemondrop-deploy.log`, `/var/log/lemondrop-boot.log` |
@@ -160,3 +160,28 @@ demonstrated the traversal** — it has demonstrated the endpoint.
 
 Until those exist, this section is empty by intent, and the banner at the top
 stands.
+
+---
+
+## 8. Partial recording — 2026-10-21 client-perspective session
+
+On 2026-10-21 a client-perspective session performed the **client half** of this
+walkthrough from the authorized workstation (`213.22.54.159/32`). It captured:
+
+- the ALB DNS name resolved and reachable;
+- `GET /health`, `GET /health/live`, `GET /health/ready` all returning HTTP 200;
+- a `POST /search` to the public ALB returning HTTP 200, `candidates_considered=10`,
+  five results, and the correct top hit (`support-recycle-bin-file-recovery`).
+
+This is equivalent to steps 1, 2 and 7 of the plan in §3.
+
+The per-hop correlation steps **remain unrecorded**:
+
+- `docker compose logs api` / `embedder` / `reranker` for the request window;
+- any RDS `postgresql` log read;
+- ALB access logs — still OFF and not enabled.
+
+No request-id propagation exists, so correlation would rely on timestamps. The
+session's evidence is a **demonstration that the endpoint works**, not a proof
+that the request traversed every layer. Until the host-side logs and database
+evidence are captured, the banner in §7 stays up.
