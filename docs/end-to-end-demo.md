@@ -1,12 +1,12 @@
 # End-to-end demonstration — plan
 
-> ## ⚠️ NOT YET RECORDED.
+> ## ⚠️ PARTIALLY RECORDED.
 >
-> **No recording exists.** This file is a **plan** for the walkthrough the
-> milestone asks for: a request travelling client → ALB → api →
-> embedder/reranker → PostgreSQL → back. Nothing below has been executed, and no
-> output is quoted. When the recording is made, its artifacts (commands, outputs,
-> where they are kept) go here, and this banner comes down.
+> A partial recording exists: the 2026-10-22 post-release walkthrough captured
+> the client half and the host-side `api`/`embedder`/`reranker` logs for one
+> `POST /search` request. The ALB access-log hop and the database SQL-statement
+> hop remain unrecorded for the reasons in §5 and §4. The full banner comes down
+> when those hops are either captured or explicitly accepted as absent.
 
 ---
 
@@ -163,25 +163,34 @@ stands.
 
 ---
 
-## 8. Partial recording — 2026-10-21 client-perspective session
+## 8. Partial recording — 2026-10-22 post-release walkthrough
 
-On 2026-10-21 a client-perspective session performed the **client half** of this
-walkthrough from the authorized workstation (`213.22.54.159/32`). It captured:
+On 2026-10-22 a post-release walkthrough performed the client half and the
+host-side log half of this walkthrough from the authorized workstation
+(`213.22.54.159/32`). It captured:
 
 - the ALB DNS name resolved and reachable;
-- `GET /health`, `GET /health/live`, `GET /health/ready` all returning HTTP 200;
+- `GET /health`, `GET /health/live` and `GET /health/ready` all returning HTTP 200;
 - a `POST /search` to the public ALB returning HTTP 200, `candidates_considered=10`,
-  five results, and the correct top hit (`support-recycle-bin-file-recovery`).
+  five results, and the correct top hit (`support-recycle-bin-file-recovery`),
+  latency 14.615 s;
+- a prediction written before the first request;
+- host-side `api`, `embedder` and `reranker` container logs over the same UTC
+  window (2026-10-22T02:35:21Z .. 02:35:36Z), with reranker task ids 1514–1523
+  independently confirming the 10 candidates.
 
-This is equivalent to steps 1, 2 and 7 of the plan in §3.
+This covers steps 1, 2, 4, 6 and 7 of the plan in §3, and step 5 indirectly
+(`candidates_considered=10` can only be produced by a store read).
 
-The per-hop correlation steps **remain unrecorded**:
+The following hops **remain unrecorded**:
 
-- `docker compose logs api` / `embedder` / `reranker` for the request window;
-- any RDS `postgresql` log read;
-- ALB access logs — still OFF and not enabled.
+- **ALB access log** — access logs are OFF (`access_logs.s3.enabled=false`);
+  enabling them is an infrastructure change that was not made.
+- **RDS `postgresql` log statement** — the exported log held only periodic
+  checkpoints over the window; statement logging is not enabled.
+- **Request-id propagation** — the system has none; correlation is by timestamp
+  window only.
 
-No request-id propagation exists, so correlation would rely on timestamps. The
-session's evidence is a **demonstration that the endpoint works**, not a proof
-that the request traversed every layer. Until the host-side logs and database
-evidence are captured, the banner in §7 stays up.
+Evidence: `~/lemondrop-investigation/POST-RELEASE-WALKTHROUGH-EVIDENCE.txt`.
+The 2026-10-21 client-perspective session remains recorded in
+`~/lemondrop-investigation/CLIENT-PERSPECTIVE-EVIDENCE.md`.

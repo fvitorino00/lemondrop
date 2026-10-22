@@ -39,21 +39,27 @@ re-estimate:
   `infra/compute.tf:188-203`), so `30GB gp3` is right; the `~$3/mo` figure is an
   estimate and is not labelled as observed.
 
-## Observed cost — UNVERIFIED / NOT YET OBSERVED
+## Observed cost — PARTIALLY OBSERVED
 
-**This table is a facility, not a result.** No bill has been read; every cell is
-empty. Do not fill it with an estimate and do not read an estimate into it.
+A billing record has been read, but the period is open and the record is
+estimated. Do not read a derived estimate as an observed charge.
 
 | Line item | Expected (from the table above) | **Observed (from a real bill)** | Period | Source of the observation |
 |---|---|---|---|---|
-| ALB | ~$16/mo + LCU | **NOT YET OBSERVED** | | |
-| NAT gateway | ~$32/mo + per-GB | **NOT YET OBSERVED** | | |
-| RDS | ~$17/mo | **NOT YET OBSERVED** | | |
-| EC2 | ~$16.64/mo (t3.small; was stale t3.micro ~$9/mo) | **NOT YET OBSERVED** | | |
-| EBS | ~$3/mo | **NOT YET OBSERVED** | | |
-| S3 state | ~$0 | **NOT YET OBSERVED** | | |
-| Other / adjustments | — | **NOT YET OBSERVED** | | |
-| **Total** | **~$82/mo** | **NOT YET OBSERVED** | | |
+| ALB | ~$16/mo + LCU | AWS Cost Explorer total BlendedCost ≈ $0.00 (near-zero, negative by sub-penny rounding) | 2026-10-01 to 2026-10-21 inclusive (Cost Explorer end exclusive) | `aws ce get-cost-and-usage`, account 615105803772, `Estimated: true` (`~/lemondrop-investigation/OBSERVED-COST-EVIDENCE.txt` §4) |
+| NAT gateway | ~$32/mo + per-GB | included in near-zero total above | same | same |
+| RDS | ~$17/mo | included in near-zero total above | same | same |
+| EC2 | ~$16.64/mo (t3.small; was stale t3.micro ~$9/mo) | **EC2 compute line shows $0.00** in Cost Explorer despite a t3.small running since 2026-10-13; discrepancy unexplained by the read | same | same |
+| EBS | ~$3/mo | included in near-zero total above | same | same |
+| S3 state | ~$0 | included in near-zero total above | same | same |
+| Other / adjustments | — | included in near-zero total above | same | same |
+| **Total** | **~$82/mo** | **Near-zero estimated total** (BlendedCost -0.0000000508 USD, UnblendedCost -0.0000000319 USD, AmortizedCost -0.0000000319 USD) | 2026-10-01 to 2026-10-21 inclusive | AWS Cost Explorer GetCostAndUsage, `Estimated: true` |
+
+**DERIVED-ESTIMATE-NOT-A-BILL (do not enter as observed):** for the EC2 t3.small
+running since 2026-10-13, 198.5920 h × $0.0228/h = ~**$4.53**. This is an
+arithmetic cross-check, not a billing record; it disagrees with the Cost Explorer
+read, which is the point of keeping both. A closed-period invoice is required to
+settle the column (`~/lemondrop-investigation/OBSERVED-COST-EVIDENCE.txt` §5, §7, §8).
 
 To make a row real: read the figure off an AWS Cost Explorer or billing export,
 record the **period it covers** and the **exact source** (so a reader can

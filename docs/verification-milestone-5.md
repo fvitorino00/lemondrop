@@ -137,9 +137,9 @@ section, following the five-stage template in `INCIDENTS.md` §4.
 | b | Architecture diagram (networks, routing, ports, security groups, dependencies) | **PASS.** `docs/architecture.md` is present and committed; its content covers §1 network topology, §2 ports, §3 the security-group matrix, §4 request flow, §6 non-reachability/egress, and §7 service dependencies. The adequacy judgement remains the operator's gate. |
 | c | Reproducible README | **PARTIAL.** `README.md` is committed and corrected. A static documentation audit now exists as a dated record at `/home/zaratustra0/lemondrop-investigation/README-RUNBOOK-AUDIT.md` (99 claim rows — 74 MATCH, 6 PARTIAL, 13 MISMATCH, 6 NOT-CHECKABLE-STATICALLY; all 13 mismatches corrected, including the T3-tier subset wording in `README.md`). That audit is a static text check, not a runtime proof. A **clean-host reproduction still does not exist** and remains the outstanding part. |
 | d | Operational RUNBOOK | **PARTIAL.** A static documentation audit now exists at `/home/zaratustra0/lemondrop-investigation/README-RUNBOOK-AUDIT.md` (99 claim rows — 74 MATCH, 6 PARTIAL, 13 MISMATCH, 6 NOT-CHECKABLE-STATICALLY; all 13 mismatches corrected). The artefact establishes that every documented command's path, flags, variables, counts and citations in `README.md`, `RUNBOOK.md`, `COSTS.md` and `docs/end-to-end-demo.md` was checked statically against the repository at HEAD. It does **not** establish that any recovery command was executed, that any command works at runtime, or that the end-to-end command audit was performed — that remains outstanding. The `db_skip_final_snapshot` correction in `RUNBOOK.md` is in place and is not at risk. |
-| e | Timestamped investigations in `INCIDENTS.md` | **UNTESTED, 0 of 3.** The three category sections in `INCIDENTS.md` exist and are EMPTY. No operator-driven fault exercise has been performed; no incident record has been written. |
-| f | `COSTS.md` — expected **and** observed | **UNTESTED.** Expected estimate is present; the observed column stays EMPTY. The `~$0.0228/hr` / `~$16.64/month` figure in `~/lemondrop-investigation/AWS-AND-PLAN-EVIDENCE.txt` is **vendor pricing captured from a pricing API**, not a bill; it validates the estimate and does not populate the observed column. |
-| g | End-to-end ALB → app → PostgreSQL → response walkthrough | **PARTIAL** (was "PLANNED, NOT RECORDED"). The 2026-10-21 client-perspective session captured: measured egress IP `213.22.54.159` exactly matching the ALB allow-list entry `213.22.54.159/32`; `/health`, `/health/live` and `/health/ready` all HTTP 200 with `database:ok`; and the documented `POST /search` returning HTTP 200 with the correct top hit (`support-recycle-bin-file-recovery`), `candidates_considered=10` and a 5-result funnel. What it does **NOT** capture: host-side `api`/`embedder`/`reranker` container logs correlated over the same UTC window; an RDS `postgresql` log read; ALB access logs are OFF by design and were not enabled; the operator's predicted-before-execution contract was honoured only once (`M5-001`, 2026-10-15), so the 2026-10-21 `/search` is a **demonstration**, not a test; and the evidence was not retained in a checksummed directory per the `M5-001` convention. See §8 for the session record. |
+| e | Timestamped investigations in `INCIDENTS.md` | **UNTESTED, 0 of 3.** The three category sections in `INCIDENTS.md` exist and are EMPTY. No operator-driven fault exercise has been performed; no incident record has been written. `docs/maintenance-challenge.md` is unexecuted preparation for the operator's exercise. |
+| f | `COSTS.md` — expected **and** observed | **PARTIAL.** AWS Cost Explorer was read for period 2026-10-01 to 2026-10-21 (end exclusive) and returned a near-zero estimated total; the record is `Estimated: true` and the period is open. The read does not explain why the EC2 t3.small running since 2026-10-13 does not appear as a compute charge, so a closed-period invoice is required. A derived list-price cross-check (198.5920 h × $0.0228 = ~$4.53) is kept separately and labelled `DERIVED-ESTIMATE-NOT-A-BILL`; it is not entered as observed. See `~/lemondrop-investigation/OBSERVED-COST-EVIDENCE.txt`. |
+| g | End-to-end ALB → app → PostgreSQL → response walkthrough | **PARTIAL.** The 2026-10-22 post-release walkthrough captured: a prediction written before the first request; the known-good probe returning HTTP 200 with `support-recycle-bin-file-recovery` first, **5** results, **10** candidates, model `bge-reranker-base`, latency **14.615 s**; and host-side `api`/`embedder`/`reranker` logs over the same UTC window, with reranker task ids 1514–1523 independently confirming the 10 candidates. Source address `213.22.54.159` matched the allow-list. What it does **NOT** capture: the ALB access-log hop (logs are OFF); the database SQL-statement hop (exported PostgreSQL log holds only checkpoints); request-id propagation (the system has none, so correlation is by timestamp window only); and the operator's own predicted-before-execution test under the `M5-001` convention — the walkthrough prediction was the agent's, not the operator's. See §8 and `~/lemondrop-investigation/POST-RELEASE-WALKTHROUGH-EVIDENCE.txt`. |
 | h | Verified teardown preserving Git evidence | **UNTESTED.** No teardown evidence of any kind exists. |
 
 ---
@@ -253,14 +253,26 @@ recorded here so the acceptance picture is honest.
 
 #### E5 — `POST /search` with a 2048-character query returns opaque HTTP 500
 
-**Status (2026-10-21, updated same day): FIXED IN THE LOCAL TREE — NOT
-DEPLOYED.** The root cause and symptom capture below are kept exactly as they
-were recorded while E5 stood against the deployed service. The regression test
-and the local fix record follow the original capture; the deployment facts are
-unchanged — the deployed image still carries this defect (see the 2026-10-21
-fix record below).
+**Status (2026-10-22): FIXED AND DEPLOYED.** The root cause and symptom capture
+below are kept exactly as they were recorded while E5 stood against the deployed
+service. The regression test and the local fix record follow the original
+capture. The fix is now live in production.
 
-- **Severity:** CRITICAL (open against the deployed service; fixed in the local tree)
+- **Severity:** CRITICAL (fixed and deployed; historical capture retained)
+- **Deployed image:**
+  `ghcr.io/fvitorino00/lemondrop-api@sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4`
+- **Source revision:** `6cc54bc4c09182e37575c5fedb2ad57c71dc7d58`
+- **Release run:** GitHub Actions release run **39708332804**, 9/9 jobs green,
+  published the image above
+  (`~/lemondrop-investigation/RELEASE-PUBLISH-EVIDENCE.txt`).
+- **Deploy:** SSM Run Command as root, command id
+  **b402a174-72b3-4422-8100-e45033b08aa4**, exit code **0**
+  (`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt`).
+- **Verify:** SSM Run Command as root, command id
+  **4adcb66f-0b11-40f5-a638-33f35b7408b4**, exit code **0**, **PROBLEMS=0**,
+  printing `VERDICT: everything above is consistent. Nothing to do.`, with
+  `AGREE`, `PROVENANCE AGREE` and `SCHEMA AGREE`
+  (`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt`).
 - **Exact command:**
 
   ```text
@@ -312,21 +324,69 @@ fix record below).
   - The 2049-character `/search` boundary was never probed — the session stopped that line of
     attack after the first 5xx.
   - The 2048-character observation was a single un-repeated request.
-- **Consequence for acceptance:** While E5 stands, the deployed image cannot be called verified.
-  The service survived (subsequent requests succeeded), so this is a per-request unhandled
-  exception, not a process crash. A fix belongs in `api/app/main.py`, which is out of scope for
-  this documentation pass.
+- **Consequence for acceptance:** The defect was a per-request unhandled exception, not a
+  process crash. The fix is now deployed; the consequence text above is historical only.
 
-- **2026-10-21 fix record — applied in the local tree only.** Authorised by the
-  operator's instruction of 2026-10-21 (the original authorisation is retained
-  locally at `.workflows/2026-10-21-lemondrop-acceptance.md`, which is gitignored
-  and not part of the published repository). The fix exists only in
-  `api/app/main.py` in this working tree. **The deployed
-  image (`sha256:8cf759f6…`, source revision `6b37a78…`) still carries the defect: it still
-  returns the opaque `text/plain` HTTP 500 `Internal Server Error` for a search query of
-  1992 to 2048 characters, and it still advertises the old 2048-character search limit. A new
-  image build and a deployment are required to carry the fix; until then the deployed service
-  must not be described as fixed.** The parts of this record:
+##### Deployment proof (2026-10-22)
+
+The fix was proven against the **deployed** service through the public ALB.
+
+- **Health routes** (all HTTP 200):
+  - `GET /health` → `{"status":"ok","embedder":"ok","reranker":"ok"}`
+  - `GET /health/live` → `{"status":"ok"}`
+  - `GET /health/ready` → `{"status":"ok","embedder":"ok","reranker":"ok","database":"ok"}`
+  (`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §ALB_HEALTH).
+
+- **Three-way boundary proof against the deployed service**
+  (`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §BOUNDARY_PROOF):
+
+  | Query length | Result | Meaning |
+  |---|---|---|
+  | 2048 characters | HTTP **422**, body names `"body","query"`, `ctx.max_length` = **1991** | Edge rejects; no opaque 500 |
+  | 1992 characters | HTTP **422**, same `max_length: 1991` | The threshold is at most 1991 |
+  | 1991 characters | Accepted at the edge, then HTTP **502** `{"detail":"reranker returned HTTP 500"}` | Edge passes it; failure is the pre-existing worker-token residual (`api/app/main.py:124-126`), not E5 |
+
+  The triple 422 / not-422 / 422 brackets the effective limit at exactly **1991**.
+
+- **Post-release walkthrough**
+  (`~/lemondrop-investigation/POST-RELEASE-WALKTHROUGH-EVIDENCE.txt`):
+  - A prediction was written **before** the first request was sent.
+  - The project's own known-good probe returned HTTP **200**, top document
+    `support-recycle-bin-file-recovery` (collection `it-support`), **5** results,
+    **10** candidates considered, model `bge-reranker-base`, latency **14.615 s**.
+  - Host-side `api`, `embedder` and `reranker` container logs were captured over the
+    same UTC window (2026-10-22T02:35:21Z .. 02:35:36Z); reranker task ids 1514–1523
+    independently confirm 10 sequential candidates.
+  - Source address measured as `213.22.54.159`, matching the ALB allow-list entry
+    `213.22.54.159/32`.
+
+- **Hops NOT observed**, recorded as such
+  (`~/lemondrop-investigation/POST-RELEASE-WALKTHROUGH-EVIDENCE.txt` §NOT OBSERVED):
+  - **ALB access-log hop** — access logs are off (`access_logs.s3.enabled=false`);
+    enabling them is an unauthorised infrastructure change.
+  - **Database SQL-statement hop** — the exported PostgreSQL log holds only periodic
+    checkpoints over the window; no SQL statement is recorded.
+  - **Request-id propagation** — the system has none; correlation is by timestamp
+    window only.
+
+- **Rollback:** the single remaining rollback target is the previously deployed image
+  `ghcr.io/fvitorino00/lemondrop-api@sha256:8cf759f688daad5c5fbcc8a4efb6101de1de0f8efdf18c70e6aa7a8cd99f6110`
+  (source revision `6b37a780e293003ba952c3e9062e8c5d126639e9`). The rollback is
+  **one-way**: `rollback.sh` empties `PREVIOUS_*` on success, so exactly one rollback
+  remains and no second.
+
+- **Operator prediction:** the operator's own pre-committed prediction remains
+  **outstanding** under the strict learning contract. The walkthrough prediction was
+  the agent's, written before execution; it is not a substitute for the operator's.
+
+- **2026-10-21 fix record — applied in the local tree only (historical).**
+  Authorised by the operator's instruction of 2026-10-21 (the original
+  authorisation is retained locally at `.workflows/2026-10-21-lemondrop-acceptance.md`,
+  which is gitignored and not part of the published repository). At the time this
+  record was written the fix existed only in `api/app/main.py` in the working
+  tree; the deployed image (`sha256:8cf759f6…`, source revision `6b37a78…`) still
+  carried the defect. The 2026-10-22 release and deployment superseded this
+  state. The parts of this record:
   - **Root cause (recorded above, unchanged):** `/search` validated `SearchRequest.query` against
     the 2048-character cap, then built `EmbedRequest(text=QUERY_PREFIX + body.query)` — the
     57-character bge prefix was appended after validation and re-validated against the same 2048
@@ -380,10 +440,10 @@ fix record below).
       `inventory=208 T1=149 T2=28 T3=31 classified=208`.
     - **Independent review of the fix returned PASS_WITH_FINDINGS** (strip-order analysis —
       recorded under the DEP finding below).
-  - **Deployment facts, stated plainly:** the DEPLOYED image (`sha256:8cf759f6…`, source revision
-    `6b37a78…`) is unchanged and still carries E5. A new image build and a deployment are
-    required to carry the fix. No statement anywhere in this record describes the deployed
-    service as fixed.
+  - **Deployment facts, stated plainly (2026-10-21):** at the time this fix record was
+    written, the deployed image (`sha256:8cf759f6…`, source revision `6b37a78…`) was unchanged
+    and still carried E5. The 2026-10-22 release and deployment recorded below carried the
+    fix to production.
 
 #### 2026-10-21 — E5 fixed in the local tree; the search-query contract is 1991 in the tree, 2048 on the deployed service
 
@@ -393,21 +453,12 @@ fix record below).
   a local, gitignored working record).
 - **Client-visible contract change:** the effective search-query limit in the TREE is now
   **1991 characters** (2048 minus the 57-character bge prefix); the fixes reject a longer query
-  at the edge with a **422** naming the field and the effective limit, where the deployed
-  service produces the opaque 500. **The deployed service still enforces 2048 on the request
-  model and still carries E5 — it still 500s for a 1992-to-2048-character query — until a
-  release supersedes it.** `client.md` and `README.md` have been updated to state 1991; those
-  two files are settled by other work and are not edited here. **Provenance-line note
-  (no edit made):** `client.md`'s header sentence "Everything below was read from the running
-  service, its source, or captured evidence" should be read, until the next release, as
-  describing the TREE's contract — the running DEPLOYED service still runs the pre-fix
-  `main.py` (revision `6b37a78…`) and still advertises the old 2048 search limit; a reader who
-  takes that sentence as describing the deployed image would be misled about the search-query
-  limit. Neither file carries an image-digest or version line, so no fix in those files is
-  required beyond this note.
-- **Contract state, side by side:**
+  at the edge with a **422** naming the field and the effective limit. `client.md` and
+  `README.md` were updated to state 1991. The limits of `/embed`, `/documents` and `/rerank`
+  are **UNCHANGED at 2048**.
+- **Contract state, side by side (state on 2026-10-21, now historical):**
 
-  | Surface | Tree contract (post-fix) | Deployed service (image `8cf759f6…`) |
+  | Surface | Tree contract (post-fix) | Deployed service on 2026-10-21 (image `8cf759f6…`) |
   |---|---|---|
   | `/search` `query` | **1991 characters**, oversized → 422 | **2048 characters** on the request model; 1992–2048 → opaque 500 (E5) |
   | `/embed` `text`, `/documents`, `/rerank` fields | 2048 characters — unchanged | 2048 characters — unchanged |
@@ -417,6 +468,44 @@ fix record below).
   produced E5 — appending to a validated string and re-wrapping it in a second validating
   model — no longer exists anywhere in the module: the defect CLASS is closed locally, not just
   this instance. A8 remains an open MINOR defect against the deployed service.
+
+#### 2026-10-22 — E5 fix published and deployed
+
+- **What changed:** The E5 fix was released, deployed and verified in production.
+- **Published image:**
+  `ghcr.io/fvitorino00/lemondrop-api@sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4`
+- **Source revision:** `6cc54bc4c09182e37575c5fedb2ad57c71dc7d58`
+- **Release:** GitHub Actions run **39708332804**, 9/9 jobs green, published the digest above
+  (`~/lemondrop-investigation/RELEASE-PUBLISH-EVIDENCE.txt`).
+- **Deploy:** SSM Run Command as root, command id
+  **b402a174-72b3-4422-8100-e45033b08aa4**, exit code **0**
+  (`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §DEPLOY).
+- **Verify:** SSM Run Command as root, command id
+  **4adcb66f-0b11-40f5-a638-33f35b7408b4**, exit code **0**, **PROBLEMS=0**
+  (`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §VERIFY).
+- **Behavioural proof against the deployed service:** a 2048-character `POST /search` query
+  returns HTTP **422** naming `query` with `max_length: 1991`; a 1992-character query returns
+  HTTP **422** with the same limit; a 1991-character query is accepted at the edge and then
+  the worker answers HTTP **502** (`{"detail":"reranker returned HTTP 500"}`) — the pre-existing,
+  documented worker-token residual (`api/app/main.py:124-126`), not the defect under repair
+  (`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §BOUNDARY_PROOF).
+- **Health routes:** `GET /health`, `GET /health/live` and `GET /health/ready` all returned
+  HTTP **200**; `/health/ready` reported `embedder`, `reranker` and `database` all `ok`
+  (`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §ALB_HEALTH).
+- **Post-release walkthrough:** a prediction was written before the first request; the
+  known-good probe returned HTTP **200** with `support-recycle-bin-file-recovery` first,
+  **5** results, **10** candidates, model `bge-reranker-base`, latency **14.615 s**. Host-side
+  `api`, `embedder` and `reranker` logs were captured over the same UTC window; reranker task
+  ids 1514–1523 independently confirm the 10 candidates. Source address measured as
+  `213.22.54.159` (`~/lemondrop-investigation/POST-RELEASE-WALKTHROUGH-EVIDENCE.txt`).
+- **What remains open / NOT observed:**
+  - The operator's own pre-committed prediction remains **outstanding**; the walkthrough
+    prediction was the agent's, written before execution.
+  - **ALB access-log hop** — not observed; access logs are off.
+  - **Database SQL-statement hop** — not observed; the exported PostgreSQL log holds only
+    periodic checkpoints over the window.
+  - **Request-id propagation** — none; correlation is by timestamp window only.
+  - The **DEP** finding (`pydantic` imported directly but not pinned) stays open; see below.
 
 #### H2 — `POST /search` collection with trailing whitespace echoes the wrong collection
 
@@ -556,11 +645,15 @@ fix record below).
   wheel..." A direct import of a package that is not explicitly pinned means a future FastAPI
   version could change the transitive pydantic version without this file recording the intent.
 - **Why this is NOT fixed in this pass:** Changing the dependency set would desynchronise the
-  repository from the deployed image's provenance. The currently deployed image
+  repository from the deployed image's provenance. The image deployed before this release
   (`sha256:8cf759f6…`) was built from the current `api/requirements.txt`, and adding or pinning
   `pydantic` here would make the source record diverge from that image. A dependency change
   requires a release decision, a new image build, and a new deployment record — all out of scope
   for this documentation-only correction pass.
+- **Operational note:** the AWS `[default]` login session expired on 2026-10-17 and is
+  unrecoverable without an interactive `aws login`. Every AWS call in this release used
+  `AWS_PROFILE=lemondrop` (static-key profile); that profile works
+  (`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §AWS_ACCESS).
 - **Consequence for acceptance:** Recorded as a finding for the next release cycle. No acceptance
   verdict is changed by this observation.
 - **2026-10-21 addition — pydantic strip-order analysis (from the independent review of the E5
@@ -581,18 +674,26 @@ fix record below).
 
 ### What was NOT captured
 
-The session explicitly did not capture the per-hop evidence that would turn the
-`/search` demonstration into a full end-to-end walkthrough:
+The 2026-10-21 session explicitly did not capture the per-hop evidence that would
+turn the `/search` demonstration into a full end-to-end walkthrough. The
+2026-10-22 post-release walkthrough captured the host-side `api`, `embedder` and
+`reranker` container logs over the same UTC window; the following remain
+unrecorded:
 
-- Host-side `api`, `embedder` and `reranker` container logs correlated over the same UTC window.
-- A read of the RDS `postgresql` log for the request window.
+- A read of the RDS `postgresql` log for the request window — the exported log
+  held only periodic checkpoints.
 - ALB access logs — they are OFF by design and were not enabled.
-- A second predicted-before-execution test under the `M5-001` convention.
+- A second predicted-before-execution test under the `M5-001` convention by the
+  operator (the operator's own prediction remains outstanding).
 - Evidence retained in a checksummed directory per the `M5-001` convention.
 
 ### Evidence source
 
-`~/lemondrop-investigation/CLIENT-PERSPECTIVE-EVIDENCE.md`
+- `~/lemondrop-investigation/CLIENT-PERSPECTIVE-EVIDENCE.md` (2026-10-21 session).
+- `~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` (2026-10-22 deploy and
+  boundary proof).
+- `~/lemondrop-investigation/POST-RELEASE-WALKTHROUGH-EVIDENCE.txt`
+  (2026-10-22 walkthrough and per-hop correlation).
 
 ### Static documentation audit — 2026-10-21
 

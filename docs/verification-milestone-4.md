@@ -872,20 +872,24 @@ This addendum draws on the following witness files:
 - `scripts/test-deploy-rollback.sh`
 - `.github/workflows/tests.yml`
 
-### 16.9 Cross-reference added after the M4 cycle — 2026-10-21
+### 16.9 Cross-reference added after the M4 cycle — 2026-10-21, updated 2026-10-22
 
 **This note adds a cross-reference only; it does not alter any M4 status, any
 witness above, or the two limitations preserved in §16.7.**
 
-The image this addendum describes — digest `sha256:8cf759f688daad5c5fbcc8a4efb6101de1de0f8efdf18c70e6aa7a8cd99f6110`,
+The image this addendum originally described — digest `sha256:8cf759f688daad5c5fbcc8a4efb6101de1de0f8efdf18c70e6aa7a8cd99f6110`,
 source revision `6b37a780e293003ba952c3e9062e8c5d126639e9` (§16.5) — was found,
 **after the M4 cycle**, to carry a **CRITICAL defect in `/search`**: a
-`POST /search` request with a query of exactly 2048 characters returns an opaque
+`POST /search` request with a query of exactly 2048 characters returned an opaque
 HTTP 500 (`Internal Server Error`, `text/plain`). The fix for this defect
-(candidate fault **E5**, root cause confirmed) exists **in the local tree only**;
-**the deployed image still carries the defect** and still returns the opaque 500
-for a 1992-to-2048-character query. A new image build and a deployment are
-required to carry the fix. The full symptom capture, fix record and verification
-evidence are in `docs/verification-milestone-5.md` §8 (the E5 entry and the
-dated 2026-10-21 entry there). No M4 status above is changed by this defect; M4
-remains subject to the limitations in §16.7 exactly as recorded.
+(candidate fault **E5**, root cause confirmed) was released and deployed on
+2026-10-22 as image `ghcr.io/fvitorino00/lemondrop-api@sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4`
+(source revision `6cc54bc4c09182e37575c5fedb2ad57c71dc7d58`) by GitHub Actions
+run 39708332804, with deploy command `b402a174-72b3-4422-8100-e45033b08aa4` and
+verify command `4adcb66f-0b11-40f5-a638-33f35b7408b4`, both exit 0. The deployed
+service now refuses a 1992-to-2048-character query at the edge with HTTP 422
+naming `query` and `max_length: 1991`. The full symptom capture, fix record,
+deployment evidence and post-release walkthrough are in
+`docs/verification-milestone-5.md` §8. **No M4 status above is changed by this
+defect or its remediation; M4 remains subject to the limitations in §16.7 exactly
+as recorded.**

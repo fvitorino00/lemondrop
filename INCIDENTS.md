@@ -389,7 +389,7 @@ Their current status in `docs/verification-milestone-5.md` §8 is:
 
 | ID | Description | Severity in §8 | Current status |
 |---|---|---|---|
-| **E5** | `/search` 2048-character query → opaque HTTP 500 | **CRITICAL** | Fixed in the local tree on 2026-10-21 (root cause confirmed; boundary now 1991; see `docs/verification-milestone-5.md` §8). **NOT deployed** — the deployed image (`8cf759f6…`, revision `6b37a78…`) still carries the defect and still returns the opaque 500 for a 1992-to-2048-character query; a new image build and deployment are required. |
+| **E5** | `/search` 2048-character query → opaque HTTP 500 | **CRITICAL** | **Fixed and deployed** on 2026-10-22 as image `ghcr.io/fvitorino00/lemondrop-api@sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4` (source revision `6cc54bc4c09182e37575c5fedb2ad57c71dc7d58`; release run 39708332804; deploy command `b402a174-72b3-4422-8100-e45033b08aa4` exit 0; verify command `4adcb66f-0b11-40f5-a638-33f35b7408b4` exit 0). The deployed service now refuses a 1992-to-2048-character query at the edge with HTTP 422 naming `query` and `max_length: 1991`. Historical capture retained in `docs/verification-milestone-5.md` §8. |
 | **H2** | `/search` collection with trailing whitespace echoes the wrong collection | **WITHDRAWN-AS-RECORDED** (was BLOCKING) | Refuted by 2026-10-21 controlled A/B reproduction; trailing space is stripped consistently for lookup and echo. |
 | **A8** | NUL byte and control characters in a collection value reach a 503 path | **MINOR** | Open observation. |
 | **A14** | 990 KB `/embed` body echoed back in the 422 response | **COSMETIC** | Open observation. |
@@ -399,4 +399,5 @@ These are **NOT incident records**. None of them was produced by an operator-dri
 fault exercise with a pre-recorded hypothesis, a broken state captured before
 correction, a smallest-defensible correction, and an identical read-only pair
 after recovery. The three required incident records therefore remain at **0 of 3**,
-pending an operator-led exercise.
+pending an operator-led exercise. `docs/maintenance-challenge.md` is unexecuted
+preparation for that exercise.

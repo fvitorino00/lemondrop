@@ -7,10 +7,11 @@
 
 Everything below was read from the running service, its source, or captured
 evidence, except where stated otherwise. The 1991-character limit on `query`
-for `POST /search` and its 422 refusal are the tree's contract from the release
-that carries this fix; the revision currently deployed still enforces 2048
-characters and still returns the opaque HTTP 500 for a 1992-to-2048-character
-query. Any value that could not be verified has been omitted or marked
+for `POST /search` and its 422 refusal are the contract of the deployed revision
+(`ghcr.io/fvitorino00/lemondrop-api@sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4`,
+source revision `6cc54bc4c09182e37575c5fedb2ad57c71dc7d58`); the deployed service
+refuses a longer query at the edge with HTTP 422 naming the field and the limit.
+Any value that could not be verified has been omitted or marked
 `[TO BE CONFIRMED]` rather than guessed.
 
 ---

@@ -52,6 +52,10 @@ Operational runbook for the Milestone 2 AWS stack. All commands assume the
 
 ## 2. Deploy
 
+> **AWS profile note (2026-10-22):** the `[default]` login session expired on
+> 2026-10-17 and is unrecoverable without an interactive `aws login`. Until the
+> default session is restored, AWS operations need `AWS_PROFILE=lemondrop`.
+
 ### 2a. Bootstrap the S3 state bucket (one-time)
 
 ```bash
