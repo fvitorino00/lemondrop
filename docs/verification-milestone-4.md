@@ -577,14 +577,14 @@ not, and no equivalent exists for them.
 > *"A second engineer must be able to deploy a tested revision without manually reconstructing
 > the original environment."*
 
-**That text is recorded here because the document it was written in is not in this
-revision.** `docs/m4-plan.md` is **untracked** — `git status` reports it as
-`?? docs/m4-plan.md` — and a clean clone of this repository does not contain it. Every
-tracked file that cited it by line number, **including this one**, was a dangling
-reference, and a dangling reference to the criterion is the worst kind: the milestone
-is judged against a sentence a second reader cannot reach. **So the sentence is
-recorded here, in a tracked document, and this section is its home.** `docs/deployment.md`
-§6.5 cites this section rather than a file that is not there.
+**That text is recorded here because the document it was written in is now tracked in
+this repository.** `docs/m4-plan.md` is **tracked** — `git ls-files docs/m4-plan.md`
+lists it, and it was committed in `0e2761c` ("docs: preserve the M4 and M5 acceptance
+records") on 2026-10-17 — so a clean clone of this repository contains it. Every
+tracked file that cited it by line number, **including this one**, now resolves to a file
+a second reader can reach. **So the sentence is recorded here, in a tracked document,
+and this section is its home.** `docs/deployment.md` §6.5 cites this section rather than
+a file that is not there.
 
 **The operationalisation of the same sentence, as written:**
 
@@ -818,14 +818,16 @@ The deployed image as of the 2026-10-22 release is:
 
 | Field | Value | Source |
 |---|---|---|
-| Image digest | `sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4` | `RELEASE-DEPLOY-EVIDENCE.txt` §IMAGE_DIGEST |
-| Source revision | `6cc54bc4c09182e37575c5fedb2ad57c71dc7d58` | image OCI label; `RELEASE-DEPLOY-EVIDENCE.txt` §PROVENANCE |
-| Alembic head | `0001` | image OCI label; `RELEASE-DEPLOY-EVIDENCE.txt` §SCHEMA |
-| `verify-deployment.sh` | exit 0, verdict AGREE/PROVENANCE AGREE/SCHEMA AGREE | `RELEASE-DEPLOY-EVIDENCE.txt` §VERIFY |
+| Image digest | `sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4` | `~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §VERIFY (revision record) |
+| Source revision | `6cc54bc4c09182e37575c5fedb2ad57c71dc7d58` | image OCI label; `~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §VERIFY (labels on the image) |
+| Alembic head | `0001` | image OCI label; `~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §VERIFY (labels on the image) |
+| `verify-deployment.sh` | exit 0, verdict AGREE/PROVENANCE AGREE/SCHEMA AGREE | `~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §VERIFY (AGREE verdicts) |
 
-Witness: `~/lemondrop-investigation/HANDOFF-20261021.md` §2;
-`~/lemondrop-investigation/PHASE-A-DEPLOY-EVIDENCE.txt` §STEP 3;
-`~/lemondrop-investigation/PHASE-B-ROLLBACK-EVIDENCE.txt` §6 (Step 10) and §8.
+Witness: `~/lemondrop-investigation/HANDOFF-20261021.md` §2 (release handoff);
+`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §DEPLOY and §VERIFY (the 2026-10-22
+deploy command, the image it pulled, and the post-deploy verification record). The
+PHASE-A/PHASE-B artefacts in the same corpus record the earlier M4-cycle image
+(`sha256:8cf759f6…`) and are not the witness for the 2026-10-22 image in the table above.
 
 ### 16.6 Rollback rehearsal
 
@@ -879,19 +881,21 @@ This addendum draws on the following witness files:
 **This note adds a cross-reference only; it does not alter any M4 status, any
 witness above, or the two limitations preserved in §16.7.**
 
-The image this addendum originally described — digest `sha256:8cf759f688daad5c5fbcc8a4efb6101de1de0f8efdf18c70e6aa7a8cd99f6110`,
-source revision `6b37a780e293003ba952c3e9062e8c5d126639e9` (§16.5) — was found,
-**after the M4 cycle**, to carry a **CRITICAL defect in `/search`**: a
-`POST /search` request with a query of exactly 2048 characters returned an opaque
-HTTP 500 (`Internal Server Error`, `text/plain`). The fix for this defect
-(candidate fault **E5**, root cause confirmed) was released and deployed on
-2026-10-22 as image `ghcr.io/fvitorino00/lemondrop-api@sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4`
-(source revision `6cc54bc4c09182e37575c5fedb2ad57c71dc7d58`) by GitHub Actions
-run 39708332804, with deploy command `b402a174-72b3-4422-8100-e45033b08aa4` and
-verify command `4adcb66f-0b11-40f5-a638-33f35b7408b4`, both exit 0. The deployed
-service now refuses a 1992-to-2048-character query at the edge with HTTP 422
-naming `query` and `max_length: 1991`. The full symptom capture, fix record,
-deployment evidence and post-release walkthrough are in
-`docs/verification-milestone-5.md` §8. **No M4 status above is changed by this
-defect or its remediation; M4 remains subject to the limitations in §16.7 exactly
-as recorded.**
+The image that was current immediately before the 2026-10-22 release — digest
+`sha256:8cf759f688daad5c5fbcc8a4efb6101de1de0f8efdf18c70e6aa7a8cd99f6110`, source
+revision `6b37a780e293003ba952c3e9062e8c5d126639e9`
+(`~/lemondrop-investigation/RELEASE-DEPLOY-EVIDENCE.txt` §VERIFY,
+`PREVIOUS_IMAGE_DIGEST` / `PREVIOUS_REVISION`) — was found, **after the M4 cycle**,
+to carry a **CRITICAL defect in `/search`**: a `POST /search` request with a query of
+exactly 2048 characters returned an opaque HTTP 500 (`Internal Server Error`,
+`text/plain`). The fix for this defect (candidate fault **E5**, root cause confirmed)
+was released and deployed on 2026-10-22 as image
+`ghcr.io/fvitorino00/lemondrop-api@sha256:c2c1d81c5e743fb8b92b6b9e244179441c345d9441341e525d8d6865dfab39d4`
+(source revision `6cc54bc4c09182e37575c5fedb2ad57c71dc7d58`) by GitHub Actions run
+39708332804, with deploy command `b402a174-72b3-4422-8100-e45033b08aa4` and verify
+command `4adcb66f-0b11-40f5-a638-33f35b7408b4`, both exit 0. The deployed service now
+refuses a 1992-to-2048-character query at the edge with HTTP 422 naming `query` and
+`max_length: 1991`. The full symptom capture, fix record, deployment evidence and
+post-release walkthrough are in `docs/verification-milestone-5.md` §8. **No M4 status
+above is changed by this defect or its remediation; M4 remains subject to the
+limitations in §16.7 exactly as recorded.**

@@ -133,7 +133,7 @@ section, following the five-stage template in `INCIDENTS.md` §4.
 
 | # | Deliverable | Status |
 |---|---|---|
-| a | Git repo with app / Terraform / Docker / tests / automation | **PRESENT/PASS.** The repository is present at `HEAD 9dd90c9`; `api/`, `infra/`, `docker-compose.yml`, `scripts/` and `.github/workflows/` are committed. `models/` contains only the `.gitkeep` placeholder — the `*.gguf` weight files are gitignored and are not tracked. |
+| a | Git repo with app / Terraform / Docker / tests / automation | **PRESENT/PASS.** The repository is present at the current `HEAD`; `api/`, `infra/`, `docker-compose.yml`, `scripts/` and `.github/workflows/` are committed. `models/` contains only the `.gitkeep` placeholder — the `*.gguf` weight files are gitignored and are not tracked. The E5 fix was introduced in `04ab05d` and the M5 record in `6cc54bc`; both are in `main` history. |
 | b | Architecture diagram (networks, routing, ports, security groups, dependencies) | **PASS.** `docs/architecture.md` is present and committed; its content covers §1 network topology, §2 ports, §3 the security-group matrix, §4 request flow, §6 non-reachability/egress, and §7 service dependencies. The adequacy judgement remains the operator's gate. |
 | c | Reproducible README | **PARTIAL.** `README.md` is committed and corrected. A static documentation audit now exists as a dated record at `/home/zaratustra0/lemondrop-investigation/README-RUNBOOK-AUDIT.md` (99 claim rows — 74 MATCH, 6 PARTIAL, 13 MISMATCH, 6 NOT-CHECKABLE-STATICALLY; all 13 mismatches corrected, including the T3-tier subset wording in `README.md`). That audit is a static text check, not a runtime proof. A **clean-host reproduction still does not exist** and remains the outstanding part. |
 | d | Operational RUNBOOK | **PARTIAL.** A static documentation audit now exists at `/home/zaratustra0/lemondrop-investigation/README-RUNBOOK-AUDIT.md` (99 claim rows — 74 MATCH, 6 PARTIAL, 13 MISMATCH, 6 NOT-CHECKABLE-STATICALLY; all 13 mismatches corrected). The artefact establishes that every documented command's path, flags, variables, counts and citations in `README.md`, `RUNBOOK.md`, `COSTS.md` and `docs/end-to-end-demo.md` was checked statically against the repository at HEAD. It does **not** establish that any recovery command was executed, that any command works at runtime, or that the end-to-end command audit was performed — that remains outstanding. The `db_skip_final_snapshot` correction in `RUNBOOK.md` is in place and is not at risk. |
@@ -421,10 +421,15 @@ The fix was proven against the **deployed** service through the public ALB.
       (pre-fix `api/app/main.py` from `04ab05d^` plus the current test files), the model-level
       probe failed with `DID NOT RAISE ValidationError` and the ASGI-level boundary test failed
       with `AssertionError: Internal Server Error; assert 500 == 422`. The verbatim output is
-      captured in `POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 2.
+      captured in `/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt`
+      Capture 2 (the evidence corpus lives outside the repository by project convention).
     - **Red/green discrimination experiment:** with the boundary loosened back to 2048 while the
-      constant stayed, the two boundary tests went red. The OLD suite passed 50/50 against the
-      unfixed code, which proves the old suite could not have caught this bug.
+      constant stayed, the two boundary tests went red. The OLD suite
+      (`api/tests/test_request_models.py` at `04ab05d^`) passed **50/50** against the unfixed
+      code (`api/app/main.py` at `04ab05d^`), measured in a scratch copy under `/tmp/opencode`
+      and captured in `/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt`
+      Capture 4 (the evidence corpus lives outside the repository by project convention), which
+      proves the old suite could not have caught this bug.
     - **New service-free ASGI-level test module** `api/tests/test_search_boundary.py` (3 tests,
       embedder and store stubbed): (i) a 2048-character query yields 422 with `application/json`,
       `type == "string_too_long"`, `loc == ["body","query"]`, `ctx["max_length"] ==
@@ -438,11 +443,14 @@ The fix was proven against the **deployed** service through the public ALB.
       tree, with the container's `main.py` SHA-256 proven equal to the working tree's: T1
       **149 passed**, T2 **28 passed**, T3 **31 passed**, full suite **208 passed** (plus
       9 subtests). The verbatim commands, counts, image-hash proof and localhost proof are in
-      `POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 1. The CI tier-classification drift gate
-      reproduces as PASS with `inventory=208 T1=149 T2=28 T3=31 classified=208`.
+      `/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 1 (the
+      evidence corpus lives outside the repository by project convention). The CI tier-classification
+      drift gate reproduces as PASS with `inventory=208 T1=149 T2=28 T3=31 classified=208`.
     - **Strip-order analysis:** the boundary safety of the E5 fix was verified by measurement
-      (`POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 3): pydantic 2.14.1 strips before the length
-      check, and under either strip ordering the forwarded string stays within the worker budget.
+      (`/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 3; the
+      evidence corpus lives outside the repository by project convention): pydantic 2.14.1 strips
+      before the length check, and under either strip ordering the forwarded string stays within
+      the worker budget.
       The independent review that reported `PASS_WITH_FINDINGS` is referenced in the record, but
       its transcript is not a retained artefact in the published repository.
   - **Deployment facts, stated plainly (2026-10-21):** at the time this fix record was
@@ -664,12 +672,15 @@ The fix was proven against the **deployed** service through the public ALB.
 - **2026-10-21 addition — pydantic strip-order analysis (from the independent review of the E5
   fix, verdict PASS_WITH_FINDINGS).** The review transcript is not a retained artefact in the
   published repository; the strip-order property is grounded in the measurement captured in
-  `POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 3 (pydantic 2.14.1). The boundary safety of the E5
-  fix does not depend on pydantic's strip ordering: an accepted input cannot exceed the worker
-  2048-character budget under either ordering. Measured behaviour of the installed pydantic: it
-  **strips BEFORE the length checks** — a raw 2000-character input of which 9 are trailing
-  whitespace is accepted, stored as 1991, and forwarded as `QUERY_PREFIX + 1991` = 2048, which
-  is exactly inside the worker budget. Under the opposite ordering (length check on the
+  `/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 3
+  (pydantic 2.14.1; the evidence corpus lives outside the repository by project convention).
+  The boundary safety of the E5 fix does not depend on pydantic's strip ordering: an accepted
+  input cannot exceed the worker 2048-character budget under either ordering. Measured
+  behaviour of the installed pydantic: it **strips BEFORE the length checks** — a raw
+  **1992**-character input of which **1** character is trailing whitespace is accepted, stored
+  as 1991, and forwarded as `QUERY_PREFIX + 1991` = 2048, which is exactly inside the worker
+  budget (`/home/zaratustra0/lemondrop-investigation/POST-FIX-FULL-SUITE-EVIDENCE.txt` Capture 3,
+  `trailing-whitespace N+1`). Under the opposite ordering (length check on the
   unstripped string) the behaviour would be stricter, not looser; under NEITHER ordering can an
   accepted input exceed the worker budget. The old code path was byte-identical in what it
   forwarded: constructing the old `EmbedRequest` re-stripped an already-stripped string, a no-op.
