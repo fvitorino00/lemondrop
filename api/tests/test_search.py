@@ -88,6 +88,7 @@ from sqlalchemy import text
 
 from app import config, db, store
 from app.config import get_settings
+from app.main import MAX_INFERENCE_INPUT_CHARS, MAX_SEARCH_QUERY_CHARS
 
 # The API under test. Read from the environment with a localhost default,
 # matching the convention in test_db.py, test_integration.py and
@@ -976,6 +977,61 @@ def test_a_blank_query_or_collection_is_a_422_not_a_500():
         assert response.status_code == 422, (
             f"{override!r} returned {response.status_code}, expected 422: {response.text[:300]}"
         )
+
+
+def test_a_2048_character_query_is_a_422_not_a_500():
+    """REGRESSION: the old crash input must be refused at the edge, never crash.
+
+    With the default 57-character bge query prefix, a 2048-character query
+    becomes a 2105-character forwarded string. Before the fix this passed
+    ``SearchRequest`` and then raised an unhandled ``pydantic.ValidationError``
+    inside the handler, surfacing as a 500. After the fix the request model
+    itself rejects it with 422.
+    """
+    response = search(EMPTY_COLLECTION, "x" * MAX_INFERENCE_INPUT_CHARS)
+
+    assert response.status_code == 422, (
+        f"a 2048-character query returned {response.status_code}, expected 422: "
+        f"{response.text[:300]}"
+    )
+    assert "500" not in response.text, (
+        f"the 2048-character query response smells like a 500: {response.text[:300]}"
+    )
+
+
+def test_a_query_at_the_effective_search_limit_is_accepted_by_the_edge():
+    """A query of exactly MAX_SEARCH_QUERY_CHARS is accepted by the edge.
+
+    The effective limit is smaller than ``/embed``'s limit because ``/search``
+    adds the bge query prefix before forwarding. The test uses an empty
+    collection so a healthy stack returns 200 with zero candidates; a 502 from
+    the embedder on pathological input is also acceptable, but a 422 means the
+    boundary is wrong.
+    """
+    response = search(EMPTY_COLLECTION, "x" * MAX_SEARCH_QUERY_CHARS)
+
+    assert response.status_code in {200, 502}, (
+        f"a query at the effective limit returned {response.status_code}: "
+        f"{response.text[:300]}. A 422 means the boundary is wrong."
+    )
+
+
+def test_an_over_limit_search_query_422_names_query_and_the_effective_limit():
+    """The 422 for an over-long query names `query` and MAX_SEARCH_QUERY_CHARS."""
+    response = search(EMPTY_COLLECTION, "x" * (MAX_SEARCH_QUERY_CHARS + 1))
+
+    assert response.status_code == 422, (
+        f"over-limit query returned {response.status_code}, expected 422: "
+        f"{response.text[:300]}"
+    )
+
+    detail = response.json().get("detail", [])
+    assert any(
+        item.get("type") == "string_too_long"
+        and "query" in item.get("loc", [])
+        and item.get("ctx", {}).get("max_length") == MAX_SEARCH_QUERY_CHARS
+        for item in detail
+    ), f"expected a string_too_long error on query with limit {MAX_SEARCH_QUERY_CHARS}: {detail}"
 
 
 # ── 7. Every score belongs to its own document ───────────────────────────────

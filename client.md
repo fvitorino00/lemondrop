@@ -6,7 +6,11 @@
 > here and are out of scope for a client — see §9.
 
 Everything below was read from the running service, its source, or captured
-evidence. Any value that could not be verified has been omitted or marked
+evidence, except where stated otherwise. The 1991-character limit on `query`
+for `POST /search` and its 422 refusal are the tree's contract from the release
+that carries this fix; the revision currently deployed still enforces 2048
+characters and still returns the opaque HTTP 500 for a 1992-to-2048-character
+query. Any value that could not be verified has been omitted or marked
 `[TO BE CONFIRMED]` rather than guessed.
 
 ---
@@ -123,11 +127,17 @@ Field rules, all enforced by the service:
 - `top_n` on `/rerank` must be **≥ 1** if supplied. When omitted, the API does
   not send it to the worker at all, and the worker applies its own default.
 
-- Worker-bound text fields — `text` on `POST /embed`, `query` on `POST /search`,
-  and each document entry on `POST /rerank` — are limited to **2048 characters**.
-  A longer value is refused at the API edge with **422** naming the field and the
-  limit, instead of being forwarded to a worker that would answer with a permanent
-  502. The 2048-character figure is a CHARACTER proxy for the worker's 512-token
+- Worker-bound text fields — `text` on `POST /embed` and each document entry on
+  `POST /rerank` — are limited to **2048 characters**. `query` on `POST /search`
+  is limited to **1991 characters** by default, because `/search` prepends an
+  internal embedding prefix (`Represent this sentence for searching relevant
+  passages: `, 57 characters) before forwarding the combined string to the
+  worker. The smaller query allowance is exact arithmetic on a fixed service-side
+  constant, not a token estimate. A longer value is refused at the API edge with
+  **422** naming the field and the effective limit, instead of being forwarded to
+  a worker that would answer with a permanent 502.
+
+- The 2048-character figure is a CHARACTER proxy for the worker's 512-token
   ceiling (512 tokens × ~4 chars/token of realistic BPE prose) and cannot be
   exact: tokenisation is not a function of character count alone, so pathological
   low-density input (long unbroken character runs) can still exceed the worker's
@@ -406,7 +416,12 @@ This is the same claim: the API cannot serve the request right now.
 
 Two related cases, stated so their status codes are not a surprise: if the
 database fails **while** `POST /search` is running, that is also **503**, with
-the body `{"detail":"the document store could not be searched"}`. If storage
+the body `{"detail":"the document store could not be searched"}`. The same body
+has also been observed when client-controlled bytes (for example, a `collection`
+value containing a NUL byte and control characters) cause the storage layer to
+reject the request rather than the database being genuinely unavailable; see
+`docs/verification-milestone-5.md` §8 (finding A8) and
+`~/lemondrop-investigation/CLIENT-PERSPECTIVE-EVIDENCE.md`. If storage
 fails **while** `POST /documents` is running, that is **502**
 (`{"detail":"the document could not be stored"}`) — the API itself is fine, the
 write did not complete.
@@ -469,6 +484,22 @@ Check the following on every response:
   `collection`, and the top-level `collection` echoes what you asked for. In a
   correct response, every `results[*].collection` equals it. This is the
   collection-isolation property, and it is what a scoped search must hold.
+
+  Note: a `collection` value with trailing whitespace is handled consistently.
+  A controlled A/B reproduction on 2026-10-21 (UTC 22:09:39Z and 22:09:57Z)
+  sent two `POST /search` requests that differed by exactly one trailing 0x20
+  byte in the collection value (`"it-support "` versus `"it-support"`). Both
+  requests produced byte-for-byte identical responses: HTTP 200, Content-Length
+  8603, body sha256
+  `3cdc9f4dccc243745ca7588ac1294999e825f07d12bb80361ac50d6873b2f4fe`. The
+  top-level `collection` and every `results[*].collection` in both bodies is
+  exactly `"it-support"` with no trailing space; `grep -o 'it-support '` matched
+  zero occurrences in either body. The earlier capture that suggested a mismatch
+  did not reproduce: the trailing space is stripped before both the lookup and
+  the response echo, matching the rule in §3 that leading and trailing whitespace
+  is stripped first. See `docs/verification-milestone-5.md` §8 (finding H2,
+  withdrawn as recorded) and
+  `~/lemondrop-investigation/CLIENT-PERSPECTIVE-EVIDENCE.md`.
 - **`candidates_considered` explains emptiness.** `0` means stage 1 found no
   documents at all in that collection (or that the name matched nothing).
   `0` with an empty `results` list is the fact "nothing was searched". A
@@ -522,18 +553,21 @@ brevity. Note the shape of the check: every result's `collection` is `it-support
 (matching the request), `candidates_considered` is 10, and both `relevance_score`
 and `distance` are present on every row.
 
-### Historical observation (recorded once)
+### Historical observation
 
-A single search scoped to `it-support` was observed, **once**, against the
-deployed service. On that one run it returned:
+A search scoped to `it-support` has been observed **more than once**: first as
+`M5-001` on 2026-10-15, and again during the client-perspective session on
+2026-10-21. On the `M5-001` run it returned:
 
 - **HTTP 200**, in **15.234854 s**;
 - with **10 candidates considered** and **5 results returned**;
 - the document `support-recycle-bin-file-recovery` ranked first.
 
-The exact query string used for that recorded run was **not captured**, so it is
-not shown next to the numbers and must not be paired with them. These figures are
-a single historical observation of one run against one deployment: they are not a
+The exact query string used for the `M5-001` recorded run was **not captured**,
+so it is not shown next to the numbers and must not be paired with them. The
+2026-10-21 session was a **demonstration, not a predicted test** under the
+operator's PREDICT→EXECUTE→OBSERVE→EXPLAIN→REVIEW contract. These figures are
+historical observations of individual runs against one deployment: they are not a
 guarantee, a specification, or a figure any other request should be expected to
 reproduce.
 

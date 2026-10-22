@@ -131,6 +131,27 @@ INFERENCE_TIMEOUT_SECONDS = 120.0
 # would answer with a permanent, non-retryable 500.
 MAX_INFERENCE_INPUT_CHARS = 2048
 
+# The largest search query /search will accept from a caller, in characters.
+#
+# /search forwards ``QUERY_PREFIX + query`` to the embedder, and
+# MAX_INFERENCE_INPUT_CHARS is the cap on what is forwarded TO THE WORKER — the
+# prefix is part of that forwarded string, so it consumes part of the caller's
+# allowance. With the default 57-character prefix the caller's allowance is
+# therefore 1991 characters, and the sum ``len(QUERY_PREFIX) +
+# MAX_SEARCH_QUERY_CHARS`` equals the worker budget exactly.
+#
+# This is exact arithmetic on a known, service-side constant — NOT the "false
+# precision over a character proxy" that the /rerank comment below warns about;
+# that warning concerns two CALLER-supplied fields whose token interaction is
+# unknown, whereas the prefix is a fixed constant this service adds.
+MAX_SEARCH_QUERY_CHARS = MAX_INFERENCE_INPUT_CHARS - len(QUERY_PREFIX)
+if MAX_SEARCH_QUERY_CHARS < 1:
+    raise RuntimeError(
+        f"QUERY_PREFIX ({len(QUERY_PREFIX)} chars) is longer than the entire "
+        f"inference budget (MAX_INFERENCE_INPUT_CHARS={MAX_INFERENCE_INPUT_CHARS}); "
+        "a search query would have no usable allowance"
+    )
+
 # Strings a caller must actually provide. Declared here, once, so that the
 # rejection rule is written down in a single place and cannot drift between the
 # two request bodies below.
@@ -153,6 +174,20 @@ NonBlankText = Annotated[
         strip_whitespace=True,
         min_length=1,
         max_length=MAX_INFERENCE_INPUT_CHARS,
+    ),
+]
+
+# The same rule as ``NonBlankText``, but with the smaller maximum that accounts
+# for the bge query prefix that /search adds before forwarding to the worker.
+# This type is what makes an over-long query a FastAPI 422 on the field, rather
+# than a pydantic.ValidationError raised inside the handler after the prefix has
+# been concatenated.
+SearchQueryText = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_SEARCH_QUERY_CHARS,
     ),
 ]
 
@@ -657,10 +692,11 @@ class EmbedRequest(BaseModel):
     """Body of POST /embed — exactly one piece of text.
 
     One field, because this route does one thing. `/search` now exists and it
-    embeds its query by calling this handler, so the temptation to add a `kind`
-    field or a batch here is real — and it is refused for the reason in this
-    route's docstring: a prefix applied here cannot tell documents from
-    queries, and it is the document case that is expensive to get wrong.
+    embeds its query through the same internal helper this route uses, so the
+    temptation to add a `kind` field or a batch here is real — and it is refused
+    for the reason in this route's docstring: a prefix applied here cannot tell
+    documents from queries, and it is the document case that is expensive to get
+    wrong.
     """
 
     # Required, and must contain something. See NonBlankText for why this is
@@ -692,43 +728,20 @@ class EmbedResponse(BaseModel):
     model: str
 
 
-@app.post("/embed", response_model=EmbedResponse, summary="Embed a single piece of text")
-async def embed(request: EmbedRequest) -> EmbedResponse:
-    """Turn one piece of text into one vector, by asking the embedder.
+async def _embed_text(text: str) -> EmbedResponse:
+    """Turn one plain string into one ``EmbedResponse`` by calling the embedder.
 
-    ── WHY THERE IS NO bge QUERY PREFIX HERE. READ THIS BEFORE "FIXING" IT ──
-    #
-    # bge-small-en-v1.5 was trained with a fixed instruction string prepended to
-    # the text of a SEARCH QUERY:
-    #
-    #     Represent this sentence for searching relevant passages:
-    #
-    # That prefix is for QUERIES ONLY. Documents must never carry it. The two
-    # are encoded by the same model into the same vector space, but only the
-    # document vectors are stored and retrieved: append the prefix to a document
-    # and its stored vector moves off the manifold the documents live on, so it
-    # becomes much harder to match against a prefixed query later. The damage is
-    # silent and permanent — it is written into whatever database holds it, and
-    # nothing in the response says it happened.
-    #
-    # So /embed forwards `text` BARE, exactly as given. This is a decision, not
-    # an oversight, and not a missing feature. It is also the correct default
-    # for this endpoint in a way that is easy to miss: /embed does not know
-    # whether its text will be a query or a document, and a document is the case
-    # that is expensive to get wrong. Prefixing here would corrupt stored
-    # vectors; not prefixing can at worst cost a little query accuracy, and only
-    # once /search exists to do it properly.
-    #
-    # WHERE THE PREFIX BELONGS: /search. That route is the one that knows, by
-    # construction, which side of the retrieval pair it is on, and it is where
-    # the prefix gets added to the query and to nothing else. It arrived after
-    # this docstring was written; the argument above is unchanged by that, and
-    # the fact that /search applies the prefix to its query is exactly the
-    # reason this route must not apply it to anything.
-    #
-    # The deliberate omissions, so that nobody re-litigates them later: no `kind`
-    # field, no query/document variants of this route, no parameterised prefix.
-    # Each was considered and rejected.
+    This is the internal implementation shared by ``POST /embed``,
+    ``POST /documents`` and ``POST /search``. It takes a plain ``str`` instead of
+    an ``EmbedRequest`` because ``EmbedRequest`` is the EDGE contract: building
+    one from an already-validated internal string re-applies the public
+    ``NonBlankText`` limit and allowed a prefixed query to overflow that limit
+    after ``SearchRequest.query`` had already been accepted. Receiving a plain
+    string makes that second validation structurally impossible.
+
+    The text is forwarded BARE — no bge query prefix is added here. See
+    ``embed``'s docstring for why prefixing at this layer would corrupt stored
+    document vectors, and why the prefix belongs only in ``POST /search``.
     """
     # The OpenAI-compatible request shape the embedder server accepts. "model" is
     # the alias registered at server start, not a filename and not a HF repo id.
@@ -737,7 +750,7 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
     payload = {
         "model": EMBEDDER_MODEL_ALIAS,
         # Bare. See the block above. Do not add the bge query prefix here.
-        "input": [request.text],
+        "input": [text],
     }
 
     body = await _post_upstream(f"{EMBEDDER_URL}/v1/embeddings", payload, "embedder")
@@ -778,6 +791,47 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
         )
 
     return EmbedResponse(embedding=vector, dimensions=len(vector), model=EMBEDDER_MODEL_ALIAS)
+
+
+@app.post("/embed", response_model=EmbedResponse, summary="Embed a single piece of text")
+async def embed(request: EmbedRequest) -> EmbedResponse:
+    """Turn one piece of text into one vector, by asking the embedder.
+
+    ── WHY THERE IS NO bge QUERY PREFIX HERE. READ THIS BEFORE "FIXING" IT ──
+    #
+    # bge-small-en-v1.5 was trained with a fixed instruction string prepended to
+    # the text of a SEARCH QUERY:
+    #
+    #     Represent this sentence for searching relevant passages:
+    #
+    # That prefix is for QUERIES ONLY. Documents must never carry it. The two
+    # are encoded by the same model into the same vector space, but only the
+    # document vectors are stored and retrieved: append the prefix to a document
+    # and its stored vector moves off the manifold the documents live on, so it
+    # becomes much harder to match against a prefixed query later. The damage is
+    # silent and permanent — it is written into whatever database holds it, and
+    # nothing in the response says it happened.
+    #
+    # So /embed forwards `text` BARE, exactly as given. This is a decision, not
+    # an oversight, and not a missing feature. It is also the correct default
+    # for this endpoint in a way that is easy to miss: /embed does not know
+    # whether its text will be a query or a document, and a document is the case
+    # that is expensive to get wrong. Prefixing here would corrupt stored
+    # vectors; not prefixing can at worst cost a little query accuracy, and only
+    # once /search exists to do it properly.
+    #
+    # WHERE THE PREFIX BELONGS: /search. That route is the one that knows, by
+    # construction, which side of the retrieval pair it is on, and it is where
+    # the prefix gets added to the query and to nothing else. It arrived after
+    # this docstring was written; the argument above is unchanged by that, and
+    # the fact that /search applies the prefix to its query is exactly the
+    # reason this route must not apply it to anything.
+    #
+    # The deliberate omissions, so that nobody re-litigates them later: no `kind`
+    # field, no query/document variants of this route, no parameterised prefix.
+    # Each was considered and rejected.
+    """
+    return await _embed_text(request.text)
 
 
 # ── /rerank is a PER-PAIR constraint ──────────────────────────────────────────
@@ -843,13 +897,17 @@ class RerankResponse(BaseModel):
     model: str
 
 
-@app.post(
-    "/rerank",
-    response_model=RerankResponse,
-    summary="Score and rank documents against a query",
-)
-async def rerank(request: RerankRequest) -> RerankResponse:
+async def _rerank_texts(
+    query: str, documents: list[str], top_n: int | None
+) -> RerankResponse:
     """Score every supplied document against the query, best first.
+
+    This is the internal implementation shared by ``POST /rerank`` and
+    ``POST /search``. It takes plain values instead of a ``RerankRequest``
+    because ``RerankRequest`` is the EDGE contract: building one from already-
+    validated internal strings would re-apply the public length limit and is the
+    same pattern that produced the E5 overflow bug in the embed path. Receiving
+    plain strings makes that second validation structurally impossible.
 
     Note what this does NOT do: it does not filter, and it does not truncate.
     Reranking is a re-ordering of the documents the caller already chose. Deciding
@@ -857,24 +915,25 @@ async def rerank(request: RerankRequest) -> RerankResponse:
     doing it here would mean the reranker's opinion of a document it was never
     shown.
 
-    Failure handling is identical to /embed's, and shares its helper rather than
-    restating it: 504 on timeout, 502 on an unreachable worker or a non-2xx
-    answer, the detail logged here and a short sentence returned. The reasons are
-    the ones written on _post_upstream and they apply unchanged to this route.
+    Failure handling is identical to ``_embed_text``'s, and shares its helper
+    rather than restating it: 504 on timeout, 502 on an unreachable worker or a
+    non-2xx answer, the detail logged here and a short sentence returned. The
+    reasons are the ones written on ``_post_upstream`` and they apply unchanged
+    to this route.
     """
     payload: dict[str, Any] = {
         "model": RERANKER_MODEL_ALIAS,
-        "query": request.query,
+        "query": query,
         # Forwarded in the caller's original order, unaltered. That order is what
         # the `index` values in the response refer to, so reordering here would
         # silently invalidate every index the worker sends back.
-        "documents": request.documents,
+        "documents": documents,
     }
 
-    if request.top_n is not None:
+    if top_n is not None:
         # Added ONLY when the caller supplied one. See below for why the default
         # is absence rather than a number.
-        payload["top_n"] = request.top_n
+        payload["top_n"] = top_n
     # Otherwise the key is not sent at all, and the worker applies its own default.
     #
     # Why: this API has no standing opinion about how many results a caller
@@ -905,6 +964,23 @@ async def rerank(request: RerankRequest) -> RerankResponse:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="reranker returned an unexpected response shape",
         ) from exc
+
+
+@app.post(
+    "/rerank",
+    response_model=RerankResponse,
+    summary="Score and rank documents against a query",
+)
+async def rerank(request: RerankRequest) -> RerankResponse:
+    """Score every supplied document against the query, best first.
+
+    This route is the edge contract: it validates the caller's body through
+    ``RerankRequest`` and delegates the actual scoring to ``_rerank_texts``.
+    Keeping validation and execution separate means no internal call site ever
+    needs to construct a request model; that is the same invariant the embed path
+    keeps via ``_embed_text``.
+    """
+    return await _rerank_texts(request.query, request.documents, request.top_n)
 
 
 # ── Ingestion ─────────────────────────────────────────────────────────────────
@@ -1028,12 +1104,13 @@ async def create_document(request: Request, body: DocumentRequest) -> DocumentRe
     `store.upsert_document` explains why.
 
     ── THE bge QUERY PREFIX IS NOT APPLIED HERE. THIS IS THE POINT. ────────────
-    This route embeds `body.content` by calling the `/embed` handler directly,
-    and `/embed` forwards its text BARE. See its docstring for the full
-    reasoning; the one-line version is that bge-small-en-v1.5's instruction
-    string was trained onto SEARCH QUERIES ONLY, and prefixing a document moves
-    its vector off the manifold the other documents live on — permanently,
-    invisibly, and with nothing in any response ever saying so.
+    This route embeds `body.content` through the same internal helper that
+    `/embed` uses, and that helper forwards its text BARE. See `/embed`'s
+    docstring for the full reasoning; the one-line version is that
+    bge-small-en-v1.5's instruction string was trained onto SEARCH QUERIES ONLY,
+    and prefixing a document moves its vector off the manifold the other
+    documents live on — permanently, invisibly, and with nothing in any response
+    ever saying so.
 
     So the invariant, stated as an invariant: **the only string that reaches the
     embedder from this route is the caller's own `content`, unmodified.** There
@@ -1042,10 +1119,8 @@ async def create_document(request: Request, body: DocumentRequest) -> DocumentRe
     together. `/search` applies the prefix to its QUERY and to nothing else,
     including nothing that came through this route.
 
-    Calling `embed()` directly rather than reimplementing its body is
-    deliberate. FastAPI's route decorators register a handler and return the
-    function UNCHANGED, so `embed` is still an ordinary async function here —
-    and calling it means this route inherits the worker's exact failure
+    Calling `_embed_text` rather than reimplementing the embedder call is
+    deliberate: it means this route inherits the worker's exact failure
     semantics (504 on timeout, 502 on unreachable or on an unexpected body shape)
     and its exact bfloat16-to-float conversion, by construction. A second copy of
     that code would be free to drift from the first, and the drift would be
@@ -1064,7 +1139,7 @@ async def create_document(request: Request, body: DocumentRequest) -> DocumentRe
         )
 
     # BARE. See the invariant above. Do not add the bge query prefix here.
-    embedded = await embed(EmbedRequest(text=body.content))
+    embedded = await _embed_text(body.content)
 
     # The model's answer checked against the schema's, BEFORE the write. This is
     # the cheap half of "surface a mismatch immediately": it produces a 502 that
@@ -1200,10 +1275,12 @@ class SearchRequest(BaseModel):
     # an inference worker so it carries NO max_length.
     collection: NonBlankIdentifier
 
-    # The query. NonBlankText, and this is a QUERY by construction — it is the
-    # one field in this service that is guaranteed to be on the retrieval pair's
-    # query side, which is what earns this route the right to prefix it.
-    query: NonBlankText
+    # The query. SearchQueryText (same non-blank rule as NonBlankText, but with
+    # the smaller maximum that leaves room for QUERY_PREFIX), and this is a QUERY
+    # by construction — it is the one field in this service that is guaranteed to
+    # be on the retrieval pair's query side, which is what earns this route the
+    # right to prefix it.
+    query: SearchQueryText
 
     # Stage-1 candidate count. `ge=1` because a 0 is a mistake, and a mistake the
     # caller should hear about rather than a funnel they have silently emptied.
@@ -1216,6 +1293,19 @@ class SearchRequest(BaseModel):
     # resolved candidate count: the reranker cannot produce more results than
     # there were documents to rerank.
     top_k: int | None = Field(default=None, ge=1)
+
+
+def _search_embedding_text(query: str) -> str:
+    """Return the exact string /search forwards to the embedder for ``query``.
+
+    This is ``QUERY_PREFIX + query`` with no separator. Keeping the concatenation
+    in one named helper makes the budget arithmetic testable and prevents the
+    route from inlining a subtle + that could drift from ``SearchQueryText``'s
+    maximum. Because ``SearchRequest.query`` is validated against
+    ``MAX_SEARCH_QUERY_CHARS``, the returned string is guaranteed to be at most
+    ``MAX_INFERENCE_INPUT_CHARS`` characters long.
+    """
+    return QUERY_PREFIX + query
 
 
 # Keys that are internal test-scaffolding / audit evidence and must never be
@@ -1443,9 +1533,9 @@ async def search(request: Request, body: SearchRequest) -> SearchResponse:
       gives the same word: this process cannot serve this request now.
     * Embedder or reranker unreachable → 502; either of them slower than
       `INFERENCE_TIMEOUT_SECONDS` → 504. Both inherited from `_post_upstream` by
-      calling `embed()` and `rerank()` as ordinary functions rather than
-      reimplementing either, which is the same reasoning `create_document` gives
-      for calling `embed()`.
+      calling `_embed_text()` and `_rerank_texts()` as ordinary functions rather
+      than reimplementing either, which is the same reasoning `create_document`
+      gives for calling `_embed_text()`.
     """
     database: db.Database | None = getattr(request.app.state, "database", None)
     engine = getattr(database, "engine", None)
@@ -1468,7 +1558,7 @@ async def search(request: Request, body: SearchRequest) -> SearchResponse:
     )
 
     # ── THE PREFIX. ON THE QUERY. HERE. AND NOWHERE ELSE IN THIS FUNCTION. ─────
-    embedded = await embed(EmbedRequest(text=QUERY_PREFIX + body.query))
+    embedded = await _embed_text(_search_embedding_text(body.query))
 
     # Checked against the schema's width for the same reason /documents checks
     # it, and the failure it prevents is worse here: a wrong-width query vector
@@ -1551,14 +1641,12 @@ async def search(request: Request, body: SearchRequest) -> SearchResponse:
     # differently-ordered list appearing here.
     sent_contents = [candidate.content for candidate in candidates]
 
-    # `rerank()` is called rather than `_post_upstream` being reimplemented, for
-    # the same reason `create_document` calls `embed()`: it inherits the worker's
-    # exact failure semantics (502/504) and its response validation by
+    # `_rerank_texts()` is called rather than `_post_upstream` being reimplemented,
+    # for the same reason `create_document` calls `_embed_text()`: it inherits the
+    # worker's exact failure semantics (502/504) and its response validation by
     # construction, and a second copy of that code would be free to drift from
     # the first.
-    ranked = await rerank(
-        RerankRequest(query=body.query, documents=sent_contents, top_n=None)
-    )
+    ranked = await _rerank_texts(body.query, sent_contents, None)
 
     # ── MAP FIRST, TRUNCATE SECOND. See the docstring for why the order matters. ─
     # Each result's `index` is a position in `sent_contents`, which is the same

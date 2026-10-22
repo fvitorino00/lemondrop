@@ -30,6 +30,8 @@ worker).
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from pydantic import ValidationError
 
@@ -37,8 +39,12 @@ from app.main import (
     DocumentRequest,
     EmbedRequest,
     MAX_INFERENCE_INPUT_CHARS,
+    MAX_SEARCH_QUERY_CHARS,
     RerankRequest,
+    SearchQueryText,
     SearchRequest,
+    _embed_text,
+    _search_embedding_text,
     _strip_internal_metadata,
 )
 
@@ -327,6 +333,79 @@ def test_search_rejects_oversized_query() -> None:
     oversized = "x" * (MAX_INFERENCE_INPUT_CHARS + 1)
     with pytest.raises(ValidationError):
         SearchRequest(collection="c", query=oversized)
+
+
+def test_search_rejects_a_query_of_length_2048() -> None:
+    """REGRESSION: a 2048-character query must be refused at the edge, not crash the handler.
+
+    /search forwards QUERY_PREFIX + query to the embedder. With the default 57-
+    character prefix, a 2048-character query becomes a 2105-character forwarded
+    string, which used to pass the request model and then raise an unhandled
+    pydantic.ValidationError inside the handler (a 500). After the fix the same
+    input is rejected by SearchRequest.query's own max_length.
+    """
+    with pytest.raises(ValidationError):
+        SearchRequest(collection="c", query="x" * MAX_INFERENCE_INPUT_CHARS)
+
+
+def test_search_accepts_query_at_effective_limit() -> None:
+    """A query of exactly MAX_SEARCH_QUERY_CHARS is accepted by SearchRequest."""
+    request = SearchRequest(collection="c", query="x" * MAX_SEARCH_QUERY_CHARS)
+
+    assert request.query == "x" * MAX_SEARCH_QUERY_CHARS
+
+
+def test_search_rejects_query_above_effective_limit() -> None:
+    """A query above MAX_SEARCH_QUERY_CHARS is refused, naming `query` and the effective limit."""
+    oversized = "x" * (MAX_SEARCH_QUERY_CHARS + 1)
+    with pytest.raises(ValidationError) as excinfo:
+        SearchRequest(collection="c", query=oversized)
+    errors = excinfo.value.errors()
+    assert any(
+        e["type"] == "string_too_long"
+        and "query" in e["loc"]
+        and e.get("ctx", {}).get("max_length") == MAX_SEARCH_QUERY_CHARS
+        for e in errors
+    ), errors
+
+
+def test_search_query_budget_invariant() -> None:
+    """The advertised budgets are consistent and leave room for the prefix."""
+    from app.config import QUERY_PREFIX
+
+    assert MAX_SEARCH_QUERY_CHARS == MAX_INFERENCE_INPUT_CHARS - len(QUERY_PREFIX)
+    assert len(QUERY_PREFIX) + MAX_SEARCH_QUERY_CHARS <= MAX_INFERENCE_INPUT_CHARS
+
+
+def test_search_worker_bound_string_within_budget() -> None:
+    """For a query at the effective limit, the string forwarded to the embedder fits."""
+    query = "x" * MAX_SEARCH_QUERY_CHARS
+    forwarded = _search_embedding_text(query)
+
+    assert len(forwarded) <= MAX_INFERENCE_INPUT_CHARS
+
+
+def test_embed_internal_path_accepts_a_string_longer_than_the_public_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The internal embedding helper validates no string length; it just forwards.
+
+    This is the structural half of the fix: no internal call site builds an
+    ``EmbedRequest``, so no internal call site can raise a
+    ``pydantic.ValidationError`` when the prefixed query is longer than the
+    public ``/embed`` limit. A minimal local stub of ``_post_upstream`` keeps
+    this test service-free and fast.
+    """
+
+    async def fake_post_upstream(url: str, payload: object, worker: str) -> dict[str, object]:
+        assert payload["input"] == ["x" * 3000]
+        return {"data": [{"embedding": [0.0] * 384}]}
+
+    monkeypatch.setattr("app.main._post_upstream", fake_post_upstream)
+
+    result = asyncio.run(_embed_text("x" * 3000))
+    assert result.dimensions == 384
+    assert result.model
 
 
 def test_strip_internal_metadata_removes_canary_preserves_caller_keys() -> None:

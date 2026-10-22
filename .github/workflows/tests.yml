@@ -9,18 +9,19 @@ name: tests
 # The suite is split into three tiers by what it needs to run, and the split is
 # NOT the one the milestone plan assumed. It was measured, not guessed. Every
 # count below is what `pytest --collect-only` reports and what an actual run
-# confirms; `python -m pytest api/tests --collect-only -q` collects 156, and
-# `test_lemondrop_app_bootstrap.py` collects 40 more, for 196 tracked tests in
+# confirms; `python -m pytest api/tests --collect-only -q` collects 168, and
+# `test_lemondrop_app_bootstrap.py` collects 40 more, for 208 tracked tests in
 # total.
 #
 # ┌─────────┬──────┬───────────────────────────────────────────────────────────┐
 # │ TIER    │ COUNT│ WHAT IT NEEDS                                          │
 # ├─────────┼──────┼───────────────────────────────────────────────────────────┤
-# │ T1      │  140 │ Python + requirements-dev.txt. NOTHING else. No database,│
+# │ T1      │  149 │ Python + requirements-dev.txt. NOTHING else. No database,│
 # │ service-│      │ no HTTP, no models, no network.                          │
 # │ free    │      │   test_lemondrop_app_bootstrap.py ... 40               │
 # │         │      │   test_db_credentials.py ......... 44                   │
-# │         │      │   test_request_models.py ....... 50                    │
+# │         │      │   test_request_models.py ....... 56                    │
+# │         │      │   test_search_boundary.py ....... 3                    │
 # │         │      │   test_db.py (6 named nodes) ......... 6                │
 # ├─────────┼──────┼───────────────────────────────────────────────────────────┤
 # │ T2      │   28 │ T1's tier PLUS a disposable PostgreSQL 16 + pgvector     │
@@ -29,14 +30,14 @@ name: tests
 # │         │      │   test_documents.py ... 11   (codec, pgvector constraints)│
 # │         │      │   test_search.py ...... 13   (funnel config rules)       │
 # ├─────────┼──────┼───────────────────────────────────────────────────────────┤
-# │ T3      │   28 │ The LIVE STACK. NOT RUN IN THIS WORKFLOW. See below.     │
+# │ T3      │   31 │ The LIVE STACK. NOT RUN IN THIS WORKFLOW. See below.     │
 # │ live    │      │   test_integration.py ... 6                             │
 # │         │      │   test_db.py ......... 3   (/health/*)                   │
 # │         │      │   test_documents.py ... 6   (POST /documents)            │
-# │         │      │   test_search.py ...... 13   (POST /search)              │
+# │         │      │   test_search.py ...... 16   (POST /search)              │
 # └─────────┴──────┴───────────────────────────────────────────────────────────┘
 #
-#   140 + 28 + 28 = 196. Every tracked test is accounted for in exactly one tier,
+#   149 + 28 + 31 = 208. Every tracked test is accounted for in exactly one tier,
 #   and the T1 job and the T2 job share no test between them.
 #
 # ── THE GATE IS CLASSIFICATION COMPLETENESS, NOT A TEST COUNT ────────────────
@@ -61,7 +62,7 @@ name: tests
 #
 # So a new test nobody assigned fails CI as "this test is unclassified", which is
 # the finding worth having, and adding a test, classifying it, watching it pass,
-# and seeing 196 become 197 requires updating DOCUMENTED_COUNTS in the same
+# and seeing 208 become 209 requires updating DOCUMENTED_COUNTS in the same
 # commit, because the drift check below treats a live/documented mismatch as a
 # failure worth investigating.
 #
@@ -173,8 +174,8 @@ name: tests
 #      llama.cpp container and downloads no weights.
 #
 # The consequence, stated plainly so nobody reads a green run as a claim about
-# the retrieval funnel: **THIS WORKFLOW IS NOT "ALL TESTS PASSING".** It is 168
-# of 196 tests, and the 28 it does not run are the ones that exercise
+# the retrieval funnel: **THIS WORKFLOW IS NOT "ALL TESTS PASSING".** It is 177
+# of 208 tests, and the 31 it does not run are the ones that exercise
 # cross-encoder ranking, index mapping and the /health contracts. Those are
 # verified locally against the real stack and, at the time of writing, are not
 # covered by any automated gate. That is a KNOWN GAP, recorded here on purpose.
@@ -193,7 +194,7 @@ name: tests
 #     .venv/bin/python scripts/load_corpus.py                  # the collections
 #     .venv/bin/python -m pytest -v -ra                       # or a subset
 #
-# The last line is where the 28 node ids matter, and they are not written out a
+# The last line is where the 31 node ids matter, and they are not written out a
 # fourth time here: the `tier-classification` job prints every tier's
 # declarations on every run, so the authoritative list is never a copy that can
 # rot. Select by hand with, for example:
@@ -249,7 +250,7 @@ name: tests
 # WHY THE DIRECT `push: branches: [main]` TRIGGER WAS REMOVED
 # Same reason as hygiene.yml, and the same argument. Leaving it in place would
 # run the whole suite TWICE per merge to main — once directly and once as
-# release.yml's `tests` job — which on this workflow means the 196 collected
+# release.yml's `tests` job — which on this workflow means the 208 collected
 # tests execute twice, the disposable pgvector container is started twice, and
 # two independent verdicts exist about the same revision with no principled way
 # to say which one gated the published image. One event, one set of runs.
@@ -343,6 +344,7 @@ jobs:
               "test_lemondrop_app_bootstrap.py",
               "api/tests/test_db_credentials.py",
               "api/tests/test_request_models.py",
+              "api/tests/test_search_boundary.py",
               "api/tests/test_db.py::test_the_redactor_removes_a_dsn_that_a_driver_quotes",
               "api/tests/test_db.py::test_missing_database_url_raises_an_error_naming_the_key",
               "api/tests/test_db.py::test_a_dsn_with_an_empty_password_is_rejected_and_leaks_nothing",
@@ -400,19 +402,22 @@ jobs:
               "api/tests/test_search.py::test_an_empty_collection_returns_200_with_no_results_and_never_reaches_the_reranker",
               "api/tests/test_search.py::test_a_collection_name_that_does_not_exist_is_an_empty_result_not_an_error",
               "api/tests/test_search.py::test_a_blank_query_or_collection_is_a_422_not_a_500",
+              "api/tests/test_search.py::test_a_2048_character_query_is_a_422_not_a_500",
+              "api/tests/test_search.py::test_a_query_at_the_effective_search_limit_is_accepted_by_the_edge",
+              "api/tests/test_search.py::test_an_over_limit_search_query_422_names_query_and_the_effective_limit",
               "api/tests/test_search.py::test_every_result_carries_the_score_of_its_own_document",
               "api/tests/test_search.py::test_the_endpoints_that_existed_before_this_phase_are_unaffected",
               "api/tests/test_search.py::test_scoring_ten_real_documents_costs_what_it_costs_measured_not_assumed",
           ]
 
           # ── DOCUMENTED COUNTS — single source of truth for drift detection ──
-          # These are the measured counts (T1=140, T2=28, T3=28, total=196),
+          # These are the measured counts (T1=149, T2=28, T3=31, total=208),
           # independently verified by collecting the tier declarations. The
           # tier-classification job compares the live collected counts against
           # them below and FAILS on drift, so a stale number is detected rather
           # than silently propagated. Update them deliberately, in the same
           # commit as an intentional test addition.
-          DOCUMENTED_COUNTS = {"T1": 140, "T2": 28, "T3": 28}
+          DOCUMENTED_COUNTS = {"T1": 149, "T2": 28, "T3": 31}
 
           TIERS = (("T1", T1), ("T2", T2), ("T3", T3))
 
@@ -420,7 +425,7 @@ jobs:
               """Every tracked test, collected from BOTH roots.
 
               `api/tests` alone silently omits the repository-root
-              `test_lemondrop_app_bootstrap.py`, which is 40 of the 196 and is
+              `test_lemondrop_app_bootstrap.py`, which is 40 of the 208 and is
               T1. Naming both roots here is what makes the inventory complete.
               """
               proc = subprocess.run(

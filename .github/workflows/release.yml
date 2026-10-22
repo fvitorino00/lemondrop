@@ -29,7 +29,7 @@ name: release
 #   │ 3  │ tier-classification    │ tests.yml    │ every collected test is in    │
 #   │    │                        │              │ exactly one of T1/T2/T3; no   │
 #   │    │                        │              │ test left unclassified        │
-#   │ 4  │ t1-service-free        │ tests.yml    │ the 90 service-free tests,    │
+#   │ 4  │ t1-service-free        │ tests.yml    │ the 149 service-free tests,   │
 #   │    │                        │              │ with 0 skips and 0 xfails     │
 #   │ 5  │ t2-database            │ tests.yml    │ the 28 tests against a        │
 #   │    │                        │              │ disposable pgvector, same     │
@@ -56,10 +56,10 @@ name: release
 #   `needs:` order for gates 1-5 and append-only for the rest; the DELIVERY is
 #   what the `uses:` line says, and the table above is a count of jobs.
 #
-# T3 IS NOT A GATE AT ALL, AND IS NOT ON `main`: the 28 live-stack tests are
+# T3 IS NOT A GATE AT ALL, AND IS NOT ON `main`: the 31 live-stack tests are
 # still not in CI, for the reasons tests.yml's header gives at length. A green
-# release run is therefore NOT a claim that all 196 tests pass. It is a claim
-# about 168.
+# release run is therefore NOT a claim that all 208 tests pass. It is a claim
+# about 177.
 #
 # ── WHY `terraform-validate` IS COVERED BY `needs: [hygiene]` ────────────────
 # THIS COMMENT IS LOAD-BEARING. DO NOT "OPTIMISE" THE TERRAFORM GATE AWAY.
@@ -238,10 +238,10 @@ jobs:
   # GATES 3-5 — tier classification, T1 (service-free), T2 (disposable
   # pgvector). Same all-or-nothing property as `hygiene` above.
   #
-  # T3 IS NOT RUN AT ALL — not a gate here, not a gate anywhere. The 28
+  # T3 IS NOT RUN AT ALL — not a gate here, not a gate anywhere. The 31
   # live-stack tests are still not in CI, for the reasons tests.yml's header
   # gives at length. A green run of this pipeline is therefore NOT a claim that
-  # all 196 tests pass. It is a claim about 168. (The eighth gate in this file is
+  # all 208 tests pass. It is a claim about 177. (The eighth gate in this file is
   # the image-content gate in the `build` job, which is a different thing
   # entirely.)
   # ═════════════════════════════════════════════════════════════════════════

@@ -249,11 +249,13 @@ pip install -r api/requirements-dev.txt
 python -m pytest api/tests/test_integration.py -v
 ```
 
-Six tests, all passing against the running stack. These are the live-stack (T3)
-tests: they require the full stack (API, both llama.cpp workers and the dev
-database) to be running, and they are NOT executed by CI (CI runs T1+T2 =
-168 of 196 tracked tests; T3 is deliberately not run in this workflow). Test
-names and count only — pytest's own column layout and timings are not shown:
+Six tests, all passing against the running stack. These are six of the live-stack
+(T3) tests — the six in `api/tests/test_integration.py`, a subset of the 31-test
+T3 tier. They require the full stack (API, both llama.cpp workers and the dev
+database) to be running, and T3 is NOT executed by CI (CI runs T1+T2 =
+177 of 208 tracked tests; the 31 T3 tests are deliberately not run in this
+workflow). Test names and count only — pytest's own column layout and timings
+are not shown:
 
 ```
 test_health_reports_all_dependencies_ok          PASSED
@@ -515,11 +517,14 @@ either route means the database is unavailable, which is the same claim
 
 Edge guard on worker-bound input (422):
 
-Worker-bound text fields — `text` on `POST /embed`, `query` on `POST /search`,
-and each document entry on `POST /rerank` — are capped at **2048 characters**.
-A longer value is refused at the API edge with **422** naming the field and the
-limit, instead of being forwarded to a worker that would answer with a permanent
-502.
+Worker-bound text fields — `text` on `POST /embed` and each document entry on
+`POST /rerank` — are capped at **2048 characters**. `query` on `POST /search` is
+capped at **1991 characters** by default, because `/search` prepends the bge
+query prefix before forwarding the combined string to the worker. The smaller
+query allowance is exact arithmetic on the fixed 57-character prefix, not a token
+estimate. A longer value is refused at the API edge with **422** naming the field
+and the effective limit, instead of being forwarded to a worker that would answer
+with a permanent 502.
 
 The 2048-character figure is a CHARACTER proxy for the worker's 512-token
 ceiling and cannot be exact: tokenisation is not a function of character count
